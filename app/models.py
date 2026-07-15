@@ -114,6 +114,38 @@ def registrar_evento(
     return item_id
 
 
+def atualizar_evento(
+    connection: sqlite3.Connection,
+    evento_id: str,
+    fim: str | None = None,
+    duracao: float | None = None,
+    operador_presente: bool | None = None,
+    confianca: float | None = None,
+    midia_path: str | None = None,
+) -> None:
+    connection.execute(
+        """
+        UPDATE eventos
+        SET
+            fim = COALESCE(?, fim),
+            duracao = COALESCE(?, duracao),
+            operador_presente = COALESCE(?, operador_presente),
+            confianca = COALESCE(?, confianca),
+            midia_path = COALESCE(?, midia_path)
+        WHERE id = ?
+        """,
+        (
+            fim,
+            duracao,
+            None if operador_presente is None else int(operador_presente),
+            confianca,
+            midia_path,
+            evento_id,
+        ),
+    )
+    connection.commit()
+
+
 def registrar_alerta(
     connection: sqlite3.Connection,
     evento_id: str,
@@ -148,4 +180,3 @@ def listar(connection: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
     if table not in allowed:
         raise ValueError(f"Tabela inválida: {table}")
     return [row_to_dict(row) for row in connection.execute(f"SELECT * FROM {table} ORDER BY criado_em DESC")]
-

@@ -5,15 +5,20 @@ import csv
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.request import Request, urlopen
 
 import cv2
 import numpy as np
+
+from app.config import DATABASE_PATH
+from edge_agent.event_sender import enqueue_event, flush_queue
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "context_config.json"
@@ -22,6 +27,10 @@ STOPS_CSV = OUTPUT_DIR / "paradas_contextuais.csv"
 TIMELINE_CSV = OUTPUT_DIR / "timeline.csv"
 SUMMARY_JSON = OUTPUT_DIR / "resumo_contextual.json"
 SNAPSHOT_DIR = OUTPUT_DIR / "snapshots"
+DEFAULT_API_URL = os.getenv("API_URL")
+DEFAULT_CLIENTE_ID = os.getenv("CLIENTE_ID") or os.getenv("TENANT_ID")
+DEFAULT_UNIDADE_ID = os.getenv("UNIDADE_ID") or os.getenv("SITE_ID")
+DEFAULT_CAMERA_ID = os.getenv("CAMERA_ID")
 
 
 @dataclass
@@ -165,6 +174,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-display", action="store_true")
     parser.add_argument("--reset-output", action="store_true")
+    parser.add_argument("--cliente-id", default=DEFAULT_CLIENTE_ID)
+    parser.add_argument("--unidade-id", default=DEFAULT_UNIDADE_ID)
+    parser.add_argument("--camera-id", default=DEFAULT_CAMERA_ID)
+    parser.add_argument("--api-url", default=DEFAULT_API_URL)
     return parser.parse_args()
 
 
@@ -284,6 +297,80 @@ def append_csv(path: Path, fieldnames: list[str], row: dict[str, Any]) -> None:
         if is_new:
             writer.writeheader()
         writer.writerow(row)
+
+
+def product_events_enabled(args: argparse.Namespace) -> bool:
+    fields = [args.cliente_id, args.unidade_id, args.camera_id, args.api_url]
+    if not any(fields):
+        return False
+    if all(fields):
+        return True
+    raise RuntimeError(
+        "Para registrar eventos automaticamente, informe --cliente-id, "
+        "--unidade-id, --camera-id e --api-url."
+    )
+
+
+def post_json(api_url: str, path: str, payload: dict[str, Any], method: str = "POST") -> dict[str, Any]:
+    request = Request(
+        f"{api_url.rstrip('/')}{path}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method=method,
+    )
+    with urlopen(request, timeout=5.0) as response:
+        body = response.read().decode("utf-8")
+        if response.status >= 400:
+            raise RuntimeError(f"API retornou HTTP {response.status}")
+        return json.loads(body) if body else {}
+
+
+def send_or_queue(
+    api_url: str,
+    payload: dict[str, Any],
+    method: str = "POST",
+    path: str = "/eventos",
+) -> dict[str, Any] | None:
+    with sqlite3.connect(DATABASE_PATH) as connection:
+        connection.row_factory = sqlite3.Row
+        try:
+            flush_queue(connection, api_url)
+        except Exception:
+            pass
+        try:
+            return post_json(api_url, path, payload, method)
+        except Exception as exc:
+            enqueue_event(connection, payload, method=method, path=path)
+            print(f"API indisponível; evento salvo na fila local: {exc}")
+            return None
+
+
+def load_rule_minimum_seconds(camera_id: str | None, fallback: float) -> float:
+    if not camera_id or not DATABASE_PATH.exists():
+        return fallback
+    try:
+        with sqlite3.connect(DATABASE_PATH) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                """
+                SELECT MAX(tempo_minimo) AS tempo_minimo
+                FROM regras
+                WHERE camera_id = ? AND ativo = 1
+                """,
+                (camera_id,),
+            ).fetchone()
+    except sqlite3.Error:
+        return fallback
+    if row is None or row["tempo_minimo"] is None:
+        return fallback
+    return max(fallback, float(row["tempo_minimo"]))
+
+
+def event_confidence(motion_value: float, motion_threshold: float) -> float:
+    if motion_threshold <= 0:
+        return 0.0
+    distance = max(0.0, motion_threshold - motion_value)
+    return round(min(1.0, distance / motion_threshold), 3)
 
 
 def save_timeline_segment(
@@ -419,6 +506,7 @@ def build_detector(name: str, config: dict[str, Any]) -> PersonDetector | None:
 def main() -> int:
     args = parse_args()
     config = load_config()
+    send_product_events = product_events_enabled(args)
 
     if args.reset_output and OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR)
@@ -466,7 +554,10 @@ def main() -> int:
     confirm_stopped = float(config.get("confirm_stopped_seconds", 8.0))
     confirm_operator_present = float(config.get("confirm_operator_present_seconds", 1.0))
     confirm_operator_absent = float(config.get("confirm_operator_absent_seconds", 3.0))
-    minimum_event = float(config.get("minimum_event_seconds", 3.0))
+    minimum_event = load_rule_minimum_seconds(
+        args.camera_id,
+        float(config.get("minimum_event_seconds", 3.0)),
+    )
 
     machine_state = "CALIBRANDO"
     machine_candidate: str | None = None
@@ -488,6 +579,9 @@ def main() -> int:
     stop_snapshot_path = ""
     stop_count = 0
     total_stopped_seconds = 0.0
+    product_event_id: str | None = None
+    product_event_started = False
+    product_event_queued_offline = False
 
     people_boxes: list[Box] = []
     people_count = 0
@@ -496,6 +590,7 @@ def main() -> int:
     wall_start = time.monotonic()
     last_loop_seconds = 0.0
     last_summary_seconds = 0.0
+    last_queue_flush_seconds = 0.0
     paused = False
 
     if display:
@@ -548,6 +643,9 @@ def main() -> int:
                     stop_operator_present_seconds = 0.0
                     stop_operator_absent_seconds = 0.0
                     stop_maximum_people = people_count
+                    product_event_id = None
+                    product_event_started = False
+                    product_event_queued_offline = False
                     stop_count += 1
                     snapshot = SNAPSHOT_DIR / f"parada_{stop_count:03d}_{datetime.now():%Y%m%d_%H%M%S}.jpg"
                     cv2.imwrite(str(snapshot), frame)
@@ -557,6 +655,8 @@ def main() -> int:
                     stop_end_seconds = machine_candidate_since or now_seconds
                     duration = max(0.0, stop_end_seconds - stop_start_seconds)
                     if duration >= minimum_event:
+                        operator_was_present = stop_operator_present_seconds >= stop_operator_absent_seconds
+                        confidence = event_confidence(smoothed_motion, motion_threshold)
                         save_stop_event(
                             start_iso=stop_start_iso or now_iso(),
                             end_iso=now_iso(),
@@ -567,9 +667,37 @@ def main() -> int:
                             maximum_people=stop_maximum_people,
                             snapshot_path=stop_snapshot_path,
                         )
+                        if send_product_events:
+                            close_payload = {
+                                "fim": now_iso(),
+                                "duracao": round(duration, 3),
+                                "operador_presente": operator_was_present,
+                                "confianca": confidence,
+                                "midia_path": stop_snapshot_path,
+                            }
+                            if product_event_id:
+                                send_or_queue(
+                                    args.api_url,
+                                    close_payload,
+                                    method="PATCH",
+                                    path=f"/eventos/{product_event_id}",
+                                )
+                            else:
+                                create_payload = {
+                                    "cliente_id": args.cliente_id,
+                                    "unidade_id": args.unidade_id,
+                                    "camera_id": args.camera_id,
+                                    "tipo": "machine_stopped",
+                                    "inicio": stop_start_iso or now_iso(),
+                                    **close_payload,
+                                }
+                                send_or_queue(args.api_url, create_payload)
                         total_stopped_seconds += duration
                     stop_start_seconds = None
                     stop_start_iso = None
+                    product_event_id = None
+                    product_event_started = False
+                    product_event_queued_offline = False
 
             if detector is not None and frame_index % person_detection_interval == 0:
                 people_boxes = detector.detect(frame)
@@ -596,6 +724,29 @@ def main() -> int:
                 else:
                     stop_operator_absent_seconds += delta_seconds
                 stop_maximum_people = max(stop_maximum_people, people_count)
+                current_stop_duration = max(0.0, now_seconds - stop_start_seconds)
+                if send_product_events and not product_event_started and current_stop_duration >= minimum_event:
+                    create_payload = {
+                        "cliente_id": args.cliente_id,
+                        "unidade_id": args.unidade_id,
+                        "camera_id": args.camera_id,
+                        "tipo": "machine_stopped",
+                        "inicio": stop_start_iso or now_iso(),
+                        "operador_presente": operator_present,
+                        "confianca": event_confidence(smoothed_motion, motion_threshold),
+                        "midia_path": stop_snapshot_path,
+                    }
+                    product_event_started = True
+                    try:
+                        with sqlite3.connect(DATABASE_PATH) as connection:
+                            connection.row_factory = sqlite3.Row
+                            flush_queue(connection, args.api_url)
+                        response = post_json(args.api_url, "/eventos", create_payload)
+                        product_event_id = str(response["id"])
+                        print(f"Evento automático aberto: {product_event_id}")
+                    except Exception as exc:
+                        product_event_queued_offline = True
+                        print(f"API indisponível; evento será salvo completo ao fechar a parada: {exc}")
 
             new_context_state = (
                 "CALIBRANDO"
@@ -697,6 +848,15 @@ def main() -> int:
                 )
                 last_summary_seconds = now_seconds
 
+            if send_product_events and now_seconds - last_queue_flush_seconds >= 10.0:
+                try:
+                    with sqlite3.connect(DATABASE_PATH) as connection:
+                        connection.row_factory = sqlite3.Row
+                        flush_queue(connection, args.api_url)
+                except Exception:
+                    pass
+                last_queue_flush_seconds = now_seconds
+
         key = cv2.waitKey(1 if not paused else 30) & 0xFF if display else 255
         if key == ord("q"):
             break
@@ -745,6 +905,8 @@ def main() -> int:
     if stop_start_seconds is not None:
         duration = max(0.0, final_seconds - stop_start_seconds)
         if duration >= minimum_event:
+            operator_was_present = stop_operator_present_seconds >= stop_operator_absent_seconds
+            confidence = event_confidence(smoothed_motion, motion_threshold)
             save_stop_event(
                 start_iso=stop_start_iso or now_iso(),
                 end_iso=now_iso(),
@@ -755,6 +917,31 @@ def main() -> int:
                 maximum_people=stop_maximum_people,
                 snapshot_path=stop_snapshot_path,
             )
+            if send_product_events:
+                close_payload = {
+                    "fim": now_iso(),
+                    "duracao": round(duration, 3),
+                    "operador_presente": operator_was_present,
+                    "confianca": confidence,
+                    "midia_path": stop_snapshot_path,
+                }
+                if product_event_id:
+                    send_or_queue(
+                        args.api_url,
+                        close_payload,
+                        method="PATCH",
+                        path=f"/eventos/{product_event_id}",
+                    )
+                else:
+                    create_payload = {
+                        "cliente_id": args.cliente_id,
+                        "unidade_id": args.unidade_id,
+                        "camera_id": args.camera_id,
+                        "tipo": "machine_stopped",
+                        "inicio": stop_start_iso or now_iso(),
+                        **close_payload,
+                    }
+                    send_or_queue(args.api_url, create_payload)
             total_stopped_seconds += duration
 
     write_summary(

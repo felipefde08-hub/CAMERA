@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 from app.database import connect, init_db
 from app.models import (
+    atualizar_evento,
     criar_camera,
     criar_cliente,
     criar_dispositivo,
@@ -58,6 +59,14 @@ class EventoIn(BaseModel):
     camera_id: str
     tipo: str
     inicio: Optional[str] = None
+    fim: Optional[str] = None
+    duracao: Optional[float] = None
+    operador_presente: Optional[bool] = None
+    confianca: Optional[float] = None
+    midia_path: Optional[str] = None
+
+
+class EventoUpdateIn(BaseModel):
     fim: Optional[str] = None
     duracao: Optional[float] = None
     operador_presente: Optional[bool] = None
@@ -118,6 +127,14 @@ def post_evento(payload: EventoIn) -> dict[str, str]:
     with connect() as connection:
         init_db(connection)
         return {"id": registrar_evento(connection, **payload.model_dump())}
+
+
+@api.patch("/eventos/{evento_id}")
+def patch_evento(evento_id: str, payload: EventoUpdateIn) -> dict[str, str]:
+    with connect() as connection:
+        init_db(connection)
+        atualizar_evento(connection, evento_id, **payload.model_dump())
+        return {"id": evento_id}
 
 
 @api.get("/eventos")

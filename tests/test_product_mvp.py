@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.database import connect, init_db
 from app.models import (
+    atualizar_evento,
     criar_camera,
     criar_cliente,
     criar_regra,
@@ -34,11 +35,29 @@ class ProductMvpTest(unittest.TestCase):
                     unidade_id,
                     camera_id,
                     "machine_stopped",
+                    inicio="2026-07-15T07:00:00-03:00",
+                    operador_presente=False,
+                    confianca=0.7,
+                )
+                event_id = registrar_evento(
+                    connection,
+                    cliente_id,
+                    unidade_id,
+                    camera_id,
+                    "machine_stopped",
                     inicio="2026-07-15T08:00:00-03:00",
                     fim="2026-07-15T08:10:00-03:00",
                     duracao=600,
                     operador_presente=False,
                     confianca=0.91,
+                )
+                atualizar_evento(
+                    connection,
+                    event_id,
+                    fim="2026-07-15T08:10:00-03:00",
+                    duracao=600,
+                    operador_presente=False,
+                    confianca=0.95,
                 )
 
                 cameras = listar(connection, "cameras")
@@ -48,7 +67,7 @@ class ProductMvpTest(unittest.TestCase):
                 csv_exists = paths["csv"].exists()
 
         self.assertEqual(len(cameras), 1)
-        self.assertEqual(report["quantidade_eventos"], 1)
+        self.assertEqual(report["quantidade_eventos"], 2)
         self.assertEqual(report["tempo_total_parado"], 600)
         self.assertEqual(report["tempo_parado_sem_operador"], 600)
         self.assertEqual(report["maior_parada"], 600)

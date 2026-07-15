@@ -29,27 +29,43 @@ def init_queue(connection: sqlite3.Connection) -> None:
     connection.commit()
 
 
-def enqueue_event(connection: sqlite3.Connection, payload: dict[str, Any]) -> str:
+def enqueue_event(
+    connection: sqlite3.Connection,
+    payload: dict[str, Any],
+    method: str = "POST",
+    path: str = "/eventos",
+) -> str:
     init_queue(connection)
     queue_id = f"queue_{uuid.uuid4().hex[:12]}"
+    envelope = {
+        "method": method,
+        "path": path,
+        "payload": payload,
+    }
     connection.execute(
         """
         INSERT INTO event_queue (id, payload_json, created_at)
         VALUES (?, ?, ?)
         """,
-        (queue_id, json.dumps(payload), now_iso()),
+        (queue_id, json.dumps(envelope), now_iso()),
     )
     connection.commit()
     return queue_id
 
 
-def send_payload(api_url: str, payload: dict[str, Any], timeout: float = 5.0) -> None:
+def send_payload(
+    api_url: str,
+    payload: dict[str, Any],
+    timeout: float = 5.0,
+    method: str = "POST",
+    path: str = "/eventos",
+) -> None:
     body = json.dumps(payload).encode("utf-8")
     request = Request(
-        f"{api_url.rstrip('/')}/eventos",
+        f"{api_url.rstrip('/')}{path}",
         data=body,
         headers={"Content-Type": "application/json"},
-        method="POST",
+        method=method,
     )
     with urlopen(request, timeout=timeout) as response:
         if response.status >= 400:
@@ -70,8 +86,17 @@ def flush_queue(connection: sqlite3.Connection, api_url: str, limit: int = 50) -
     ).fetchall()
     sent = 0
     for row in rows:
+        envelope = json.loads(row["payload_json"])
+        if "payload" in envelope:
+            payload = envelope["payload"]
+            method = envelope.get("method", "POST")
+            path = envelope.get("path", "/eventos")
+        else:
+            payload = envelope
+            method = "POST"
+            path = "/eventos"
         try:
-            send_payload(api_url, json.loads(row["payload_json"]))
+            send_payload(api_url, payload, method=method, path=path)
         except Exception as exc:
             connection.execute(
                 """
@@ -103,4 +128,3 @@ def run_sender_loop(db_path: Path, api_url: str, interval_seconds: float = 10.0)
             connection.row_factory = sqlite3.Row
             flush_queue(connection, api_url)
         time.sleep(interval_seconds)
-
