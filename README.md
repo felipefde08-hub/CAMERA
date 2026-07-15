@@ -91,3 +91,22 @@ Não envie nem publique a senha da câmera.
 ## Limite atual
 
 O MVP usa variação visual dentro da área selecionada. Ele ainda não reconhece causa de parada, EPI ou máquinas específicas. O objetivo de hoje é provar a medição automática de estado e duração.
+
+## MVP local de produto
+
+Foi adicionada uma camada separada para organizar clientes, unidades, câmeras,
+regras, eventos, alertas e relatório diário em um banco SQLite local.
+
+Para criar o banco:
+
+```bash
+python3 mvp.py init-db
+```
+
+Leia o passo a passo completo em:
+
+```text
+MVP_LOCAL.md
+```
+
+Essa camada não conecta câmeras ao vivo ainda e não altera o detector atual.

@@ -1,5 +1,10 @@
 {
-  "roi": null,
+  "roi": [
+    217,
+    144,
+    504,
+    148
+  ],
   "motion_threshold": 0.02,
   "confirm_running_seconds": 3.0,
   "confirm_stopped_seconds": 8.0,
