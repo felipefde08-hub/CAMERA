@@ -110,3 +110,42 @@ MVP_LOCAL.md
 ```
 
 Essa camada não conecta câmeras ao vivo ainda e não altera o detector atual.
+
+## API interna e estrutura de produto
+
+A nova estrutura de produto fica em:
+
+- `app/`: banco local, API interna e relatórios;
+- `edge_agent/`: preparação para câmera ao vivo e fila offline;
+- `shared/`: formatos compartilhados de evento e saúde de câmera.
+
+Instale as dependências:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+Crie o banco local:
+
+```bash
+python3 manage.py init-db
+```
+
+Inicie a API interna:
+
+```bash
+python3 -m app.main
+```
+
+Exemplo de cadastro via terminal:
+
+```bash
+python3 manage.py add-cliente --nome "Cliente Teste"
+python3 manage.py add-unidade --cliente-id CLI_ID --nome "Fabrica 1"
+python3 manage.py add-camera --unidade-id UNI_ID --nome "Camera Linha 1"
+python3 manage.py add-evento --cliente-id CLI_ID --unidade-id UNI_ID --camera-id CAM_ID --tipo machine_stopped --duracao 300 --operador-presente nao --confianca 0.90
+python3 manage.py relatorio-diario
+```
+
+O arquivo `.env.example` mostra quais variáveis serão usadas futuramente para
+câmeras ao vivo. Não coloque IP, usuário ou senha de câmera diretamente no código.
