@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import os
+import signal
 from pathlib import Path
 
 from app.database import connect, init_db
@@ -16,6 +19,7 @@ from app.models import (
 from app.reports import save_daily_report
 from edge_agent.camera_connector import detect_source_type, safe_source_ref
 from edge_agent.camera_check import check_camera
+from edge_agent.service import EdgeSupervisor, edge_status
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -69,6 +73,14 @@ def build_parser() -> argparse.ArgumentParser:
     camera_check = subparsers.add_parser("check-camera")
     camera_check.add_argument("--source", required=True)
     camera_check.add_argument("--timeout", type=float, default=5.0)
+
+    run_edge = subparsers.add_parser("run-edge")
+    run_edge.add_argument("--edge-id", required=True)
+    run_edge.add_argument("--api-url", default=os.getenv("API_URL"))
+    run_edge.add_argument("--heartbeat-seconds", type=float, default=10.0)
+
+    status = subparsers.add_parser("edge-status")
+    status.add_argument("--edge-id", required=True)
     return parser
 
 
@@ -87,12 +99,15 @@ def main() -> int:
         elif args.command == "add-camera":
             source_type = detect_source_type(args.source).value if args.source else None
             secure_ref = safe_source_ref(args.source) if args.source else None
+            config_ref = args.config_ref
+            if args.source and source_type in {"file", "webcam"}:
+                config_ref = args.source
             print(criar_camera(
                 connection,
                 args.unidade_id,
                 args.nome,
                 args.dispositivo_id,
-                args.config_ref,
+                config_ref,
                 cliente_id=args.cliente_id,
                 edge_id=args.edge_id,
                 source_type=source_type,
@@ -132,6 +147,48 @@ def main() -> int:
             print(f"referencia_segura: {result.referencia_segura}")
             if result.motivo_erro:
                 print(f"motivo_erro: {result.motivo_erro}")
+        elif args.command == "run-edge":
+            logging.basicConfig(
+                level=logging.INFO,
+                format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            )
+            supervisor = EdgeSupervisor(
+                edge_id=args.edge_id,
+                db_path=Path(args.db),
+                api_url=args.api_url,
+                heartbeat_seconds=args.heartbeat_seconds,
+            )
+            def stop_service(_signum: int, _frame: object) -> None:
+                supervisor.shutdown()
+                raise SystemExit(0)
+
+            signal.signal(signal.SIGTERM, stop_service)
+            signal.signal(signal.SIGINT, stop_service)
+            try:
+                supervisor.run_forever()
+            except KeyboardInterrupt:
+                print("\nEdge encerrado pelo usuario.")
+                supervisor.shutdown()
+        elif args.command == "edge-status":
+            status = edge_status(args.edge_id, Path(args.db))
+            print(f"Edge: {args.edge_id}")
+            print(f"Status: {status['edge_status']}")
+            print(f"Ultimo contato: {status['ultimo_contato'] or 'indisponivel'}")
+            print(f"Tempo ligado: {int(status['uptime_seconds'])} segundos")
+            print(f"CPU: {status['cpu_percent'] if status['cpu_percent'] is not None else 'indisponivel'}")
+            print(f"Memoria: {status['memory_percent'] if status['memory_percent'] is not None else 'indisponivel'}")
+            print(f"Cameras cadastradas: {status['cameras_total']}")
+            print(f"Cameras online: {status['cameras_online']}")
+            print(f"Cameras offline: {status['cameras_offline']}")
+            print(f"Eventos pendentes na fila: {status['eventos_pendentes']}")
+            for camera in status["cameras"]:
+                print(
+                    "- "
+                    f"{camera['nome']} ({camera['id']}): {camera['status']} | "
+                    f"ultimo frame: {camera.get('ultimo_frame') or 'nunca'} | "
+                    f"reconexoes: {camera.get('reconexoes') or 0} | "
+                    f"erro: {camera.get('ultimo_erro') or 'nenhum'}"
+                )
     return 0
 
 

@@ -193,6 +193,94 @@ def atualizar_camera_status(
     connection.commit()
 
 
+def atualizar_camera_operacao(
+    connection: sqlite3.Connection,
+    camera_id: str,
+    status: str,
+    ultimo_frame: str | None = None,
+    ultimo_erro: str | None = None,
+    reconectar: bool = False,
+    frames_increment: int = 0,
+) -> None:
+    connection.execute(
+        """
+        UPDATE cameras
+        SET
+            status = ?,
+            ultimo_frame = COALESCE(?, ultimo_frame),
+            ultimo_erro = ?,
+            reconexoes = reconexoes + ?,
+            frames_processados = frames_processados + ?
+        WHERE id = ?
+        """,
+        (
+            status,
+            ultimo_frame,
+            ultimo_erro,
+            1 if reconectar else 0,
+            frames_increment,
+            camera_id,
+        ),
+    )
+    connection.commit()
+
+
+def listar_cameras_do_edge(connection: sqlite3.Connection, edge_id: str) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT *
+        FROM cameras
+        WHERE (edge_id = ? OR dispositivo_id = ?)
+          AND status != 'inativa'
+        ORDER BY nome
+        """,
+        (edge_id, edge_id),
+    ).fetchall()
+    return [row_to_dict(row) for row in rows]
+
+
+def registrar_edge_metricas(
+    connection: sqlite3.Connection,
+    edge_id: str,
+    uptime_seconds: float,
+    cpu_percent: float | None,
+    memory_percent: float | None,
+    active_cameras: int,
+    frames_processed: int,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO edge_metrics (
+            edge_id, uptime_seconds, cpu_percent, memory_percent,
+            active_cameras, frames_processed
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            edge_id,
+            uptime_seconds,
+            cpu_percent,
+            memory_percent,
+            active_cameras,
+            frames_processed,
+        ),
+    )
+    connection.commit()
+
+
+def ultima_metrica_edge(connection: sqlite3.Connection, edge_id: str) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT *
+        FROM edge_metrics
+        WHERE edge_id = ?
+        ORDER BY recorded_at DESC, id DESC
+        LIMIT 1
+        """,
+        (edge_id,),
+    ).fetchone()
+    return row_to_dict(row) if row else None
+
+
 def listar(connection: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
     allowed = {"clientes", "unidades", "dispositivos", "cameras", "regras", "eventos", "alertas"}
     if table not in allowed:

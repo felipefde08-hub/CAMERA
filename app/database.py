@@ -99,6 +99,17 @@ def init_db(connection: sqlite3.Connection) -> None:
             horario TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (evento_id) REFERENCES eventos (id)
         );
+
+        CREATE TABLE IF NOT EXISTS edge_metrics (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            edge_id TEXT NOT NULL,
+            recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            uptime_seconds REAL NOT NULL,
+            cpu_percent REAL,
+            memory_percent REAL,
+            active_cameras INTEGER NOT NULL DEFAULT 0,
+            frames_processed INTEGER NOT NULL DEFAULT 0
+        );
         """
     )
     _ensure_column(connection, "cameras", "cliente_id", "TEXT")
@@ -106,6 +117,9 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "cameras", "source_type", "TEXT")
     _ensure_column(connection, "cameras", "secure_ref", "TEXT")
     _ensure_column(connection, "cameras", "ultimo_frame", "TEXT")
+    _ensure_column(connection, "cameras", "ultimo_erro", "TEXT")
+    _ensure_column(connection, "cameras", "reconexoes", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(connection, "cameras", "frames_processados", "INTEGER NOT NULL DEFAULT 0")
     connection.commit()
 
 

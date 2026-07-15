@@ -166,3 +166,32 @@ se a fonte é compatível. Usuário e senha de RTSP são mascarados na saída.
 ONVIF foi preparado de forma isolada em `edge_agent/onvif_discovery.py`. Quando
 houver uma câmera ONVIF disponível na rede local, a próxima etapa pode chamar a
 descoberta e transformar o endereço encontrado em configuração segura da câmera.
+
+## Rodar a Edge Box local
+
+O comando principal do serviço contínuo é:
+
+```bash
+python3 manage.py run-edge --edge-id EDGE_ID
+```
+
+Ele carrega as câmeras cadastradas para aquele Edge, abre cada fonte em um
+trabalhador independente, reconecta quando cair, atualiza status/último frame e
+envia heartbeats e métricas locais.
+
+Para consultar:
+
+```bash
+python3 manage.py edge-status --edge-id EDGE_ID
+```
+
+Para RTSP com senha, prefira variável de ambiente local, ignorada pelo Git:
+
+```bash
+export CAMERA_SOURCE_CAMERA_ID="rtsp://usuario:senha@endereco/caminho"
+python3 manage.py run-edge --edge-id EDGE_ID
+```
+
+O arquivo `deployment/visual-ops-edge.service` é um modelo futuro para Linux com
+systemd. Ele não instala nada agora; apenas mostra como a Edge Box poderá iniciar
+automaticamente junto com o equipamento.
