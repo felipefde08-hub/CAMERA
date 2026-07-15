@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 class CameraWorkerConfig:
     camera_id: str
     source: str | int
+    cliente_id: str | None = None
+    unidade_id: str | None = None
+    edge_id: str | None = None
 
 
 class CameraWorker:
@@ -36,4 +39,3 @@ class CameraWorker:
                 with sqlite3.connect(self.db_path) as connection:
                     connection.row_factory = sqlite3.Row
                     mark_camera_offline(connection, self.config.camera_id)
-

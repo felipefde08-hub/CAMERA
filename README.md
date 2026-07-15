@@ -149,3 +149,20 @@ python3 manage.py relatorio-diario
 
 O arquivo `.env.example` mostra quais variáveis serão usadas futuramente para
 câmeras ao vivo. Não coloque IP, usuário ou senha de câmera diretamente no código.
+
+## Verificar compatibilidade de câmera ou vídeo
+
+Use o verificador universal para arquivo, webcam ou RTSP:
+
+```bash
+python3 manage.py check-camera --source "teste_maquina.mp4"
+python3 manage.py check-camera --source "0"
+python3 manage.py check-camera --source "rtsp://usuario:senha@endereco/caminho"
+```
+
+O resultado informa conexão, vídeo recebido, resolução, FPS, tipo da conexão e
+se a fonte é compatível. Usuário e senha de RTSP são mascarados na saída.
+
+ONVIF foi preparado de forma isolada em `edge_agent/onvif_discovery.py`. Quando
+houver uma câmera ONVIF disponível na rede local, a próxima etapa pode chamar a
+descoberta e transformar o endereço encontrado em configuração segura da câmera.

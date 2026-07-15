@@ -39,10 +39,14 @@ class DispositivoIn(BaseModel):
 
 
 class CameraIn(BaseModel):
+    cliente_id: Optional[str] = None
     unidade_id: str
     dispositivo_id: Optional[str] = None
+    edge_id: Optional[str] = None
     nome: str
     config_ref: Optional[str] = None
+    source_type: Optional[str] = None
+    secure_ref: Optional[str] = None
     status: str = "nao_conectada"
 
 
@@ -112,6 +116,10 @@ def post_camera(payload: CameraIn) -> dict[str, str]:
             payload.dispositivo_id,
             payload.config_ref,
             payload.status,
+            payload.cliente_id,
+            payload.edge_id,
+            payload.source_type,
+            payload.secure_ref,
         )}
 
 

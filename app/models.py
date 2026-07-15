@@ -52,14 +52,32 @@ def criar_camera(
     dispositivo_id: str | None = None,
     config_ref: str | None = None,
     status: str = "nao_conectada",
+    cliente_id: str | None = None,
+    edge_id: str | None = None,
+    source_type: str | None = None,
+    secure_ref: str | None = None,
 ) -> str:
     item_id = new_id("cam")
     connection.execute(
         """
-        INSERT INTO cameras (id, unidade_id, dispositivo_id, nome, status, config_ref)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO cameras (
+            id, cliente_id, unidade_id, dispositivo_id, edge_id, nome, status,
+            config_ref, source_type, secure_ref
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (item_id, unidade_id, dispositivo_id, nome, status, config_ref),
+        (
+            item_id,
+            cliente_id,
+            unidade_id,
+            dispositivo_id,
+            edge_id or dispositivo_id,
+            nome,
+            status,
+            config_ref,
+            source_type,
+            secure_ref,
+        ),
     )
     connection.commit()
     return item_id

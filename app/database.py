@@ -46,13 +46,18 @@ def init_db(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS cameras (
             id TEXT PRIMARY KEY,
+            cliente_id TEXT,
             unidade_id TEXT NOT NULL,
             dispositivo_id TEXT,
+            edge_id TEXT,
             nome TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'nao_conectada',
             config_ref TEXT,
+            source_type TEXT,
+            secure_ref TEXT,
             ultimo_frame TEXT,
             criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (cliente_id) REFERENCES clientes (id),
             FOREIGN KEY (unidade_id) REFERENCES unidades (id),
             FOREIGN KEY (dispositivo_id) REFERENCES dispositivos (id)
         );
@@ -96,5 +101,15 @@ def init_db(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    _ensure_column(connection, "cameras", "cliente_id", "TEXT")
+    _ensure_column(connection, "cameras", "edge_id", "TEXT")
+    _ensure_column(connection, "cameras", "source_type", "TEXT")
+    _ensure_column(connection, "cameras", "secure_ref", "TEXT")
+    _ensure_column(connection, "cameras", "ultimo_frame", "TEXT")
     connection.commit()
 
+
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")

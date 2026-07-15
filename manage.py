@@ -14,6 +14,8 @@ from app.models import (
     registrar_evento,
 )
 from app.reports import save_daily_report
+from edge_agent.camera_connector import detect_source_type, safe_source_ref
+from edge_agent.camera_check import check_camera
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,8 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
     camera = subparsers.add_parser("add-camera")
     camera.add_argument("--unidade-id", required=True)
     camera.add_argument("--nome", required=True)
+    camera.add_argument("--cliente-id")
     camera.add_argument("--dispositivo-id")
+    camera.add_argument("--edge-id")
     camera.add_argument("--config-ref")
+    camera.add_argument("--source")
 
     regra = subparsers.add_parser("add-regra")
     regra.add_argument("--camera-id", required=True)
@@ -60,6 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     listing = subparsers.add_parser("list")
     listing.add_argument("table", choices=["clientes", "unidades", "dispositivos", "cameras", "regras", "eventos", "alertas"])
+
+    camera_check = subparsers.add_parser("check-camera")
+    camera_check.add_argument("--source", required=True)
+    camera_check.add_argument("--timeout", type=float, default=5.0)
     return parser
 
 
@@ -76,7 +85,19 @@ def main() -> int:
         elif args.command == "add-dispositivo":
             print(criar_dispositivo(connection, args.unidade_id, args.nome))
         elif args.command == "add-camera":
-            print(criar_camera(connection, args.unidade_id, args.nome, args.dispositivo_id, args.config_ref))
+            source_type = detect_source_type(args.source).value if args.source else None
+            secure_ref = safe_source_ref(args.source) if args.source else None
+            print(criar_camera(
+                connection,
+                args.unidade_id,
+                args.nome,
+                args.dispositivo_id,
+                args.config_ref,
+                cliente_id=args.cliente_id,
+                edge_id=args.edge_id,
+                source_type=source_type,
+                secure_ref=secure_ref,
+            ))
         elif args.command == "add-regra":
             print(criar_regra(connection, args.camera_id, args.tipo_evento, args.tempo_minimo))
         elif args.command == "add-evento":
@@ -100,6 +121,17 @@ def main() -> int:
         elif args.command == "list":
             for row in listar(connection, args.table):
                 print(row)
+        elif args.command == "check-camera":
+            result = check_camera(args.source, args.timeout)
+            print(f"conexao_realizada: {'sim' if result.conexao_realizada else 'nao'}")
+            print(f"video_recebido: {'sim' if result.video_recebido else 'nao'}")
+            print(f"resolucao: {result.resolucao or 'indisponivel'}")
+            print(f"fps: {result.fps if result.fps is not None else 'indisponivel'}")
+            print(f"tipo_conexao: {result.tipo_conexao}")
+            print(f"compativel: {'sim' if result.compativel else 'nao'}")
+            print(f"referencia_segura: {result.referencia_segura}")
+            if result.motivo_erro:
+                print(f"motivo_erro: {result.motivo_erro}")
     return 0
 
 
