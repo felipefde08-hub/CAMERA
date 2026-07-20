@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Campex MVP - Câmeras</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <div class="header">
+          <div>
+            <h1>Campex</h1>
+            <p>Cadastro e teste de câmera RTSP</p>
+          </div>
+          <span id="apiStatus" class="badge">Verificando API</span>
+        </div>
+
+        <form id="loginForm" class="form compact-form">
+          <div class="grid">
+            <label>
+              E-mail
+              <input name="email" type="email" autocomplete="username" />
+            </label>
+            <label>
+              Senha
+              <input name="senha" type="password" autocomplete="current-password" />
+            </label>
+            <label>
+              Sessão
+              <button type="submit">Entrar</button>
+            </label>
+          </div>
+          <div id="loginStatus" class="muted">Sem login ou em modo configuração inicial.</div>
+        </form>
+
+        <form id="cameraForm" class="form">
+          <label>
+            Nome da câmera
+            <input name="nome" required placeholder="Ex.: Entrada Linha 1" />
+          </label>
+
+          <div class="grid">
+            <label>
+              Cliente ID
+              <input name="cliente_id" placeholder="Opcional nesta etapa" />
+            </label>
+            <label>
+              Unidade ID
+              <input name="unidade_id" required placeholder="ID da unidade" />
+            </label>
+            <label>
+              Edge ID
+              <input name="edge_id" placeholder="Opcional" />
+            </label>
+          </div>
+
+          <label>
+            URL RTSP completa
+            <input name="rtsp_url" placeholder="rtsp://usuario:senha@host:554/caminho" />
+          </label>
+
+          <div class="separator">ou informe os campos separadamente</div>
+
+          <div class="grid">
+            <label>
+              IP ou host
+              <input name="host" placeholder="192.168.1.20" />
+            </label>
+            <label>
+              Porta RTSP
+              <input name="porta_rtsp" type="number" min="1" max="65535" value="554" />
+            </label>
+            <label>
+              Caminho RTSP
+              <input name="caminho_rtsp" placeholder="/cam/realmonitor?channel=1&subtype=0" />
+            </label>
+          </div>
+
+          <div class="grid">
+            <label>
+              Usuário
+              <input name="usuario" autocomplete="username" />
+            </label>
+            <label>
+              Senha
+              <input name="senha" type="password" autocomplete="current-password" />
+            </label>
+          </div>
+
+          <div class="actions">
+            <button type="button" id="testButton">Testar conexão</button>
+            <button type="submit">Cadastrar câmera</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Resultado</h2>
+        <div id="result" class="result muted">Nenhum teste executado ainda.</div>
+      </section>
+
+      <section class="panel">
+        <h2>Saúde da instalação</h2>
+        <div id="systemHealth" class="result muted">Carregando saúde da instalação...</div>
+        <h2>Checklist do piloto</h2>
+        <div id="pilotChecklist" class="result muted">Carregando checklist...</div>
+      </section>
+
+      <section class="panel">
+        <h2>Câmeras cadastradas</h2>
+        <div id="cameraList" class="camera-list"></div>
+      </section>
+
+      <section class="panel viewer">
+        <div class="viewer-header">
+          <div>
+            <h2 id="viewerTitle">Nenhuma câmera aberta</h2>
+            <p id="viewerClock" class="muted">--</p>
+          </div>
+          <span id="viewerStatus" class="badge offline">Offline</span>
+        </div>
+        <div id="viewerStage" class="viewer-stage">
+          <div id="viewerMessage">Selecione “Abrir câmera” em uma câmera cadastrada.</div>
+          <img id="liveImage" alt="Transmissão ao vivo" />
+          <canvas id="areaCanvas"></canvas>
+        </div>
+        <div class="viewer-meta">
+          <span>Resolução: <strong id="viewerResolution">indisponível</strong></span>
+          <span>FPS: <strong id="viewerFps">indisponível</strong></span>
+          <span>Último frame: <strong id="viewerLastFrame">nunca</strong></span>
+          <span>IA: <strong id="viewerAiStatus">inativa</strong></span>
+          <span>Pessoas: <strong id="viewerPeopleCount">0</strong></span>
+          <span>Área: <strong id="viewerAreaName">nenhuma</strong></span>
+          <span>Estado: <strong id="viewerAreaState">livre</strong></span>
+          <span>Dentro: <strong id="viewerAreaPeople">0</strong></span>
+          <span>IDs: <strong id="viewerAreaIds">-</strong></span>
+          <span>Máquina: <strong id="viewerMachineState">indisponível</strong></span>
+          <span>Movimento: <strong id="viewerMachineMotion">-</strong></span>
+        </div>
+        <div class="actions viewer-actions">
+          <button type="button" id="startAnalysisButton">Ligar análise</button>
+          <button type="button" id="stopAnalysisButton">Desligar análise</button>
+          <button type="button" id="createAreaButton">Criar área</button>
+          <button type="button" id="undoAreaPointButton">Desfazer ponto</button>
+          <button type="button" id="saveAreaButton">Salvar área</button>
+          <button type="button" id="cancelAreaButton">Cancelar</button>
+          <button type="button" id="createMachineButton">Adicionar máquina</button>
+          <button type="button" id="nextMachineZoneButton">Próxima zona</button>
+          <button type="button" id="saveMachineButton">Salvar máquina</button>
+        </div>
+        <div id="areaList" class="area-list"></div>
+        <div id="machineList" class="area-list"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Operations</h2>
+        <div id="operationsList" class="event-list"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Ocorrências recentes</h2>
+        <div id="activeIncident" class="incident-active muted">Nenhuma ocorrência ativa.</div>
+        <div id="eventList" class="event-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="alert-header">
+          <h2>Alertas em tempo real</h2>
+          <span id="unackedCount" class="badge offline">0 não reconhecidos</span>
+        </div>
+        <label class="sound-toggle">
+          <input id="soundToggle" type="checkbox" />
+          Som ligado
+        </label>
+        <div id="liveAlertList" class="alert-list">
+          <div class="muted">Nenhum alerta recebido agora.</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>Responsáveis por alertas</h2>
+        <form id="recipientForm" class="form">
+          <div class="grid">
+            <label>
+              Nome
+              <input name="nome" required placeholder="Ex.: Supervisor" />
+            </label>
+            <label>
+              E-mail
+              <input name="email" type="email" required placeholder="supervisor@empresa.com" />
+            </label>
+            <label>
+              Severidade mínima
+              <select name="severidade_minima">
+                <option value="low">Baixa</option>
+                <option value="medium">Média</option>
+                <option value="high" selected>Alta</option>
+                <option value="critical">Crítica</option>
+              </select>
+            </label>
+          </div>
+          <div class="grid">
+            <label>
+              Camera ID opcional
+              <input name="camera_id" placeholder="Vazio = todas" />
+            </label>
+            <label>
+              Área ID opcional
+              <input name="area_id" placeholder="Vazio = todas" />
+            </label>
+            <label>
+              Ativo
+              <select name="ativo">
+                <option value="true" selected>Sim</option>
+                <option value="false">Não</option>
+              </select>
+            </label>
+          </div>
+          <div class="actions">
+            <button type="submit">Cadastrar responsável</button>
+          </div>
+        </form>
+        <div id="recipientList" class="recipient-list"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Entregas de e-mail</h2>
+        <div id="deliveryList" class="delivery-list"></div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

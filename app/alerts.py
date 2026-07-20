@@ -1,0 +1,302 @@
+from __future__ import annotations
+
+import json
+import os
+import queue
+import smtplib
+import ssl
+import threading
+import time
+from email.message import EmailMessage
+from pathlib import Path
+from typing import Any
+
+from app.config import ROOT
+from app.database import connect, init_db
+from app.models import (
+    alert_delivery_public_dict,
+    criar_alert_delivery,
+    listar_alert_deliveries,
+    listar_recipients_para_evento,
+    obter_alert_delivery,
+    obter_alert_recipient,
+    obter_evento,
+    atualizar_alert_delivery_attempt,
+)
+from shared.schemas import now_iso
+
+
+SEVERITY_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+_subscribers: list[queue.Queue[dict[str, Any]]] = []
+_subscribers_lock = threading.Lock()
+_workers_lock = threading.Lock()
+_active_workers: set[str] = set()
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def safe_error(exc: Exception) -> str:
+    text = str(exc) or exc.__class__.__name__
+    for marker in ("rtsp://", "rtsps://"):
+        if marker in text.lower():
+            return "Falha segura no envio. Detalhe sensivel ocultado."
+    return text[:300]
+
+
+def subscribe() -> queue.Queue[dict[str, Any]]:
+    subscriber: queue.Queue[dict[str, Any]] = queue.Queue()
+    with _subscribers_lock:
+        _subscribers.append(subscriber)
+    return subscriber
+
+
+def unsubscribe(subscriber: queue.Queue[dict[str, Any]]) -> None:
+    with _subscribers_lock:
+        if subscriber in _subscribers:
+            _subscribers.remove(subscriber)
+
+
+def publish_alert(payload: dict[str, Any]) -> None:
+    with _subscribers_lock:
+        subscribers = list(_subscribers)
+    for subscriber in subscribers:
+        try:
+            subscriber.put_nowait(payload)
+        except queue.Full:
+            pass
+
+
+def stream_events():
+    subscriber = subscribe()
+    try:
+        yield "event: connected\ndata: {\"status\":\"ok\"}\n\n"
+        while True:
+            try:
+                payload = subscriber.get(timeout=15)
+                yield f"event: alert\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            except queue.Empty:
+                yield "event: heartbeat\ndata: {}\n\n"
+    finally:
+        unsubscribe(subscriber)
+
+
+def event_alert_payload(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "incident_opened",
+        "event_id": event["id"],
+        "titulo": "Pessoa em área restrita",
+        "camera_id": event.get("camera_id"),
+        "area_id": event.get("area_id"),
+        "unidade_id": event.get("unidade_id"),
+        "horario": event.get("inicio"),
+        "quantidade_pessoas": event.get("quantidade_inicial") or event.get("quantidade_atual") or 0,
+        "evidence_url": f"/eventos/{event['id']}/evidence" if event.get("midia_path") else None,
+        "status": event.get("status"),
+    }
+
+
+def severity_allowed(event_severity: str | None, recipient_min: str | None) -> bool:
+    event_rank = SEVERITY_RANK.get((event_severity or "high").lower(), 3)
+    min_rank = SEVERITY_RANK.get((recipient_min or "low").lower(), 1)
+    return event_rank >= min_rank
+
+
+def enqueue_event_alert(event_id: str) -> None:
+    with connect() as connection:
+        init_db(connection)
+        event = obter_evento(connection, event_id)
+        if event is None:
+            return
+        recipients = [
+            recipient
+            for recipient in listar_recipients_para_evento(connection, event)
+            if severity_allowed(event.get("severidade"), recipient.get("severidade_minima"))
+        ]
+        delivery_ids = [
+            criar_alert_delivery(connection, recipient["id"], evento_id=event_id, canal="email")
+            for recipient in recipients
+        ]
+    publish_alert(event_alert_payload(event))
+    for delivery_id in delivery_ids:
+        schedule_delivery(delivery_id)
+
+
+def schedule_delivery(delivery_id: str) -> None:
+    with _workers_lock:
+        if delivery_id in _active_workers:
+            return
+        _active_workers.add(delivery_id)
+    thread = threading.Thread(target=_delivery_worker, args=(delivery_id,), name=f"alert-{delivery_id}", daemon=True)
+    thread.start()
+
+
+def _delivery_worker(delivery_id: str) -> None:
+    try:
+        max_attempts = env_int("CAMPEX_EMAIL_MAX_ATTEMPTS", 3)
+        while True:
+            with connect() as connection:
+                init_db(connection)
+                delivery = obter_alert_delivery(connection, delivery_id)
+                if delivery is None or delivery["status"] == "sent":
+                    return
+                if int(delivery["attempts"] or 0) >= max_attempts:
+                    return
+                recipient = obter_alert_recipient(connection, delivery["recipient_id"])
+                event = obter_evento(connection, delivery["evento_id"]) if delivery.get("evento_id") else None
+            if recipient is None:
+                _mark_delivery(delivery, "failed", "Destinatario nao encontrado.")
+                return
+            try:
+                send_email_alert(recipient, event, bool(delivery.get("is_test")))
+                _mark_delivery(delivery, "sent", None)
+                return
+            except Exception as exc:
+                attempts = int(delivery["attempts"] or 0) + 1
+                if attempts >= max_attempts:
+                    _mark_delivery(delivery, "failed", safe_error(exc))
+                    return
+                delay = min(60, 2 ** attempts)
+                _mark_delivery(delivery, "pending", safe_error(exc), next_delay_seconds=delay)
+                time.sleep(delay)
+    finally:
+        with _workers_lock:
+            _active_workers.discard(delivery_id)
+
+
+def _mark_delivery(
+    delivery: dict[str, Any],
+    status: str,
+    error: str | None,
+    next_delay_seconds: int | None = None,
+) -> None:
+    attempts = int(delivery["attempts"] or 0) + 1
+    now = now_iso()
+    sent_at = now if status == "sent" else None
+    next_attempt_at = None
+    if next_delay_seconds is not None:
+        next_attempt_at = str(time.time() + next_delay_seconds)
+    with connect() as connection:
+        init_db(connection)
+        updated = atualizar_alert_delivery_attempt(
+            connection,
+            delivery["id"],
+            status=status,
+            attempts=attempts,
+            last_attempt_at=now,
+            next_attempt_at=next_attempt_at,
+            sent_at=sent_at,
+            erro=error,
+        )
+    if updated:
+        publish_alert({"type": "delivery_updated", "delivery": alert_delivery_public_dict(updated)})
+
+
+def send_email_alert(recipient: dict[str, Any], event: dict[str, Any] | None, is_test: bool = False) -> None:
+    mode = os.getenv("CAMPEX_EMAIL_MODE", "console").lower()
+    if mode == "console":
+        print(f"Campex email console: alerta para {recipient['email']} ({'teste' if is_test else 'ocorrencia'})")
+        return
+    if mode != "smtp":
+        raise RuntimeError("CAMPEX_EMAIL_MODE invalido.")
+    message = build_email_message(recipient, event, is_test)
+    host = os.getenv("CAMPEX_SMTP_HOST")
+    port = env_int("CAMPEX_SMTP_PORT", 587)
+    username = os.getenv("CAMPEX_SMTP_USERNAME")
+    password = os.getenv("CAMPEX_SMTP_PASSWORD")
+    use_tls = os.getenv("CAMPEX_SMTP_USE_TLS", "true").lower() == "true"
+    if not host or not username or not password:
+        raise RuntimeError("SMTP nao configurado.")
+    if use_tls:
+        with smtplib.SMTP(host, port, timeout=15) as smtp:
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.login(username, password)
+            smtp.send_message(message)
+    else:
+        with smtplib.SMTP(host, port, timeout=15) as smtp:
+            smtp.login(username, password)
+            smtp.send_message(message)
+
+
+def build_email_message(recipient: dict[str, Any], event: dict[str, Any] | None, is_test: bool = False) -> EmailMessage:
+    sender = os.getenv("CAMPEX_EMAIL_FROM", "campex@localhost")
+    app_url = os.getenv("CAMPEX_APP_URL", "http://127.0.0.1:8000")
+    event_id = event["id"] if event else "teste"
+    subject = "[Campex] Alerta de teste" if is_test else "[Campex] Pessoa em area restrita"
+    lines = [
+        "Pessoa em area restrita" if not is_test else "Alerta de teste da Campex",
+        f"Destinatario: {recipient['nome']}",
+        f"Evento: {event_id}",
+    ]
+    if event:
+        lines.extend(
+            [
+                f"Camera: {event.get('camera_id')}",
+                f"Area: {event.get('area_id')}",
+                f"Unidade: {event.get('unidade_id')}",
+                f"Horario: {event.get('inicio')}",
+                f"Duracao: {event.get('duracao') if event.get('duracao') is not None else 'em andamento'}",
+                f"Pessoas: {event.get('quantidade_maxima') or event.get('quantidade_inicial') or 0}",
+                f"Link: {app_url}/#evento-{event_id}",
+            ]
+        )
+    else:
+        lines.append("Este alerta nao foi registrado como ocorrencia operacional real.")
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = recipient["email"]
+    message["Subject"] = subject
+    message.set_content("\n".join(lines))
+    if event and event.get("midia_path"):
+        path = (ROOT / str(event["midia_path"])).resolve()
+        evidence_root = (ROOT / "data" / "evidence").resolve()
+        if evidence_root in path.parents and path.exists():
+            message.add_attachment(path.read_bytes(), maintype="image", subtype="jpeg", filename="evidencia.jpg")
+    return message
+
+
+def retry_delivery(delivery_id: str) -> dict[str, Any] | None:
+    with connect() as connection:
+        init_db(connection)
+        delivery = obter_alert_delivery(connection, delivery_id)
+        if delivery is None:
+            return None
+        connection.execute(
+            "UPDATE alert_deliveries SET status = 'pending', attempts = 0, erro = NULL, next_attempt_at = NULL WHERE id = ?",
+            (delivery_id,),
+        )
+        connection.commit()
+        delivery = obter_alert_delivery(connection, delivery_id)
+    schedule_delivery(delivery_id)
+    return delivery
+
+
+def send_test_alert(recipient_id: str) -> str | None:
+    with connect() as connection:
+        init_db(connection)
+        recipient = obter_alert_recipient(connection, recipient_id)
+        if recipient is None:
+            return None
+        delivery_id = criar_alert_delivery(connection, recipient_id, evento_id=None, canal="email", is_test=True)
+    publish_alert(
+        {
+            "type": "test_alert",
+            "titulo": "Alerta de teste",
+            "recipient_id": recipient_id,
+            "horario": now_iso(),
+        }
+    )
+    schedule_delivery(delivery_id)
+    return delivery_id
+
+
+def resume_pending_deliveries() -> None:
+    with connect() as connection:
+        init_db(connection)
+        pending = listar_alert_deliveries(connection, status="pending")
+    for delivery in pending:
+        schedule_delivery(delivery["id"])

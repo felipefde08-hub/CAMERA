@@ -195,3 +195,556 @@ python3 manage.py run-edge --edge-id EDGE_ID
 O arquivo `deployment/visual-ops-edge.service` é um modelo futuro para Linux com
 systemd. Ele não instala nada agora; apenas mostra como a Edge Box poderá iniciar
 automaticamente junto com o equipamento.
+
+## Campex MVP - Etapa 1: cadastro e teste RTSP
+
+O backend FastAPI agora também serve uma interface local simples em:
+
+```bash
+python3 -m app.main
+```
+
+Abra no navegador:
+
+```text
+http://127.0.0.1:8000
+```
+
+Nesta etapa é possível:
+
+- cadastrar nome da câmera;
+- informar IP/host, porta, usuário, senha e caminho RTSP;
+- ou informar uma URL RTSP completa;
+- testar conexão;
+- ver Online/Offline, resolução e FPS quando possível;
+- salvar a câmera no SQLite local.
+
+As credenciais não aparecem na listagem pública nem nas respostas da API. A API
+usa uma referência mascarada como `rtsp://***:***@host:554/caminho`.
+
+Endpoints principais desta etapa:
+
+- `GET /health`
+- `POST /cameras/test-connection`
+- `POST /cameras/rtsp`
+- `GET /cameras/estado`
+
+O fluxo principal do produto deve ser RTSP/câmera ao vivo. Upload de vídeo não é
+o fluxo principal do MVP.
+
+## Campex MVP - Etapa 2: visualização ao vivo
+
+Depois de cadastrar uma câmera RTSP, use a própria interface local para clicar
+em `Abrir câmera`. O backend abre uma única conexão por câmera e entrega a imagem
+ao navegador como MJPEG.
+
+Endpoints da visualização:
+
+- `POST /cameras/{camera_id}/start`
+- `POST /cameras/{camera_id}/stop`
+- `GET /cameras/{camera_id}/stream`
+- `GET /cameras/{camera_id}/status`
+
+Comandos:
+
+```bash
+python3 -m app.main
+```
+
+Abra:
+
+```text
+http://127.0.0.1:8000
+```
+
+Para testar sem câmera real, cadastre uma câmera apontando para um arquivo local
+ou use os testes automatizados. Para RTSP real, confirme primeiro o caminho do
+DVR/NVR e use `Testar conexão`.
+
+Erros comuns:
+
+- `Offline`: host, porta, usuário, senha ou caminho RTSP incorreto.
+- `Tentando reconectar`: a câmera abriu antes, mas parou de entregar frames.
+- Sem imagem no navegador: verifique se o backend está rodando e se o status da
+  câmera está `online`.
+
+O navegador nunca recebe a URL RTSP completa nem as credenciais.
+
+## Campex MVP - Etapa 3: detecção de pessoas
+
+A visualização ao vivo pode desenhar caixas de pessoas usando YOLO. O modelo
+padrão é leve:
+
+```text
+yolo11n.pt
+```
+
+Instale as dependências:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+Inicie:
+
+```bash
+python3 -m app.main
+```
+
+Abra:
+
+```text
+http://127.0.0.1:8000
+```
+
+Depois:
+
+1. abra a câmera;
+2. clique em `Ligar análise`;
+3. veja as caixas, ID da pessoa e confiança diretamente na transmissão;
+4. clique em `Desligar análise` para parar a análise daquela câmera.
+
+Configurações por variável de ambiente:
+
+```bash
+export CAMPEX_YOLO_MODEL=yolo11n.pt
+export CAMPEX_YOLO_CONFIDENCE=0.35
+export CAMPEX_ANALYSIS_FPS=2
+export CAMPEX_TRACKING_ENABLED=true
+```
+
+Se ficar lento no Mac, reduza:
+
+```bash
+export CAMPEX_ANALYSIS_FPS=1
+export CAMPEX_YOLO_CONFIDENCE=0.45
+```
+
+Problemas comuns no Mac:
+
+- primeira execução pode demorar enquanto o YOLO inicializa;
+- sem `ultralytics`, a IA fica `indisponível`, mas a câmera continua ao vivo;
+- CPU alta: reduza `CAMPEX_ANALYSIS_FPS`;
+- pouca detecção: reduza `CAMPEX_YOLO_CONFIDENCE`.
+
+Esta etapa não salva frames, não cria eventos, não envia alertas e não usa
+WebSocket.
+
+## Campex MVP - Etapa 4: área restrita
+
+Com a câmera aberta, é possível desenhar uma área restrita sobre a imagem ao
+vivo.
+
+Como usar:
+
+1. abra a câmera;
+2. ligue a análise;
+3. clique em `Criar área`;
+4. clique nos pontos da imagem para formar o polígono;
+5. use `Desfazer ponto` se errar;
+6. clique em `Salvar área`;
+7. informe um nome para a área.
+
+O sistema salva os pontos em coordenadas normalizadas de `0` a `1`, não em pixels
+da tela. Assim a área continua alinhada quando a janela ou a resolução mudam.
+
+O painel mostra:
+
+- nome da área ativa;
+- estado `livre` ou `ocupada`;
+- quantidade de pessoas dentro;
+- IDs rastreados dentro da área.
+
+Também é possível ativar, desativar e excluir a área pela interface.
+
+Nesta etapa, o sistema apenas monitora presença dentro/fora da área. Ele ainda
+não cria eventos, imagens, clipes, alertas, e-mail, WhatsApp ou WebSocket.
+
+Problemas comuns:
+
+- se a área parecer deslocada, recarregue a página e confira se o vídeo já está
+  aberto antes de desenhar;
+- se a ocupação não mudar, confira se a análise está ligada;
+- pessoas muito na borda podem demorar alguns frames para mudar de estado por
+  causa do debounce contra oscilações.
+
+## Campex MVP - Etapa 5: ocorrências automáticas
+
+Com a câmera aberta, a análise ligada e uma área restrita ativa, o sistema agora
+registra uma ocorrência automaticamente quando uma pessoa permanece dentro da
+área pelo tempo mínimo configurado.
+
+Como testar:
+
+1. inicie o backend;
+2. abra `http://127.0.0.1:8000`;
+3. abra uma câmera cadastrada;
+4. clique em `Ligar análise`;
+5. crie ou ative uma área restrita;
+6. entre com uma pessoa na área;
+7. aguarde a ocorrência aparecer em `Ocorrências recentes`;
+8. saia da área e aguarde o fechamento automático;
+9. clique em `Reconhecer` para marcar a ocorrência como verificada.
+
+Comando para iniciar:
+
+```bash
+python3 -m app.main
+```
+
+Endpoints usados nesta etapa:
+
+- `GET /eventos`
+- `GET /eventos/{evento_id}`
+- `PATCH /eventos/{evento_id}`
+- `GET /eventos/{evento_id}/evidence`
+
+O sistema salva uma imagem de evidência no início da ocorrência em:
+
+```text
+data/evidence/{camera_id}/{ano}/{mes}/{dia}/
+```
+
+Configurações por variável de ambiente:
+
+```bash
+export CAMPEX_EVENT_ENTRY_DELAY_SECONDS=1.0
+export CAMPEX_EVENT_EXIT_GRACE_SECONDS=2.0
+export CAMPEX_EVENT_COOLDOWN_SECONDS=3.0
+export CAMPEX_EVENT_SEVERITY=high
+```
+
+Esses tempos evitam duplicidade:
+
+- `ENTRY_DELAY`: a pessoa precisa ficar dentro da área antes de abrir ocorrência;
+- `EXIT_GRACE`: a pessoa precisa sair por alguns segundos antes de fechar;
+- `COOLDOWN`: evita abrir outra ocorrência imediatamente depois do fechamento.
+
+Esta etapa não envia alertas, não usa e-mail, WhatsApp, SMS, sirene, WebSocket
+ou integrações externas. Também não cria relatórios de violações ainda.
+
+## Campex MVP - Etapa 6: alertas no painel e e-mail
+
+Quando uma ocorrência de área restrita é aberta, o painel recebe um alerta em
+tempo real por Server-Sent Events. O sistema também cria entregas de e-mail para
+os responsáveis cadastrados.
+
+Como testar sem e-mail real:
+
+```bash
+export CAMPEX_EMAIL_MODE=console
+python3 -m app.main
+```
+
+Abra:
+
+```text
+http://127.0.0.1:8000
+```
+
+Na interface:
+
+1. cadastre um responsável em `Responsáveis por alertas`;
+2. clique em `Enviar alerta de teste`;
+3. confira o alerta em `Alertas em tempo real`;
+4. confira a entrega em `Entregas de e-mail`;
+5. abra uma câmera, ligue a análise e use uma área restrita para gerar uma ocorrência real;
+6. confira o alerta visual, a miniatura e os botões `Ver ocorrência` e `Reconhecer`.
+
+O botão `Som ligado` permite ativar ou desativar o aviso sonoro no navegador. O
+som toca uma vez por ocorrência, não em repetição.
+
+Endpoints desta etapa:
+
+- `GET /events/stream`
+- `GET /alert-recipients`
+- `POST /alert-recipients`
+- `PATCH /alert-recipients/{recipient_id}`
+- `DELETE /alert-recipients/{recipient_id}`
+- `POST /alert-recipients/{recipient_id}/test`
+- `GET /alert-deliveries`
+- `GET /alert-deliveries/{delivery_id}`
+- `POST /alert-deliveries/{delivery_id}/retry`
+
+Configuração SMTP real:
+
+```bash
+export CAMPEX_EMAIL_MODE=smtp
+export CAMPEX_SMTP_HOST=smtp.seudominio.com
+export CAMPEX_SMTP_PORT=587
+export CAMPEX_SMTP_USERNAME=usuario_smtp
+export CAMPEX_SMTP_PASSWORD=senha_smtp
+export CAMPEX_SMTP_USE_TLS=true
+export CAMPEX_EMAIL_FROM=campex@seudominio.com
+export CAMPEX_APP_URL=http://127.0.0.1:8000
+export CAMPEX_EMAIL_MAX_ATTEMPTS=3
+```
+
+Para habilitar e-mail real, você precisa fornecer:
+
+- servidor SMTP;
+- porta SMTP;
+- usuário SMTP;
+- senha ou token SMTP;
+- e-mail remetente autorizado;
+- confirmação se usa TLS.
+
+As credenciais ficam apenas no backend/ambiente local. O e-mail não inclui IP,
+URL RTSP, usuário ou senha da câmera.
+
+Se uma entrega falhar, ela aparece como `Falhou` no painel. Use `Tentar
+novamente` para reenviar. Ao reiniciar o backend, entregas pendentes são
+retomadas quando possível.
+
+Limitações atuais:
+
+- sem WhatsApp, SMS, aplicativo móvel, sirene, cobrança ou cloud;
+- o painel usa SSE com reconexão automática e mantém consulta periódica como
+  fallback;
+- o modo `console` apenas registra que o e-mail seria enviado, sem envio real.
+
+## Campex MVP - Etapa 7: piloto comercial assistido
+
+Esta etapa prepara a instalação local para um primeiro cliente piloto, operado
+com acompanhamento da equipe Campex.
+
+### Guia técnico
+
+Instalar:
+
+```bash
+./scripts/install.sh
+./scripts/configure_env.sh
+```
+
+Edite `.env` e troque pelo menos:
+
+```text
+CAMPEX_SECRET_KEY
+CAMPEX_CREDENTIAL_KEY
+CAMPEX_EMAIL_MODE
+CAMPEX_SMTP_HOST
+CAMPEX_SMTP_PORT
+CAMPEX_SMTP_USERNAME
+CAMPEX_SMTP_PASSWORD
+CAMPEX_EMAIL_FROM
+```
+
+Criar o primeiro usuário:
+
+```bash
+source .venv/bin/activate
+python3 manage.py create-user --email admin@campex.local --senha "SENHA_FORTE" --role admin_campex
+```
+
+Iniciar:
+
+```bash
+./scripts/start.sh
+```
+
+Abrir:
+
+```text
+http://127.0.0.1:8000
+```
+
+Parar:
+
+```bash
+./scripts/stop.sh
+```
+
+Status:
+
+```bash
+./scripts/status.sh
+python3 manage.py system-health
+python3 manage.py pilot-checklist
+```
+
+Backup:
+
+```bash
+python3 manage.py backup --output-dir backups
+```
+
+Restauração:
+
+```bash
+python3 manage.py restore --archive backups/NOME_DO_BACKUP.tar.gz
+```
+
+Retenção de evidências antigas:
+
+```bash
+python3 manage.py prune-evidence --days 90 --confirm
+```
+
+Dados locais:
+
+- banco SQLite: `data/visual_ops_product.sqlite3`;
+- evidências: `data/evidence/`;
+- backups: `backups/`;
+- configuração local: `.env`;
+- logs locais: `logs/`.
+
+Segurança adicionada:
+
+- login por e-mail e senha;
+- senha com hash PBKDF2;
+- sessão HTTP-only;
+- funções `admin_campex`, `admin_cliente`, `operador` e `visualizador`;
+- filtro básico por cliente nas consultas principais;
+- senha RTSP criptografada no banco para novos cadastros;
+- rota administrativa para trocar senha de câmera;
+- ocultação de dados técnicos para operador/visualizador.
+
+### Guia simples para implantação
+
+O que pedir ao cliente:
+
+- nome da empresa e unidade;
+- local onde ficará o computador da Campex;
+- ponto de rede e energia estáveis;
+- IP/host do DVR, NVR ou câmera;
+- porta RTSP;
+- usuário e senha da câmera;
+- canal/caminho RTSP;
+- e-mails dos responsáveis pelos alertas;
+- horário em que o teste pode ser feito com segurança;
+- autorização para gravar evidências locais.
+
+Passo a passo do piloto:
+
+1. instalar a Campex no computador local;
+2. criar usuário administrador;
+3. cadastrar cliente;
+4. cadastrar unidade;
+5. cadastrar câmera;
+6. testar conexão;
+7. abrir transmissão;
+8. ligar IA;
+9. desenhar área restrita;
+10. cadastrar responsáveis;
+11. enviar alerta de teste;
+12. gerar uma ocorrência controlada;
+13. conferir evidência, alerta no painel e e-mail;
+14. rodar `python3 manage.py pilot-checklist`;
+15. combinar data de revisão do piloto.
+
+Checklist de aceite:
+
+- login funcionando;
+- usuário do cliente não vê dados de outro cliente;
+- câmera conectada;
+- transmissão ao vivo abrindo;
+- IA ativa;
+- área criada;
+- ocorrência automática criada;
+- evidência salva;
+- alerta aparece no painel;
+- e-mail de teste entregue ou registrado em modo console;
+- backup criado;
+- saúde da instalação sem erro crítico.
+
+Limitações e riscos nesta versão:
+
+- ainda não há WhatsApp, SMS, pagamento, app móvel ou cloud;
+- isolamento é local e simples, adequado para piloto assistido;
+- não há atualização remota automática;
+- o computador local precisa permanecer ligado;
+- SMTP real depende das credenciais fornecidas pelo cliente;
+- a criptografia depende da preservação segura de `CAMPEX_SECRET_KEY`;
+- a operação em larga escala ainda não foi implementada.
+
+## CAMPEX OPERATIONS V1
+
+Esta evolução adiciona monitoramento operacional de máquina parada usando a
+câmera ao vivo já cadastrada. A regra antiga de pessoa em área restrita continua
+existindo.
+
+O que a Campex passa a identificar:
+
+- `running`: máquina funcionando;
+- `suspected_stop`: possível parada, aguardando tempo mínimo;
+- `stopped`: parada confirmada;
+- `recovered`: movimento voltou de forma estável;
+- `unavailable`: análise indisponível.
+
+Como cadastrar uma máquina:
+
+1. abra a câmera;
+2. clique em `Adicionar máquina`;
+3. clique nos pontos da região visual da máquina;
+4. clique em `Próxima zona`;
+5. clique nos pontos da zona onde o operador costuma ficar;
+6. clique em `Salvar máquina`;
+7. informe o nome da máquina.
+
+Como calibrar:
+
+1. deixe a máquina funcionando normalmente;
+2. clique em `Calibrar`;
+3. informe o movimento médio funcionando;
+4. deixe a máquina parada;
+5. informe o movimento médio parada;
+6. a Campex sugere um limite entre os dois valores.
+
+Configurações por ambiente:
+
+```bash
+export CAMPEX_MACHINE_ANALYSIS_FPS=5
+export CAMPEX_MACHINE_STOP_SECONDS=10
+export CAMPEX_MACHINE_RECOVERY_SECONDS=3
+export CAMPEX_MACHINE_MOTION_SMOOTHING_SECONDS=2
+export CAMPEX_REPLAY_PRE_SECONDS=60
+export CAMPEX_REPLAY_POST_SECONDS=30
+export CAMPEX_REPLAY_FPS=5
+export CAMPEX_REPLAY_MAX_WIDTH=1280
+```
+
+Quando uma parada é confirmada:
+
+- cria uma ocorrência `machine_stoppage`;
+- registra início, câmera, unidade e máquina;
+- registra movimento, confiança e presença do operador;
+- mantém uma única ocorrência aberta enquanto a máquina está parada;
+- fecha a ocorrência quando a recuperação permanece estável;
+- salva imagem principal;
+- gera Replay Causal em segundo plano em `data/replays/{camera_id}/{ano}/{mes}/{dia}/`.
+
+Para abrir Replay Causal:
+
+- use o botão `Abrir Replay Causal` na ocorrência quando o clipe estiver pronto;
+- ou acesse `GET /eventos/{evento_id}/replay`.
+
+Para informar causa:
+
+1. abra `Ocorrências recentes`;
+2. clique em `Informar causa`;
+3. escolha uma das categorias:
+   `manutenção`, `falta de material`, `ajuste de máquina`, `intervalo`,
+   `operador ausente`, `bloqueio de processo`, `parada planejada`,
+   `falso alerta` ou `outra`.
+
+Endpoints Operations V1:
+
+- `GET /cameras/{camera_id}/machine-monitors`
+- `POST /cameras/{camera_id}/machine-monitors`
+- `PATCH /machine-monitors/{monitor_id}`
+- `DELETE /machine-monitors/{monitor_id}`
+- `POST /machine-monitors/{monitor_id}/activate`
+- `POST /machine-monitors/{monitor_id}/deactivate`
+- `POST /machine-monitors/{monitor_id}/calibrate`
+- `GET /eventos/{evento_id}/replay`
+- `PATCH /eventos/{evento_id}/cause`
+- `GET /operations`
+
+Limitações atuais:
+
+- a calibração assistida ainda recebe os valores medidos de forma simples pela
+  interface;
+- o método usa visão computacional clássica, não modelo personalizado;
+- Replay Causal é gerado localmente e pode demorar dependendo do computador;
+- não há WhatsApp, cloud ou treinamento próprio nesta etapa.

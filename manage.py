@@ -7,6 +7,7 @@ import signal
 from pathlib import Path
 
 from app.database import connect, init_db
+from app.auth import create_user, update_user_password
 from app.models import (
     criar_camera,
     criar_cliente,
@@ -17,6 +18,7 @@ from app.models import (
     registrar_evento,
 )
 from app.reports import save_daily_report
+from app.pilot import acceptance_checklist, create_backup, health_snapshot, prune_old_evidence, restore_backup
 from edge_agent.camera_connector import detect_source_type, safe_source_ref
 from edge_agent.camera_check import check_camera
 from edge_agent.service import EdgeSupervisor, edge_status
@@ -27,6 +29,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--db", default="data/visual_ops_product.sqlite3")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init-db")
+
+    user = subparsers.add_parser("create-user")
+    user.add_argument("--email", required=True)
+    user.add_argument("--senha", required=True)
+    user.add_argument("--role", required=True, choices=["admin_campex", "admin_cliente", "operador", "visualizador"])
+    user.add_argument("--cliente-id")
+
+    reset = subparsers.add_parser("reset-password")
+    reset.add_argument("--email", required=True)
+    reset.add_argument("--nova-senha", required=True)
 
     cliente = subparsers.add_parser("add-cliente")
     cliente.add_argument("--nome", required=True)
@@ -81,6 +93,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     status = subparsers.add_parser("edge-status")
     status.add_argument("--edge-id", required=True)
+
+    backup = subparsers.add_parser("backup")
+    backup.add_argument("--output-dir", default="backups")
+
+    restore = subparsers.add_parser("restore")
+    restore.add_argument("--archive", required=True)
+
+    retention = subparsers.add_parser("prune-evidence")
+    retention.add_argument("--days", type=int, required=True)
+    retention.add_argument("--confirm", action="store_true")
+
+    subparsers.add_parser("system-health")
+    subparsers.add_parser("pilot-checklist")
     return parser
 
 
@@ -90,6 +115,10 @@ def main() -> int:
         init_db(connection)
         if args.command == "init-db":
             print(f"Banco local pronto: {args.db}")
+        elif args.command == "create-user":
+            print(create_user(connection, args.email, args.senha, args.role, args.cliente_id))
+        elif args.command == "reset-password":
+            print("senha atualizada" if update_user_password(connection, args.email, args.nova_senha) else "usuario nao encontrado")
         elif args.command == "add-cliente":
             print(criar_cliente(connection, args.nome))
         elif args.command == "add-unidade":
@@ -189,6 +218,18 @@ def main() -> int:
                     f"reconexoes: {camera.get('reconexoes') or 0} | "
                     f"erro: {camera.get('ultimo_erro') or 'nenhum'}"
                 )
+        elif args.command == "backup":
+            print(create_backup(Path(args.output_dir), Path(args.db)))
+        elif args.command == "restore":
+            restore_backup(Path(args.archive))
+            print("Backup restaurado.")
+        elif args.command == "prune-evidence":
+            removed = prune_old_evidence(args.days, args.confirm)
+            print(f"Evidencias removidas: {len(removed)}")
+        elif args.command == "system-health":
+            print(health_snapshot(Path(args.db)))
+        elif args.command == "pilot-checklist":
+            print(acceptance_checklist(Path(args.db)))
     return 0
 
 
