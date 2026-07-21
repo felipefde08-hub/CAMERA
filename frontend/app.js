@@ -2,6 +2,7 @@ const form = document.querySelector("#cameraForm");
 const loginForm = document.querySelector("#loginForm");
 const loginStatus = document.querySelector("#loginStatus");
 const testButton = document.querySelector("#testButton");
+const liveViewButton = document.querySelector("#liveViewButton");
 const result = document.querySelector("#result");
 const cameraList = document.querySelector("#cameraList");
 const apiStatus = document.querySelector("#apiStatus");
@@ -60,6 +61,7 @@ let draftMachinePoints = [];
 let draftOperatorPoints = [];
 let currentAreas = [];
 let currentMachines = [];
+let lastRtspPayload = null;
 const seenAlertEvents = new Set();
 let liveAlerts = [];
 
@@ -73,6 +75,11 @@ function cleanPayload(includeIdentity) {
   if (payload.porta_rtsp) payload.porta_rtsp = Number(payload.porta_rtsp);
   if (!includeIdentity) {
     delete payload.nome;
+    delete payload.cliente_id;
+    delete payload.unidade_id;
+    delete payload.edge_id;
+  }
+  if (includeIdentity) {
     delete payload.cliente_id;
     delete payload.unidade_id;
     delete payload.edge_id;
@@ -100,9 +107,15 @@ async function requestJson(url, options) {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
-  const payload = await response.json();
+  const contentType = response.headers.get("content-type") || "";
+  const isJson = contentType.includes("application/json");
+  const payload = isJson ? await response.json() : { detail: await response.text() };
   if (!response.ok) {
-    throw new Error(payload.detail || "Erro inesperado.");
+    const detail = payload.detail || `Erro HTTP ${response.status}`;
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+  }
+  if (!isJson) {
+    throw new Error("A API respondeu em formato inesperado.");
   }
   return payload;
 }
@@ -116,10 +129,27 @@ async function testConnection() {
       body: JSON.stringify(cleanPayload(false)),
     });
     showResult(payload);
+    if (payload.compativel && payload.video_recebido) {
+      lastRtspPayload = cleanPayload(true);
+      lastRtspPayload.nome = lastRtspPayload.nome || "Live View";
+      sessionStorage.setItem("campex_live_view_source", JSON.stringify(lastRtspPayload));
+    }
   } catch (error) {
     result.className = "result offline";
     result.textContent = `Offline\nErro: ${error.message}`;
   }
+}
+
+function openLiveView() {
+  const payload = lastRtspPayload || cleanPayload(true);
+  if (!payload.rtsp_url && !payload.host) {
+    result.className = "result offline";
+    result.textContent = "Teste a conexão RTSP antes de abrir a Live View.";
+    return;
+  }
+  payload.nome = payload.nome || "Live View";
+  sessionStorage.setItem("campex_live_view_source", JSON.stringify(payload));
+  window.open("/live-view", "_blank");
 }
 
 async function saveCamera(event) {
@@ -149,12 +179,13 @@ function renderCameras(cameras) {
   cameraList.innerHTML = cameras.map((camera) => `
     <article class="camera-card">
       <strong>${camera.nome}</strong>
-      <div>Status: ${camera.status}</div>
-      <div>Fonte: ${camera.secure_ref || "não informada"}</div>
-      <div>Último frame: ${camera.ultimo_frame || "nunca"}</div>
+      <div><span class="status-dot ${camera.status === "online" ? "online" : "offline"}"></span>${camera.status === "online" ? "Online" : "Offline"}</div>
+      <div>Host: ${camera.rtsp_host || camera.secure_ref || "não informado"}</div>
+      <div>Resolução: ${camera.resolucao || "indisponível"}</div>
+      <div>FPS: ${camera.fps ?? "indisponível"}</div>
+      <div>Última atualização: ${camera.ultimo_frame || camera.criado_em || "nunca"}</div>
       <div class="camera-actions">
         <button type="button" data-action="open" data-camera-id="${camera.id}" data-camera-name="${camera.nome}">Abrir câmera</button>
-        <button type="button" data-action="start" data-camera-id="${camera.id}" data-camera-name="${camera.nome}">Iniciar</button>
         <button type="button" data-action="stop" data-camera-id="${camera.id}">Parar</button>
       </div>
     </article>
@@ -164,6 +195,9 @@ function renderCameras(cameras) {
 async function loadCameras() {
   const cameras = await requestJson("/cameras/estado");
   renderCameras(cameras);
+  if (cameras.length === 1 && !currentCameraId) {
+    openCamera(cameras[0].id, cameras[0].nome).catch(() => {});
+  }
 }
 
 function setViewerMessage(text, status = "offline") {
@@ -225,6 +259,7 @@ async function openCamera(cameraId, cameraName) {
   currentCameraName = cameraName;
   viewerTitle.textContent = cameraName;
   setViewerMessage("Conectando...", "conectando");
+  document.querySelector(".viewer").scrollIntoView({ behavior: "smooth", block: "start" });
   await requestJson(`/cameras/${cameraId}/start`, { method: "POST" });
   liveImage.src = `/cameras/${cameraId}/stream?ts=${Date.now()}`;
   liveImage.onerror = () => {
@@ -715,6 +750,7 @@ async function loadSystemHealth() {
 }
 
 testButton.addEventListener("click", testConnection);
+liveViewButton.addEventListener("click", openLiveView);
 loginForm.addEventListener("submit", login);
 form.addEventListener("submit", saveCamera);
 cameraList.addEventListener("click", async (event) => {

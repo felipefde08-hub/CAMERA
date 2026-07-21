@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Campex Live View</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body class="campex-dashboard">
+    <aside class="cx-sidebar">
+      <a class="cx-logo" href="/dashboard" aria-label="Campex">
+        <img src="/static/campex-logo-oficial.png" alt="Campex" />
+      </a>
+      <nav class="cx-nav" aria-label="Navegação principal">
+        <a href="/dashboard"><span></span>Visão geral</a>
+        <a class="active" href="/live-view"><span></span>Live View</a>
+        <a href="/dashboard"><span></span>Operações</a>
+        <a href="/dashboard#eventsSection"><span></span>Eventos</a>
+        <a href="/settings/cameras"><span></span>Configurações</a>
+      </nav>
+    </aside>
+    <main class="cx-main app-content live-shell">
+      <section class="panel viewer live-view-page">
+        <div class="viewer-header">
+          <div>
+            <h1 id="liveViewName">Live View</h1>
+            <p class="muted">Campex Operations</p>
+          </div>
+          <span id="liveViewStatus" class="badge offline">Conectando</span>
+        </div>
+        <div id="liveViewStage" class="viewer-stage live-view-stage">
+          <div id="liveViewMessage">Abrindo transmissão...</div>
+          <img id="liveViewImage" alt="Transmissão ao vivo" />
+          <canvas id="liveViewCanvas"></canvas>
+        </div>
+        <div class="viewer-meta">
+          <span>Resolução: <strong id="liveViewResolution">indisponível</strong></span>
+          <span>FPS: <strong id="liveViewFps">indisponível</strong></span>
+          <span>FPS inferência: <strong id="liveViewInferenceFps">0</strong></span>
+          <span>Pessoas detectadas: <strong id="liveViewPeople">0</strong></span>
+          <span>Máquina: <strong id="liveViewMachine">sem configuração</strong></span>
+          <span>Estado estimado: <strong id="liveViewMachineState">SEM SINAL</strong></span>
+          <span>Operador: <strong id="liveViewOperator">Sem operador</strong></span>
+          <span>Atividade visual: <strong id="liveViewMotion">0</strong></span>
+          <span>Relação: <strong id="liveViewRelation">Aguardando configuração</strong></span>
+        </div>
+        <div class="actions viewer-actions">
+          <button type="button" id="liveAiStart">Ativar IA</button>
+          <button type="button" id="liveAiStop">Desativar IA</button>
+          <button type="button" id="configureMachine">Configurar máquina</button>
+          <button type="button" id="configureOperatorZone">Configurar zona do operador</button>
+          <button type="button" id="calibrateMachine">Calibrar máquina ativa</button>
+          <button type="button" id="clearMachine">Limpar configuração</button>
+          <a class="button-link" href="/dashboard" target="_blank" rel="noreferrer">Abrir dashboard</a>
+        </div>
+        <div id="liveViewHint" class="muted">
+          Abra a câmera, ative a IA, desenhe a região da máquina e depois calibre com a máquina ativa.
+        </div>
+      </section>
+    </main>
+    <script src="/static/live-view.js"></script>
+  </body>
+</html>

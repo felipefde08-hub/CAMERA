@@ -4,15 +4,33 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Campex MVP - Câmeras</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
-  <body>
-    <main class="shell">
+  <body class="campex-dashboard">
+    <aside class="cx-sidebar">
+      <a class="cx-logo" href="/dashboard" aria-label="Campex">
+        <img src="/static/campex-logo-oficial.png" alt="Campex" />
+      </a>
+      <nav class="cx-nav" aria-label="Navegação principal">
+        <a href="/dashboard"><span></span>Visão geral</a>
+        <a href="/live-view"><span></span>Live View</a>
+        <a href="/dashboard"><span></span>Operações</a>
+        <a href="/dashboard#eventsSection"><span></span>Eventos</a>
+        <a class="active" href="/settings/cameras"><span></span>Configurações</a>
+      </nav>
+    </aside>
+    <main class="cx-main app-content">
       <section class="panel">
         <div class="header">
           <div>
-            <h1>Campex</h1>
-            <p>Cadastro e teste de câmera RTSP</p>
+            <h1>Configurações</h1>
+            <p>Câmeras RTSP</p>
           </div>
           <span id="apiStatus" class="badge">Verificando API</span>
         </div>
@@ -38,23 +56,8 @@
         <form id="cameraForm" class="form">
           <label>
             Nome da câmera
-            <input name="nome" required placeholder="Ex.: Entrada Linha 1" />
+            <input name="nome" required placeholder="Ex.: Extrusora Principal" />
           </label>
-
-          <div class="grid">
-            <label>
-              Cliente ID
-              <input name="cliente_id" placeholder="Opcional nesta etapa" />
-            </label>
-            <label>
-              Unidade ID
-              <input name="unidade_id" required placeholder="ID da unidade" />
-            </label>
-            <label>
-              Edge ID
-              <input name="edge_id" placeholder="Opcional" />
-            </label>
-          </div>
 
           <label>
             URL RTSP completa
@@ -91,6 +94,7 @@
 
           <div class="actions">
             <button type="button" id="testButton">Testar conexão</button>
+            <button type="button" id="liveViewButton">Abrir Live View</button>
             <button type="submit">Cadastrar câmera</button>
           </div>
         </form>
@@ -140,13 +144,13 @@
           <span>Movimento: <strong id="viewerMachineMotion">-</strong></span>
         </div>
         <div class="actions viewer-actions">
-          <button type="button" id="startAnalysisButton">Ligar análise</button>
-          <button type="button" id="stopAnalysisButton">Desligar análise</button>
-          <button type="button" id="createAreaButton">Criar área</button>
+          <button type="button" id="startAnalysisButton">Ligar análise futura</button>
+          <button type="button" id="stopAnalysisButton">Desligar análise futura</button>
+          <button type="button" id="createAreaButton">Preparar área</button>
           <button type="button" id="undoAreaPointButton">Desfazer ponto</button>
           <button type="button" id="saveAreaButton">Salvar área</button>
           <button type="button" id="cancelAreaButton">Cancelar</button>
-          <button type="button" id="createMachineButton">Adicionar máquina</button>
+          <button type="button" id="createMachineButton">Preparar máquina</button>
           <button type="button" id="nextMachineZoneButton">Próxima zona</button>
           <button type="button" id="saveMachineButton">Salvar máquina</button>
         </div>
@@ -230,7 +234,6 @@
         <div id="deliveryList" class="delivery-list"></div>
       </section>
     </main>
-
     <script src="/static/app.js"></script>
   </body>
 </html>
