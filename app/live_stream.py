@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import os
 from dataclasses import asdict, dataclass
 from typing import Callable
 
@@ -9,10 +10,12 @@ import cv2
 
 from app.database import connect, init_db
 from edge_agent.camera_connector import CameraSource, UniversalCameraConnector, now_iso
+from app.live_view_ops import LiveViewOpsEngine
 from app.person_detection import Detection, PersonAnalysisEngine
 from app.incidents import IncidentManager
 from app.machine_monitoring import MachineMonitorEngine, config_from_dict, draw_machine_overlay
 from app.models import listar_areas_ativas_camera, listar_machine_monitors_ativos_camera
+from app.operations_history import OperationsRecorder
 from app.restricted_area import (
     AreaPresence,
     AreaPresenceTracker,
@@ -83,12 +86,24 @@ class LiveCameraStream:
         self._last_analysis_seconds = 0.0
         self._analysis_frames = 0
         self._analysis_started = time.monotonic()
+        self._analysis_worker_stop = threading.Event()
+        self._analysis_worker_thread: threading.Thread | None = None
+        self._analysis_frame_lock = threading.Lock()
+        self._analysis_frame = None
         self._area_presence_tracker = AreaPresenceTracker()
         self._active_area: RestrictedArea | None = None
         self._last_area_load_seconds = 0.0
         self._incident_manager = IncidentManager(camera_id)
         self._machine_engines: dict[str, MachineMonitorEngine] = {}
         self._last_machine_load_seconds = 0.0
+        self.live_view_ops: LiveViewOpsEngine | None = None
+        self._operations_recorder = OperationsRecorder(camera_id, camera_id)
+
+    def enable_live_view_ops(self) -> LiveViewOpsEngine:
+        with self._lock:
+            if self.live_view_ops is None:
+                self.live_view_ops = LiveViewOpsEngine()
+            return self.live_view_ops
 
     def start(self) -> None:
         with self._lock:
@@ -113,14 +128,71 @@ class LiveCameraStream:
     def set_analysis(self, enabled: bool) -> dict[str, object]:
         with self._lock:
             self._analysis_enabled = enabled
+            live_ops = self.live_view_ops
             if not enabled:
+                self._analysis_worker_stop.set()
                 self._last_detections = []
                 self.status.ai_status = "inativa"
                 self.status.people_count = 0
                 self.status.analysis_error = None
+                if live_ops:
+                    live_ops.set_ai(False)
                 return self.status.to_public_dict()
             self.status.ai_status = "carregando"
+            if live_ops:
+                live_ops.set_ai(True)
+                self._ensure_analysis_worker()
         return self.public_status()
+
+    def _ensure_analysis_worker(self) -> None:
+        if self._analysis_worker_thread and self._analysis_worker_thread.is_alive():
+            return
+        self._analysis_worker_stop.clear()
+        self._analysis_worker_thread = threading.Thread(
+            target=self._analysis_worker,
+            name=f"analysis-{self.camera_id}",
+            daemon=True,
+        )
+        self._analysis_worker_thread.start()
+
+    def _analysis_worker(self) -> None:
+        while not self._analysis_worker_stop.is_set():
+            engine = self._ensure_analysis_engine()
+            if engine is None:
+                self._analysis_worker_stop.wait(1.0)
+                continue
+            with self._analysis_frame_lock:
+                frame = self._analysis_frame.copy() if self._analysis_frame is not None else None
+                self._analysis_frame = None
+            if frame is None:
+                self._analysis_worker_stop.wait(0.05)
+                continue
+            try:
+                detections = engine.analyze(frame)
+                now = time.monotonic()
+                self._analysis_frames += 1
+                elapsed = max(0.001, now - self._analysis_started)
+                with self._lock:
+                    self._last_detections = detections
+                    self.status.ai_status = "ativa"
+                    self.status.ai_model = engine.model_name
+                    self.status.analysis_fps = round(self._analysis_frames / elapsed, 2)
+                    self.status.people_count = len(detections)
+                    self.status.last_analysis_at = now_iso()
+                    self.status.analysis_error = None
+            except Exception as exc:
+                with self._lock:
+                    self.status.ai_status = "indisponivel"
+                    self.status.analysis_error = str(exc)
+
+    def _submit_analysis_frame(self, frame, analysis_fps: float) -> None:
+        now = time.monotonic()
+        interval = 1.0 / max(0.1, analysis_fps)
+        if now - self._last_analysis_seconds < interval:
+            return
+        self._last_analysis_seconds = now
+        with self._analysis_frame_lock:
+            self._analysis_frame = frame.copy()
 
     def _ensure_analysis_engine(self) -> PersonAnalysisEngine | None:
         if self._analysis_engine is not None:
@@ -233,6 +305,20 @@ class LiveCameraStream:
         output = engine.draw(frame, self._last_detections)
         return self._update_machines(output, machine_engines)
 
+    def _maybe_live_view_ops(self, frame):
+        with self._lock:
+            live_ops = self.live_view_ops
+        if live_ops is None:
+            return self._maybe_analyze(frame)
+        if live_ops.state.ai_enabled:
+            self._ensure_analysis_worker()
+            engine = self._analysis_engine
+            analysis_fps = engine.analysis_fps if engine else float(os.getenv("CAMPEX_ANALYSIS_FPS", "2"))
+            self._submit_analysis_frame(frame, analysis_fps)
+        output = live_ops.update(frame, self._last_detections if live_ops.state.ai_enabled else [])
+        self._operations_recorder.update_status(self.status.status, live_ops.public_state(), output)
+        return output
+
     def _update_machines(self, frame, machine_engines: list[MachineMonitorEngine]):
         output = frame
         for engine in machine_engines:
@@ -252,6 +338,7 @@ class LiveCameraStream:
         return output
 
     def _run(self) -> None:
+        self._analysis_worker_stop.clear()
         reconnect_delay = 1.0
         connector = self.connector_factory(
             CameraSource(camera_id=self.camera_id, source=self.source, reconnect_seconds=1.0)
@@ -265,6 +352,7 @@ class LiveCameraStream:
                         self.status.status = "reconectando"
                         self.status.error = connector.info.error
                         self.status.reconnect_attempts += 1
+                    self._operations_recorder.update_status("offline", self.live_view_ops.public_state() if self.live_view_ops else None)
                     self._stop_event.wait(reconnect_delay)
                     reconnect_delay = min(10.0, reconnect_delay * 1.5)
                     continue
@@ -276,6 +364,7 @@ class LiveCameraStream:
                     self.status.width = connector.info.width
                     self.status.height = connector.info.height
                     self.status.fps = connector.info.fps
+                self._operations_recorder.update_status("online", self.live_view_ops.public_state() if self.live_view_ops else None)
 
                 frame_count = 0
                 fps_started = time.monotonic()
@@ -287,9 +376,10 @@ class LiveCameraStream:
                             self.status.status = "reconectando"
                             self.status.error = "Stream parou de entregar frames."
                             self.status.reconnect_attempts += 1
+                        self._operations_recorder.update_status("offline", self.live_view_ops.public_state() if self.live_view_ops else None)
                         break
 
-                    output_frame = self._maybe_analyze(frame)
+                    output_frame = self._maybe_live_view_ops(frame)
                     encoded, jpeg = cv2.imencode(".jpg", output_frame)
                     if not encoded:
                         continue
@@ -305,6 +395,10 @@ class LiveCameraStream:
                         self.status.last_frame_at = now_iso()
                         self.status.error = None
         finally:
+            self._analysis_worker_stop.set()
+            analysis_thread = self._analysis_worker_thread
+            if analysis_thread:
+                analysis_thread.join(timeout=3.0)
             connector.stop()
             self._incident_manager.close_interrupted()
             with self._lock:

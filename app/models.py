@@ -428,6 +428,19 @@ def atualizar_camera_operacao(
     connection.commit()
 
 
+def atualizar_camera_video_info(
+    connection: sqlite3.Connection,
+    camera_id: str,
+    resolucao: str | None = None,
+    fps: float | None = None,
+) -> None:
+    connection.execute(
+        "UPDATE cameras SET resolucao = COALESCE(?, resolucao), fps = COALESCE(?, fps) WHERE id = ?",
+        (resolucao, fps, camera_id),
+    )
+    connection.commit()
+
+
 def listar_cameras_do_edge(connection: sqlite3.Connection, edge_id: str) -> list[dict[str, Any]]:
     rows = connection.execute(
         """

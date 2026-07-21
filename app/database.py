@@ -226,6 +226,24 @@ def init_db(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (unit_id) REFERENCES unidades (id),
             FOREIGN KEY (camera_id) REFERENCES cameras (id)
         );
+
+        CREATE TABLE IF NOT EXISTS operational_events (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            camera_id TEXT,
+            machine_name TEXT,
+            event_type TEXT NOT NULL,
+            previous_state TEXT,
+            new_state TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            duration_seconds REAL,
+            confidence REAL,
+            activity_score REAL,
+            people_count INTEGER NOT NULL DEFAULT 0,
+            snapshot_path TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         """
     )
     _ensure_column(connection, "cameras", "cliente_id", "TEXT")
@@ -244,6 +262,8 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "cameras", "rtsp_password_encrypted", "TEXT")
     _ensure_column(connection, "cameras", "monitoring_enabled", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(connection, "cameras", "analysis_enabled", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(connection, "cameras", "resolucao", "TEXT")
+    _ensure_column(connection, "cameras", "fps", "REAL")
     _ensure_column(connection, "eventos", "area_id", "TEXT")
     _ensure_column(connection, "eventos", "regra_id", "TEXT")
     _ensure_column(connection, "eventos", "severidade", "TEXT NOT NULL DEFAULT 'high'")
@@ -270,6 +290,8 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "eventos", "cause_notes", "TEXT")
     _ensure_column(connection, "eventos", "classified_at", "TEXT")
     _ensure_column(connection, "eventos", "classified_by", "TEXT")
+    _ensure_column(connection, "operational_events", "activity_score", "REAL")
+    _ensure_column(connection, "operational_events", "snapshot_path", "TEXT")
     connection.commit()
 
 

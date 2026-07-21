@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from typing import Any, Optional
+import hashlib
+import time
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.camera_rtsp import build_rtsp_url, test_rtsp_connection
 from app.alerts import resume_pending_deliveries, retry_delivery, send_test_alert, stream_events
-from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, require_role, require_user, tenant_filter, update_user_password
+from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, get_request_user, require_role, require_user, tenant_filter, update_user_password
 from app.config import ROOT
 from app.database import connect, init_db
 from app.live_stream import LiveStreamManager
@@ -18,6 +20,7 @@ from app.models import (
     atualizar_area_monitorada,
     atualizar_alert_recipient,
     atualizar_machine_monitor,
+    atualizar_camera_video_info,
     alterar_senha_camera,
     classificar_evento,
     criar_camera,
@@ -47,6 +50,12 @@ from app.models import (
 )
 from app.pilot import acceptance_checklist, health_snapshot
 from app.machine_monitoring import calibrate_threshold
+from app.operations_history import (
+    current_status,
+    list_operational_events,
+    operations_summary,
+    operations_timeline,
+)
 from app.reports import daily_report_data
 from app.restricted_area import normalize_points
 from shared.schemas import now_iso
@@ -54,6 +63,7 @@ from shared.schemas import now_iso
 api = FastAPI(title="Visual Operations Internal API")
 FRONTEND_DIR = ROOT / "frontend"
 live_streams = LiveStreamManager()
+live_view_sessions: dict[str, dict[str, Any]] = {}
 
 if FRONTEND_DIR.exists():
     api.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
@@ -78,7 +88,7 @@ class DispositivoIn(BaseModel):
 
 class CameraIn(BaseModel):
     cliente_id: Optional[str] = None
-    unidade_id: str
+    unidade_id: Optional[str] = None
     dispositivo_id: Optional[str] = None
     edge_id: Optional[str] = None
     nome: str
@@ -90,7 +100,7 @@ class CameraIn(BaseModel):
 
 class CameraRtspIn(BaseModel):
     nome: str
-    unidade_id: str
+    unidade_id: Optional[str] = None
     cliente_id: Optional[str] = None
     dispositivo_id: Optional[str] = None
     edge_id: Optional[str] = None
@@ -111,6 +121,10 @@ class CameraRtspTestIn(BaseModel):
     caminho_rtsp: Optional[str] = None
     rtsp_url: Optional[str] = None
     timeout_seconds: float = 5.0
+
+
+class LiveViewStartIn(CameraRtspTestIn):
+    nome: str = "Live View"
 
 
 class RegraIn(BaseModel):
@@ -236,6 +250,54 @@ class EventCauseIn(BaseModel):
     classified_by: Optional[str] = None
 
 
+class LiveViewMachineIn(BaseModel):
+    nome: str
+    tipo: Optional[str] = None
+    machine_polygon: list[AreaPointIn]
+    operator_polygon: Optional[list[AreaPointIn]] = None
+
+
+class LiveViewOperatorZoneIn(BaseModel):
+    operator_polygon: list[AreaPointIn]
+
+
+def resolve_unidade_cliente(connection, unidade_id: str, cliente_id: str | None) -> str:
+    unidade = connection.execute("SELECT id, cliente_id FROM unidades WHERE id = ?", (unidade_id,)).fetchone()
+    if unidade is None:
+        raise HTTPException(status_code=400, detail="Unidade não encontrada. Cadastre ou informe um unidade_id válido.")
+    real_cliente_id = str(unidade["cliente_id"])
+    if cliente_id and cliente_id != real_cliente_id:
+        raise HTTPException(status_code=400, detail="Cliente informado não pertence à unidade selecionada.")
+    return real_cliente_id
+
+
+def default_cliente_unidade(connection, cliente_id: str | None = None, unidade_id: str | None = None) -> tuple[str, str]:
+    if unidade_id:
+        resolved_cliente_id = resolve_unidade_cliente(connection, unidade_id, cliente_id)
+        return resolved_cliente_id, unidade_id
+
+    if cliente_id:
+        cliente = connection.execute("SELECT id FROM clientes WHERE id = ?", (cliente_id,)).fetchone()
+        if cliente is None:
+            raise HTTPException(status_code=400, detail="Cliente não encontrado.")
+    else:
+        cliente = connection.execute("SELECT id FROM clientes ORDER BY criado_em ASC LIMIT 1").fetchone()
+        if cliente is None:
+            cliente_id = criar_cliente(connection, "Cliente padrão")
+        else:
+            cliente_id = str(cliente["id"])
+
+    unidade = connection.execute(
+        "SELECT id FROM unidades WHERE cliente_id = ? ORDER BY criado_em ASC LIMIT 1",
+        (cliente_id,),
+    ).fetchone()
+    if unidade is None:
+        unidade_id = criar_unidade(connection, str(cliente_id), "Unidade padrão")
+    else:
+        unidade_id = str(unidade["id"])
+    return str(cliente_id), unidade_id
+
+
 @api.on_event("startup")
 def startup() -> None:
     with connect() as connection:
@@ -249,8 +311,38 @@ def shutdown() -> None:
 
 
 @api.get("/")
-def index() -> FileResponse:
+def index() -> RedirectResponse:
+    return RedirectResponse(url="/dashboard", status_code=307)
+
+
+@api.get("/settings/cameras")
+def cameras_settings_page() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@api.get("/live-view")
+def live_view_page() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "live-view.html")
+
+
+@api.get("/live-view/")
+def live_view_page_slash() -> FileResponse:
+    return live_view_page()
+
+
+@api.get("/operations-dashboard")
+def operations_dashboard_page() -> RedirectResponse:
+    return RedirectResponse(url="/dashboard", status_code=307)
+
+
+@api.get("/dashboard.html")
+def dashboard_html_page() -> RedirectResponse:
+    return RedirectResponse(url="/dashboard", status_code=307)
+
+
+@api.get("/dashboard")
+def dashboard_page() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "dashboard.html")
 
 
 @api.get("/health")
@@ -343,14 +435,15 @@ def post_dispositivo(payload: DispositivoIn) -> dict[str, str]:
 def post_camera(payload: CameraIn) -> dict[str, str]:
     with connect() as connection:
         init_db(connection)
+        cliente_id, unidade_id = default_cliente_unidade(connection, payload.cliente_id, payload.unidade_id)
         return {"id": criar_camera(
             connection,
-            payload.unidade_id,
+            unidade_id,
             payload.nome,
             payload.dispositivo_id,
             payload.config_ref,
             payload.status,
-            payload.cliente_id,
+            cliente_id,
             payload.edge_id,
             payload.source_type,
             payload.secure_ref,
@@ -358,7 +451,7 @@ def post_camera(payload: CameraIn) -> dict[str, str]:
 
 
 @api.post("/cameras/rtsp")
-def post_camera_rtsp(payload: CameraRtspIn) -> dict[str, object]:
+def post_camera_rtsp(payload: CameraRtspIn, request: Request) -> dict[str, object]:
     try:
         rtsp = build_rtsp_url(
             host=payload.host,
@@ -377,14 +470,19 @@ def post_camera_rtsp(payload: CameraRtspIn) -> dict[str, object]:
         status = "online" if test_result["compativel"] else "offline"
     with connect() as connection:
         init_db(connection)
+        user = get_request_user(request, connection)
+        cliente_hint = payload.cliente_id
+        if user and user["role"] != "admin_campex":
+            cliente_hint = user.get("cliente_id")
+        cliente_id, unidade_id = default_cliente_unidade(connection, cliente_hint, payload.unidade_id)
         camera_id = criar_camera(
             connection,
-            payload.unidade_id,
+            unidade_id,
             payload.nome,
             payload.dispositivo_id,
             rtsp.safe_url,
             status=status,
-            cliente_id=payload.cliente_id,
+            cliente_id=cliente_id,
             edge_id=payload.edge_id,
             source_type="rtsp",
             secure_ref=rtsp.safe_url,
@@ -394,6 +492,13 @@ def post_camera_rtsp(payload: CameraRtspIn) -> dict[str, object]:
             rtsp_username=rtsp.username,
             rtsp_password=rtsp.password,
         )
+        if test_result:
+            atualizar_camera_video_info(
+                connection,
+                camera_id,
+                resolucao=str(test_result.get("resolucao")) if test_result.get("resolucao") else None,
+                fps=float(test_result["fps"]) if test_result.get("fps") is not None else None,
+            )
         camera = obter_camera(connection, camera_id)
     return {"id": camera_id, "camera": camera, "teste": test_result}
 
@@ -412,6 +517,121 @@ def post_camera_test_connection(payload: CameraRtspTestIn) -> dict[str, object]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return test_rtsp_connection(rtsp, timeout_seconds=payload.timeout_seconds)
+
+
+@api.post("/live-view/start")
+def post_live_view_start(payload: LiveViewStartIn) -> dict[str, object]:
+    try:
+        rtsp = build_rtsp_url(
+            host=payload.host,
+            port=payload.porta_rtsp,
+            path=payload.caminho_rtsp,
+            username=payload.usuario,
+            password=payload.senha,
+            full_url=payload.rtsp_url,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    session_id = "live_" + hashlib.sha256(f"{payload.nome}|{rtsp.safe_url}".encode()).hexdigest()[:16]
+    live_view_sessions[session_id] = {
+        "nome": payload.nome,
+        "source": rtsp.url,
+        "safe_url": rtsp.safe_url,
+        "created_at": time.time(),
+    }
+    stream = live_streams.get_or_create(session_id, rtsp.url)
+    stream.enable_live_view_ops()
+    stream.start()
+    status = stream.public_status()
+    return {
+        "session_id": session_id,
+        "nome": payload.nome,
+        "status": status,
+    }
+
+
+@api.get("/live-view/{session_id}/status")
+def get_live_view_status(session_id: str) -> dict[str, object]:
+    session = live_view_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Live View não encontrada.")
+    stream = live_streams.get(session_id)
+    status = stream.public_status() if stream else {"status": "offline", "width": None, "height": None, "fps": None}
+    ops = stream.live_view_ops.public_state() if stream and stream.live_view_ops else {}
+    return {"session_id": session_id, "nome": session["nome"], **status, "ops": ops}
+
+
+@api.get("/live-view/{session_id}/stream")
+def get_live_view_stream(session_id: str) -> StreamingResponse:
+    session = live_view_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Live View não encontrada.")
+    stream = live_streams.get_or_create(session_id, str(session["source"]))
+    stream.enable_live_view_ops()
+    stream.start()
+    return StreamingResponse(stream.frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+
+def live_view_ops_for(session_id: str):
+    session = live_view_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Live View não encontrada.")
+    stream = live_streams.get_or_create(session_id, str(session["source"]))
+    return stream.enable_live_view_ops()
+
+
+@api.post("/live-view/{session_id}/ai/start")
+def post_live_view_ai_start(session_id: str) -> dict[str, object]:
+    ops = live_view_ops_for(session_id)
+    stream = live_streams.get(session_id)
+    if stream:
+        stream.set_analysis(True)
+    return ops.public_state()
+
+
+@api.post("/live-view/{session_id}/ai/stop")
+def post_live_view_ai_stop(session_id: str) -> dict[str, object]:
+    ops = live_view_ops_for(session_id)
+    stream = live_streams.get(session_id)
+    if stream:
+        stream.set_analysis(False)
+    return ops.public_state()
+
+
+@api.post("/live-view/{session_id}/machine")
+def post_live_view_machine(session_id: str, payload: LiveViewMachineIn) -> dict[str, object]:
+    ops = live_view_ops_for(session_id)
+    return ops.configure_machine(
+        payload.nome,
+        [point.model_dump() for point in payload.machine_polygon],
+        [point.model_dump() for point in payload.operator_polygon] if payload.operator_polygon else None,
+        payload.tipo,
+    )
+
+
+@api.post("/live-view/{session_id}/operator-zone")
+def post_live_view_operator_zone(session_id: str, payload: LiveViewOperatorZoneIn) -> dict[str, object]:
+    ops = live_view_ops_for(session_id)
+    return ops.configure_operator_zone([point.model_dump() for point in payload.operator_polygon])
+
+
+@api.post("/live-view/{session_id}/machine/calibrate-active")
+def post_live_view_machine_calibrate_active(session_id: str) -> dict[str, object]:
+    ops = live_view_ops_for(session_id)
+    return ops.calibrate_active()
+
+
+@api.delete("/live-view/{session_id}/machine")
+def delete_live_view_machine(session_id: str) -> dict[str, object]:
+    ops = live_view_ops_for(session_id)
+    return ops.clear()
+
+
+@api.post("/live-view/{session_id}/stop")
+def post_live_view_stop(session_id: str) -> dict[str, object]:
+    stopped = live_streams.stop(session_id)
+    live_view_sessions.pop(session_id, None)
+    return {"session_id": session_id, "status": "offline", "stopped": stopped}
 
 
 @api.post("/cameras/{camera_id}/test-connection")
@@ -867,6 +1087,55 @@ def patch_evento_cause(evento_id: str, payload: EventCauseIn, request: Request) 
             payload.classified_by or user.get("email"),
             now_iso(),
         )
+
+
+@api.get("/operations/summary")
+def get_operations_summary(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    machine_name: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        return operations_summary(connection, start, end, camera_id, machine_name)
+
+
+@api.get("/operations/timeline")
+def get_operations_timeline(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    machine_name: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    with connect() as connection:
+        init_db(connection)
+        return operations_timeline(connection, start, end, camera_id, machine_name)
+
+
+@api.get("/operations/events")
+def get_operations_events(
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    machine_name: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        events = list_operational_events(connection, start, end, camera_id, machine_name, limit, offset)
+        return {"events": events, "limit": limit, "offset": offset}
+
+
+@api.get("/operations/current-status")
+def get_operations_current_status(
+    camera_id: Optional[str] = None,
+    machine_name: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        return current_status(connection, camera_id, machine_name)
 
 
 @api.get("/operations")
