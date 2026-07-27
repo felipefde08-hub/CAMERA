@@ -126,6 +126,8 @@ def evaluate_area(
     raw_inside: set[int] = set()
     visible: set[int] = set()
     for detection in detections:
+        if detection.class_name != "person":
+            continue
         if detection.track_id is None:
             continue
         visible.add(detection.track_id)
@@ -181,4 +183,3 @@ def draw_area_overlay(
             cv2.LINE_AA,
         )
     return annotated
-

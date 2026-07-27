@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Campex</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body class="campex-dashboard campex-light">
+    <aside class="cx-sidebar">
+      <div class="cx-sidebar-top">
+        <a class="cx-logo" href="/dashboard" aria-label="Campex">
+          <img src="/static/campex-logo-oficial.png" alt="Campex" />
+          <strong>Campex</strong>
+        </a>
+        <button class="cx-collapse" type="button" aria-label="Recolher sidebar">‹</button>
+      </div>
+      <button class="cx-workspace-switcher" type="button" aria-label="Trocar workspace" title="FL Plásticos · Unidade principal">
+        <span class="cx-workspace-initials">FL</span>
+        <span class="cx-workspace-copy">
+          <strong>FL Plásticos</strong>
+          <small>Unidade principal</small>
+        </span>
+        <span class="cx-workspace-arrow">⌄</span>
+      </button>
+      <nav class="cx-nav cx-nav-grouped" aria-label="Navegação principal">
+        <small>OPERAÇÃO</small>
+        <a data-route="/dashboard" href="/dashboard"><span class="cx-nav-icon" data-icon="home"></span>Home</a>
+        <a data-route="/overview" href="/overview"><span class="cx-nav-icon" data-icon="overview"></span>Visão geral</a>
+        <a data-route="/cameras" href="/cameras"><span class="cx-nav-icon" data-icon="camera"></span>Câmeras</a>
+        <a data-route="/events" href="/events"><span class="cx-nav-icon" data-icon="events"></span>Eventos</a>
+        <hr />
+        <small>MONITORAMENTO</small>
+        <a data-route="/alerts" href="/alerts"><span class="cx-nav-icon" data-icon="alert"></span>Alertas</a>
+        <a data-route="/evidence" href="/evidence"><span class="cx-nav-icon" data-icon="evidence"></span>Evidências</a>
+        <a data-route="/rules" href="/rules"><span class="cx-nav-icon" data-icon="rules"></span>Regras</a>
+        <hr />
+        <small>INTELIGÊNCIA</small>
+        <a data-route="/reports" href="/reports"><span class="cx-nav-icon" data-icon="reports"></span>Relatórios</a>
+        <a data-route="/insights" href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Insights</a>
+        <a data-route="/history" href="/history"><span class="cx-nav-icon" data-icon="history"></span>Histórico</a>
+        <hr />
+        <small>PLATAFORMA</small>
+        <a data-route="/integrations" href="/integrations"><span class="cx-nav-icon" data-icon="integrations"></span>Integrações</a>
+        <a data-route="/users" href="/users"><span class="cx-nav-icon" data-icon="users"></span>Usuários</a>
+        <a data-route="/settings/cameras" href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Configurações</a>
+      </nav>
+      <div class="cx-account">
+        <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
+        <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="status"></span>Sistema online</a>
+        <div class="cx-avatar">C</div>
+        <div>
+          <strong>Campex</strong>
+          <span>Piloto local</span>
+        </div>
+      </div>
+    </aside>
+    <main class="cx-main">
+      <header class="cx-header cx-topbar">
+        <div>
+          <p>Campex Operations</p>
+          <h1 id="workspaceTitle">Carregando</h1>
+        </div>
+        <div class="cx-header-tools">
+          <input id="workspaceSearch" placeholder="Buscar" />
+          <button class="cx-icon-button" type="button" aria-label="Ajuda"><span class="cx-nav-icon" data-icon="help"></span></button>
+          <button class="cx-icon-button" type="button" aria-label="Notificações"><span class="cx-nav-icon" data-icon="alert"></span></button>
+          <div class="cx-top-avatar">C</div>
+          <a class="cx-primary-action" href="/settings/cameras">Configurar</a>
+        </div>
+      </header>
+
+      <section class="cx-page-title">
+        <div>
+          <h2 id="workspaceHeading">Visão de trabalho</h2>
+          <p id="workspaceSubtitle">Dados carregados da instalação local da Campex.</p>
+        </div>
+      </section>
+
+      <section class="cx-work-cards" id="workspaceCards"></section>
+
+      <section class="cx-panel">
+        <div class="cx-panel-head">
+          <div>
+            <h2 id="workspaceTableTitle">Registros</h2>
+            <p id="workspaceTableHint">Tabela operacional.</p>
+          </div>
+          <button id="workspacePrimaryAction" type="button">Nova ação</button>
+        </div>
+        <div id="workspaceTabs" class="cx-tabs workspace-tabs"></div>
+        <div id="workspaceFilters" class="cx-workspace-filters"></div>
+        <div id="workspaceGrid" class="cx-resource-grid"></div>
+        <div class="cx-table-wrap">
+          <table class="cx-table">
+            <thead id="workspaceHead"></thead>
+            <tbody id="workspaceBody">
+              <tr><td>Carregando...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <aside id="workspaceDrawer" class="cx-detail-drawer" role="dialog" aria-modal="true" aria-labelledby="workspaceDrawerTitle" aria-hidden="true" tabindex="-1">
+        <button id="workspaceDrawerClose" type="button" aria-label="Fechar">×</button>
+        <div id="workspaceDrawerContent"></div>
+      </aside>
+    </main>
+    <script src="/static/shell.js"></script>
+    <script src="/static/workspace.js"></script>
+  </body>
+</html>

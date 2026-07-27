@@ -16,6 +16,7 @@ from app.incidents import IncidentManager
 from app.machine_monitoring import MachineMonitorEngine, config_from_dict, draw_machine_overlay
 from app.models import listar_areas_ativas_camera, listar_machine_monitors_ativos_camera
 from app.operations_history import OperationsRecorder
+from app.operational_rule_runtime import OperationalRuleRuntime, facts_from_stream
 from app.restricted_area import (
     AreaPresence,
     AreaPresenceTracker,
@@ -90,6 +91,7 @@ class LiveCameraStream:
         self._analysis_worker_thread: threading.Thread | None = None
         self._analysis_frame_lock = threading.Lock()
         self._analysis_frame = None
+        self._last_raw_frame = None
         self._area_presence_tracker = AreaPresenceTracker()
         self._active_area: RestrictedArea | None = None
         self._last_area_load_seconds = 0.0
@@ -98,6 +100,36 @@ class LiveCameraStream:
         self._last_machine_load_seconds = 0.0
         self.live_view_ops: LiveViewOpsEngine | None = None
         self._operations_recorder = OperationsRecorder(camera_id, camera_id)
+        self._rule_runtime = OperationalRuleRuntime(camera_id)
+
+    def _evaluate_rules(
+        self,
+        frame=None,
+        area_presence: AreaPresence | None = None,
+        machine_state: str | None = None,
+        machine_motion: float | None = None,
+        operator_present: bool | None = None,
+        operator_people_count: int | None = None,
+        confidence: float | None = None,
+        force: bool = False,
+    ) -> None:
+        with self._lock:
+            status = self.status.status
+            fps = self.status.fps
+            detections = list(self._last_detections)
+        facts = facts_from_stream(
+            self.camera_id,
+            status,
+            detections=detections,
+            area_presence=area_presence,
+            machine_state=machine_state,
+            machine_motion=machine_motion,
+            operator_present=operator_present,
+            operator_people_count=operator_people_count,
+            fps=fps,
+            confidence=confidence,
+        )
+        self._rule_runtime.evaluate(facts, frame=frame, force=force)
 
     def enable_live_view_ops(self) -> LiveViewOpsEngine:
         with self._lock:
@@ -120,6 +152,7 @@ class LiveCameraStream:
         if thread:
             thread.join(timeout=5.0)
         self._incident_manager.close_interrupted()
+        self._rule_runtime.camera_status("offline", self._last_raw_frame)
         with self._lock:
             self.status.status = "offline"
             self.status.viewers = 0
@@ -177,7 +210,7 @@ class LiveCameraStream:
                     self.status.ai_status = "ativa"
                     self.status.ai_model = engine.model_name
                     self.status.analysis_fps = round(self._analysis_frames / elapsed, 2)
-                    self.status.people_count = len(detections)
+                    self.status.people_count = len([d for d in detections if d.class_name == "person"])
                     self.status.last_analysis_at = now_iso()
                     self.status.analysis_error = None
             except Exception as exc:
@@ -259,7 +292,9 @@ class LiveCameraStream:
                 self.status.pessoas_na_area = presence.pessoas_dentro
                 self.status.ids_na_area = presence.ids_dentro or []
             output = draw_area_overlay(frame, area, presence, set(), [])
-            return self._update_machines(output, self._load_machine_engines())
+            output = self._update_machines(output, self._load_machine_engines(), presence)
+            self._evaluate_rules(output, area_presence=presence)
+            return output
         engine = self._ensure_analysis_engine()
         if engine is None:
             return frame
@@ -276,7 +311,7 @@ class LiveCameraStream:
                     self.status.ai_status = "ativa"
                     self.status.ai_model = engine.model_name
                     self.status.analysis_fps = round(self._analysis_frames / elapsed, 2)
-                    self.status.people_count = len(detections)
+                    self.status.people_count = len([d for d in detections if d.class_name == "person"])
                     self.status.last_analysis_at = now_iso()
                     self.status.analysis_error = None
             except Exception as exc:
@@ -296,14 +331,17 @@ class LiveCameraStream:
         if area is not None:
             output = draw_area_overlay(frame, area, presence, inside_ids, self._last_detections)
             incident_state = self._incident_manager.update(area, presence, self._last_detections, output)
-            output = self._update_machines(output, machine_engines)
+            output = self._update_machines(output, machine_engines, presence)
             with self._lock:
                 for key, value in incident_state.items():
                     setattr(self.status, key, value)
+            self._evaluate_rules(output, area_presence=presence)
             return output
         self._incident_manager.update(None, presence, self._last_detections, frame)
         output = engine.draw(frame, self._last_detections)
-        return self._update_machines(output, machine_engines)
+        output = self._update_machines(output, machine_engines, presence)
+        self._evaluate_rules(output, area_presence=presence)
+        return output
 
     def _maybe_live_view_ops(self, frame):
         with self._lock:
@@ -317,9 +355,18 @@ class LiveCameraStream:
             self._submit_analysis_frame(frame, analysis_fps)
         output = live_ops.update(frame, self._last_detections if live_ops.state.ai_enabled else [])
         self._operations_recorder.update_status(self.status.status, live_ops.public_state(), output)
+        ops = live_ops.public_state()
+        self._evaluate_rules(
+            output,
+            machine_state=ops.get("machine_state"),
+            machine_motion=ops.get("machine_motion"),
+            operator_present=bool(ops.get("operator_present")),
+            operator_people_count=int(ops.get("operator_people_count") or 0),
+            confidence=ops.get("visual_confidence"),
+        )
         return output
 
-    def _update_machines(self, frame, machine_engines: list[MachineMonitorEngine]):
+    def _update_machines(self, frame, machine_engines: list[MachineMonitorEngine], area_presence: AreaPresence | None = None):
         output = frame
         for engine in machine_engines:
             try:
@@ -331,6 +378,15 @@ class LiveCameraStream:
                     self.status.machine_threshold = round(state.threshold, 3)
                     self.status.machine_operator_present = state.operator_present
                     self.status.machine_event_id = state.event_id
+                self._evaluate_rules(
+                    output,
+                    area_presence=area_presence,
+                    machine_state="ATIVA" if state.state in {"running", "recovered"} else "PARADA" if state.state in {"stopped", "suspected_stop"} else "SEM SINAL",
+                    machine_motion=state.smoothed_motion,
+                    operator_present=state.operator_present,
+                    operator_people_count=1 if state.operator_present else 0,
+                    confidence=1.0,
+                )
             except Exception as exc:
                 with self._lock:
                     self.status.machine_state = "unavailable"
@@ -351,8 +407,9 @@ class LiveCameraStream:
                     with self._lock:
                         self.status.status = "reconectando"
                         self.status.error = connector.info.error
-                        self.status.reconnect_attempts += 1
+                    self.status.reconnect_attempts += 1
                     self._operations_recorder.update_status("offline", self.live_view_ops.public_state() if self.live_view_ops else None)
+                    self._rule_runtime.camera_status("offline", self._last_raw_frame)
                     self._stop_event.wait(reconnect_delay)
                     reconnect_delay = min(10.0, reconnect_delay * 1.5)
                     continue
@@ -365,6 +422,7 @@ class LiveCameraStream:
                     self.status.height = connector.info.height
                     self.status.fps = connector.info.fps
                 self._operations_recorder.update_status("online", self.live_view_ops.public_state() if self.live_view_ops else None)
+                self._rule_runtime.camera_status("online")
 
                 frame_count = 0
                 fps_started = time.monotonic()
@@ -377,8 +435,10 @@ class LiveCameraStream:
                             self.status.error = "Stream parou de entregar frames."
                             self.status.reconnect_attempts += 1
                         self._operations_recorder.update_status("offline", self.live_view_ops.public_state() if self.live_view_ops else None)
+                        self._rule_runtime.camera_status("offline", self._last_raw_frame)
                         break
 
+                    self._last_raw_frame = frame.copy()
                     output_frame = self._maybe_live_view_ops(frame)
                     encoded, jpeg = cv2.imencode(".jpg", output_frame)
                     if not encoded:

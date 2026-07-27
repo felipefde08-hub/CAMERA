@@ -14,56 +14,133 @@
   </head>
   <body class="campex-dashboard">
     <aside class="cx-sidebar">
-      <a class="cx-logo" href="/dashboard" aria-label="Campex">
-        <img src="/static/campex-logo-oficial.png" alt="Campex" />
-      </a>
-      <nav class="cx-nav" aria-label="Navegação principal">
-        <a href="/dashboard"><span></span>Visão geral</a>
-        <a class="active" href="/live-view"><span></span>Live View</a>
-        <a href="/dashboard"><span></span>Operações</a>
-        <a href="/dashboard#eventsSection"><span></span>Eventos</a>
-        <a href="/settings/cameras"><span></span>Configurações</a>
+      <div class="cx-sidebar-top">
+        <a class="cx-logo" href="/dashboard" aria-label="Campex">
+          <img src="/static/campex-logo-oficial.png" alt="Campex" />
+          <strong>Campex</strong>
+        </a>
+        <button class="cx-collapse" type="button" aria-label="Recolher sidebar">‹</button>
+      </div>
+      <button class="cx-workspace-switcher" type="button" aria-label="Trocar workspace" title="FL Plásticos · Unidade principal">
+        <span class="cx-workspace-initials">FL</span>
+        <span class="cx-workspace-copy">
+          <strong>FL Plásticos</strong>
+          <small>Unidade principal</small>
+        </span>
+        <span class="cx-workspace-arrow">⌄</span>
+      </button>
+      <nav class="cx-nav cx-nav-grouped" aria-label="Navegação principal">
+        <small>OPERAÇÃO</small>
+        <a href="/dashboard"><span class="cx-nav-icon" data-icon="home"></span>Home</a>
+        <a href="/overview"><span class="cx-nav-icon" data-icon="overview"></span>Visão geral</a>
+        <a class="active" href="/cameras"><span class="cx-nav-icon" data-icon="camera"></span>Câmeras</a>
+        <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Eventos</a>
+        <hr />
+        <small>MONITORAMENTO</small>
+        <a href="/alerts"><span class="cx-nav-icon" data-icon="alert"></span>Alertas</a>
+        <a href="/evidence"><span class="cx-nav-icon" data-icon="evidence"></span>Evidências</a>
+        <a href="/rules"><span class="cx-nav-icon" data-icon="rules"></span>Regras</a>
+        <hr />
+        <small>INTELIGÊNCIA</small>
+        <a href="/reports"><span class="cx-nav-icon" data-icon="reports"></span>Relatórios</a>
+        <a href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Insights</a>
+        <a href="/history"><span class="cx-nav-icon" data-icon="history"></span>Histórico</a>
+        <hr />
+        <small>PLATAFORMA</small>
+        <a href="/integrations"><span class="cx-nav-icon" data-icon="integrations"></span>Integrações</a>
+        <a href="/users"><span class="cx-nav-icon" data-icon="users"></span>Usuários</a>
+        <a href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Configurações</a>
       </nav>
+      <div class="cx-account">
+        <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
+        <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="status"></span>Sistema online</a>
+        <div class="cx-avatar">FE</div>
+        <div>
+          <strong>Operador</strong>
+          <span>Campex</span>
+        </div>
+      </div>
     </aside>
     <main class="cx-main app-content live-shell">
-      <section class="panel viewer live-view-page">
-        <div class="viewer-header">
-          <div>
-            <h1 id="liveViewName">Live View</h1>
-            <p class="muted">Campex Operations</p>
-          </div>
+      <header class="cx-header cx-topbar">
+        <div>
+          <p>Campex Operations</p>
+          <h1>Live View</h1>
+        </div>
+        <div class="cx-header-tools">
+          <input class="cx-top-search" placeholder="Busca" />
           <span id="liveViewStatus" class="badge offline">Conectando</span>
+          <small>Visualização em tempo real</small>
+          <button class="cx-icon-button" type="button" aria-label="Ajuda"><span class="cx-nav-icon" data-icon="help"></span></button>
+          <button class="cx-icon-button" type="button" aria-label="Notificações"><span class="cx-nav-icon" data-icon="alert"></span></button>
+          <div class="cx-top-avatar">FE</div>
         </div>
-        <div id="liveViewStage" class="viewer-stage live-view-stage">
-          <div id="liveViewMessage">Abrindo transmissão...</div>
-          <img id="liveViewImage" alt="Transmissão ao vivo" />
-          <canvas id="liveViewCanvas"></canvas>
-        </div>
-        <div class="viewer-meta">
-          <span>Resolução: <strong id="liveViewResolution">indisponível</strong></span>
-          <span>FPS: <strong id="liveViewFps">indisponível</strong></span>
-          <span>FPS inferência: <strong id="liveViewInferenceFps">0</strong></span>
-          <span>Pessoas detectadas: <strong id="liveViewPeople">0</strong></span>
-          <span>Máquina: <strong id="liveViewMachine">sem configuração</strong></span>
-          <span>Estado estimado: <strong id="liveViewMachineState">SEM SINAL</strong></span>
-          <span>Operador: <strong id="liveViewOperator">Sem operador</strong></span>
-          <span>Atividade visual: <strong id="liveViewMotion">0</strong></span>
-          <span>Relação: <strong id="liveViewRelation">Aguardando configuração</strong></span>
-        </div>
-        <div class="actions viewer-actions">
-          <button type="button" id="liveAiStart">Ativar IA</button>
-          <button type="button" id="liveAiStop">Desativar IA</button>
-          <button type="button" id="configureMachine">Configurar máquina</button>
-          <button type="button" id="configureOperatorZone">Configurar zona do operador</button>
-          <button type="button" id="calibrateMachine">Calibrar máquina ativa</button>
-          <button type="button" id="clearMachine">Limpar configuração</button>
-          <a class="button-link" href="/dashboard" target="_blank" rel="noreferrer">Abrir dashboard</a>
-        </div>
-        <div id="liveViewHint" class="muted">
-          Abra a câmera, ative a IA, desenhe a região da máquina e depois calibre com a máquina ativa.
-        </div>
+      </header>
+
+      <section class="cx-live-workspace">
+        <aside class="cx-live-rail">
+          <div class="cx-panel-head">
+            <div>
+              <h2>Câmeras</h2>
+              <p>Fonte aberta para monitoramento.</p>
+            </div>
+          </div>
+          <input class="cx-search" placeholder="Buscar câmera" />
+          <div class="cx-camera-row active">
+            <strong id="liveRailName">Live View</strong>
+            <span>Fonte RTSP protegida</span>
+            <i>Ativa nesta sessão</i>
+          </div>
+        </aside>
+
+        <section class="panel viewer live-view-page cx-live-center">
+          <div class="viewer-header">
+            <div>
+              <h1 id="liveViewName">Live View</h1>
+              <p class="muted">Stream ao vivo com overlays operacionais.</p>
+            </div>
+          </div>
+          <div id="liveViewStage" class="viewer-stage live-view-stage">
+            <div id="liveViewMessage">Abrindo transmissão...</div>
+            <img id="liveViewImage" alt="Transmissão ao vivo" />
+            <canvas id="liveViewCanvas"></canvas>
+          </div>
+          <div class="viewer-meta">
+            <span>Resolução: <strong id="liveViewResolution">indisponível</strong></span>
+            <span>FPS: <strong id="liveViewFps">indisponível</strong></span>
+            <span>FPS inferência: <strong id="liveViewInferenceFps">0</strong></span>
+          </div>
+          <div id="liveViewHint" class="muted">
+            Abra a câmera, ative a IA, desenhe a região da máquina e depois calibre com a máquina ativa.
+          </div>
+        </section>
+
+        <aside class="cx-live-context">
+          <div>
+            <h2>Contexto operacional</h2>
+            <p>Status calculado a partir do vídeo.</p>
+          </div>
+          <dl class="cx-context-list">
+            <div><dt>Pessoas detectadas</dt><dd id="liveViewPeople">0</dd></div>
+            <div><dt>Máquina</dt><dd id="liveViewMachine">sem configuração</dd></div>
+            <div><dt>Estado estimado</dt><dd id="liveViewMachineState">SEM SINAL</dd></div>
+            <div><dt>Operador</dt><dd id="liveViewOperator">Sem operador</dd></div>
+            <div><dt>Atividade visual</dt><dd id="liveViewMotion">0</dd></div>
+            <div><dt>Relação</dt><dd id="liveViewRelation">Aguardando configuração</dd></div>
+          </dl>
+          <div class="actions viewer-actions cx-action-stack">
+            <button type="button" id="liveAiStart">Ativar IA</button>
+            <button type="button" id="liveAiStop">Desativar IA</button>
+            <button type="button" id="configureMachine">Configurar máquina</button>
+            <button type="button" id="configureOperatorZone">Configurar zona do operador</button>
+            <button type="button" id="calibrateMachine">Calibrar máquina ativa</button>
+            <button type="button" id="clearMachine">Limpar configuração</button>
+            <a class="button-link" href="/dashboard" target="_blank" rel="noreferrer">Abrir dashboard</a>
+          </div>
+        </aside>
       </section>
     </main>
+    <script src="/static/shell.js"></script>
     <script src="/static/live-view.js"></script>
   </body>
 </html>

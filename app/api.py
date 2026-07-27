@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from app.camera_rtsp import build_rtsp_url, test_rtsp_connection
 from app.alerts import resume_pending_deliveries, retry_delivery, send_test_alert, stream_events
-from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, get_request_user, require_role, require_user, tenant_filter, update_user_password
+from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, get_request_user, require_role, require_user, tenant_filter, update_user_password, users_exist
 from app.config import ROOT
 from app.database import connect, init_db
 from app.live_stream import LiveStreamManager
@@ -40,13 +40,17 @@ from app.models import (
     listar_areas_camera,
     listar_eventos_filtrados,
     listar_machine_monitors_camera,
+    listar_regras,
     listar_por_cliente,
     obter_alert_delivery,
+    obter_alert_recipient,
     obter_camera,
     obter_evento,
     obter_machine_monitor,
+    obter_regra,
     reconhecer_ocorrencia,
     registrar_evento,
+    atualizar_regra,
 )
 from app.pilot import acceptance_checklist, health_snapshot
 from app.machine_monitoring import calibrate_threshold
@@ -58,6 +62,7 @@ from app.operations_history import (
 )
 from app.reports import daily_report_data
 from app.restricted_area import normalize_points
+from app.visual_rule_engine import condition_templates, default_rule_payloads, evaluate_rule
 from shared.schemas import now_iso
 
 api = FastAPI(title="Visual Operations Internal API")
@@ -71,13 +76,15 @@ if FRONTEND_DIR.exists():
 
 class ClienteIn(BaseModel):
     nome: str
+    documento: Optional[str] = None
     status: str = "ativo"
 
 
 class UnidadeIn(BaseModel):
-    cliente_id: str
+    cliente_id: Optional[str] = None
     nome: str
     localizacao: Optional[str] = None
+    timezone: str = "America/Sao_Paulo"
 
 
 class DispositivoIn(BaseModel):
@@ -111,6 +118,8 @@ class CameraRtspIn(BaseModel):
     caminho_rtsp: Optional[str] = None
     rtsp_url: Optional[str] = None
     testar_conexao: bool = True
+    canal: Optional[str] = None
+    ativa: bool = True
 
 
 class CameraRtspTestIn(BaseModel):
@@ -132,6 +141,47 @@ class RegraIn(BaseModel):
     tipo_evento: str
     tempo_minimo: float = 0
     ativo: bool = True
+    nome: Optional[str] = None
+    cliente_id: Optional[str] = None
+    unidade_id: Optional[str] = None
+    entidade: Optional[str] = None
+    regiao_id: Optional[str] = None
+    condicao: dict[str, Any] = {}
+    severidade: str = "medium"
+    cooldown_seconds: float = 60
+    destinatarios: list[str] = []
+    alerta_inicio: bool = True
+    alerta_normalizacao: bool = False
+    debounce_seconds: float = 1
+    hysteresis_seconds: float = 1
+    metadata: dict[str, Any] = {}
+
+
+class RegraPatchIn(BaseModel):
+    nome: Optional[str] = None
+    tipo_evento: Optional[str] = None
+    tempo_minimo: Optional[float] = None
+    ativo: Optional[bool] = None
+    entidade: Optional[str] = None
+    regiao_id: Optional[str] = None
+    condicao: Optional[dict[str, Any]] = None
+    severidade: Optional[str] = None
+    cooldown_seconds: Optional[float] = None
+    destinatarios: Optional[list[str]] = None
+    alerta_inicio: Optional[bool] = None
+    alerta_normalizacao: Optional[bool] = None
+    debounce_seconds: Optional[float] = None
+    hysteresis_seconds: Optional[float] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class VisualRuleSimulationIn(BaseModel):
+    facts: dict[str, Any]
+    at: Optional[str] = None
+
+
+class VisualRuleDefaultsIn(BaseModel):
+    zone_id: Optional[str] = None
 
 
 class EventoIn(BaseModel):
@@ -180,9 +230,11 @@ class AlertRecipientIn(BaseModel):
     nome: str
     email: str
     ativo: bool = True
+    cliente_id: Optional[str] = None
     camera_id: Optional[str] = None
     area_id: Optional[str] = None
     severidade_minima: str = "low"
+    event_types: list[str] = []
 
 
 class AlertRecipientPatchIn(BaseModel):
@@ -192,6 +244,7 @@ class AlertRecipientPatchIn(BaseModel):
     camera_id: Optional[str] = None
     area_id: Optional[str] = None
     severidade_minima: Optional[str] = None
+    event_types: Optional[list[str]] = None
 
 
 class LoginIn(BaseModel):
@@ -200,6 +253,7 @@ class LoginIn(BaseModel):
 
 
 class UserIn(BaseModel):
+    nome: Optional[str] = None
     email: str
     senha: str
     role: str
@@ -298,6 +352,25 @@ def default_cliente_unidade(connection, cliente_id: str | None = None, unidade_i
     return str(cliente_id), unidade_id
 
 
+def require_same_tenant(user: dict[str, Any], cliente_id: str | None, message: str = "Registro de outro cliente.") -> None:
+    tenant = tenant_filter(user)
+    if tenant and cliente_id != tenant:
+        raise HTTPException(status_code=403, detail=message)
+
+
+def effective_cliente_id(user: dict[str, Any], requested: str | None = None) -> str | None:
+    return requested if user["role"] == "admin_campex" else user.get("cliente_id")
+
+
+def require_camera_access(connection, user: dict[str, Any], camera_id: str | None) -> None:
+    if not camera_id:
+        return
+    camera = obter_camera(connection, camera_id)
+    if camera is None:
+        raise HTTPException(status_code=404, detail="Camera nao encontrada.")
+    require_same_tenant(user, camera.get("cliente_id"), "Camera de outro cliente.")
+
+
 @api.on_event("startup")
 def startup() -> None:
     with connect() as connection:
@@ -315,9 +388,76 @@ def index() -> RedirectResponse:
     return RedirectResponse(url="/dashboard", status_code=307)
 
 
-@api.get("/settings/cameras")
-def cameras_settings_page() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "index.html")
+@api.get("/home")
+def home_page() -> RedirectResponse:
+    return RedirectResponse(url="/dashboard", status_code=307)
+
+
+INTERNAL_ROUTE_FILES = {
+    "/dashboard": "dashboard.html",
+    "/overview": "dashboard.html",
+    "/cameras": "workspace.html",
+    "/events": "workspace.html",
+    "/alerts": "workspace.html",
+    "/evidence": "workspace.html",
+    "/rules": "workspace.html",
+    "/reports": "workspace.html",
+    "/insights": "workspace.html",
+    "/history": "workspace.html",
+    "/integrations": "workspace.html",
+    "/users": "workspace.html",
+    "/settings": "workspace.html",
+    "/settings/cameras": "index.html",
+    "/settings/notifications": "workspace.html",
+    "/settings/account": "workspace.html",
+}
+
+FRONTEND_404_PREFIXES = {"settings"}
+API_404_PREFIXES = {
+    "alert-deliveries",
+    "alert-recipients",
+    "api",
+    "assets",
+    "auth",
+    "cameras",
+    "clientes",
+    "dispositivos",
+    "eventos",
+    "events",
+    "health",
+    "live-view",
+    "operations",
+    "relatorios",
+    "static",
+    "unidades",
+}
+
+
+def serve_internal_route(request: Request) -> FileResponse:
+    filename = INTERNAL_ROUTE_FILES.get(request.url.path)
+    if filename is None:
+        raise HTTPException(status_code=404, detail="Página não encontrada.")
+    return FileResponse(FRONTEND_DIR / filename)
+
+
+for internal_route in INTERNAL_ROUTE_FILES:
+    api.add_api_route(
+        internal_route,
+        serve_internal_route,
+        methods=["GET"],
+        include_in_schema=False,
+        name=f"internal_{internal_route.strip('/').replace('/', '_') or 'home'}",
+    )
+
+
+def serve_internal_not_found(request: Request) -> FileResponse:
+    path = request.url.path.strip("/")
+    first_segment = path.split("/", 1)[0]
+    if "." in path or first_segment in API_404_PREFIXES:
+        raise HTTPException(status_code=404, detail="Not Found")
+    if "/" in path and first_segment not in FRONTEND_404_PREFIXES:
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(FRONTEND_DIR / "workspace.html", status_code=404)
 
 
 @api.get("/live-view")
@@ -340,14 +480,14 @@ def dashboard_html_page() -> RedirectResponse:
     return RedirectResponse(url="/dashboard", status_code=307)
 
 
-@api.get("/dashboard")
-def dashboard_page() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "dashboard.html")
-
-
 @api.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@api.get("/favicon.ico", include_in_schema=False)
+def favicon() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "campex-logo-oficial.png", media_type="image/png")
 
 
 @api.post("/auth/login")
@@ -381,6 +521,17 @@ def get_me(request: Request) -> dict[str, object]:
     return {"user": user}
 
 
+@api.get("/auth/status")
+def get_auth_status(request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        user = get_request_user(request, connection)
+        has_users = users_exist(connection)
+    if user is not None:
+        return {"authenticated": True, "bootstrap": False, "user": user}
+    return {"authenticated": False, "bootstrap": not has_users, "user": None}
+
+
 @api.post("/auth/users")
 def post_user(payload: UserIn, request: Request) -> dict[str, str]:
     with connect() as connection:
@@ -388,7 +539,7 @@ def post_user(payload: UserIn, request: Request) -> dict[str, str]:
         user = require_user(request, connection)
         require_role(user, ADMIN_ROLES)
         cliente_id = payload.cliente_id if user["role"] == "admin_campex" else user.get("cliente_id")
-        return {"id": create_user(connection, payload.email, payload.senha, payload.role, cliente_id)}
+        return {"id": create_user(connection, payload.email, payload.senha, payload.role, cliente_id, payload.nome)}
 
 
 @api.post("/auth/reset-password")
@@ -410,18 +561,59 @@ def get_pilot_checklist() -> dict[str, object]:
     return acceptance_checklist()
 
 
-@api.post("/clientes")
-def post_cliente(payload: ClienteIn) -> dict[str, str]:
+@api.get("/clientes")
+def get_clientes(request: Request) -> list[dict[str, Any]]:
     with connect() as connection:
         init_db(connection)
-        return {"id": criar_cliente(connection, payload.nome, payload.status)}
+        user = require_user(request, connection)
+        return listar_por_cliente(connection, "clientes", tenant_filter(user))
+
+
+@api.post("/clientes")
+def post_cliente(payload: ClienteIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        if user["role"] != "admin_campex" and user.get("cliente_id"):
+            raise HTTPException(status_code=403, detail="Somente admin Campex cria novos clientes.")
+        cliente_id = criar_cliente(connection, payload.nome, payload.status, payload.documento)
+        return listar_por_cliente(connection, "clientes", cliente_id)[0]
 
 
 @api.post("/unidades")
-def post_unidade(payload: UnidadeIn) -> dict[str, str]:
+def post_unidade(payload: UnidadeIn, request: Request) -> dict[str, str]:
     with connect() as connection:
         init_db(connection)
-        return {"id": criar_unidade(connection, payload.cliente_id, payload.nome, payload.localizacao)}
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        cliente_id = effective_cliente_id(user, payload.cliente_id)
+        if cliente_id is None:
+            raise HTTPException(status_code=400, detail="Informe o cliente da unidade.")
+        return {"id": criar_unidade(connection, cliente_id, payload.nome, payload.localizacao, payload.timezone)}
+
+
+@api.get("/unidades")
+def get_unidades(request: Request, cliente_id: Optional[str] = None) -> list[dict[str, Any]]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        effective = effective_cliente_id(user, cliente_id)
+        return listar_por_cliente(connection, "unidades", effective)
+
+
+@api.get("/auth/users")
+def get_users(request: Request) -> list[dict[str, Any]]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        tenant = tenant_filter(user)
+        if tenant:
+            rows = connection.execute("SELECT id, cliente_id, nome, email, role, ativo, criado_em FROM users WHERE cliente_id = ? ORDER BY criado_em DESC", (tenant,)).fetchall()
+        else:
+            rows = connection.execute("SELECT id, cliente_id, nome, email, role, ativo, criado_em FROM users ORDER BY criado_em DESC").fetchall()
+        return [dict(row) for row in rows]
 
 
 @api.post("/dispositivos")
@@ -491,6 +683,8 @@ def post_camera_rtsp(payload: CameraRtspIn, request: Request) -> dict[str, objec
             rtsp_path=rtsp.path,
             rtsp_username=rtsp.username,
             rtsp_password=rtsp.password,
+            canal=payload.canal,
+            ativa=payload.ativa,
         )
         if test_result:
             atualizar_camera_video_info(
@@ -945,11 +1139,129 @@ def post_machine_monitor_calibrate(monitor_id: str, payload: MachineCalibrationI
         )
 
 
-@api.post("/regras")
-def post_regra(payload: RegraIn) -> dict[str, str]:
+def _rule_context(connection, payload: RegraIn, user: dict[str, Any]) -> tuple[str | None, str | None]:
+    camera = obter_camera(connection, payload.camera_id)
+    if camera is None:
+        raise HTTPException(status_code=404, detail="Camera nao encontrada.")
+    require_same_tenant(user, camera.get("cliente_id"), "Camera de outro cliente.")
+    cliente_id = payload.cliente_id or camera.get("cliente_id") or tenant_filter(user)
+    unidade_id = payload.unidade_id or camera.get("unidade_id")
+    return cliente_id, unidade_id
+
+
+@api.get("/visual-rules/templates")
+def get_visual_rule_templates() -> dict[str, Any]:
+    return {"conditions": condition_templates()}
+
+
+@api.get("/visual-rules")
+def get_visual_rules(request: Request, camera_id: Optional[str] = None) -> list[dict[str, Any]]:
     with connect() as connection:
         init_db(connection)
-        return {"id": criar_regra(connection, payload.camera_id, payload.tipo_evento, payload.tempo_minimo, payload.ativo)}
+        user = require_user(request, connection)
+        if camera_id:
+            require_camera_access(connection, user, camera_id)
+        return listar_regras(connection, tenant_filter(user), camera_id)
+
+
+@api.post("/visual-rules")
+def post_visual_rule(payload: RegraIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        cliente_id, unidade_id = _rule_context(connection, payload, user)
+        rule_id = criar_regra(
+            connection,
+            payload.camera_id,
+            payload.tipo_evento,
+            payload.tempo_minimo,
+            payload.ativo,
+            nome=payload.nome,
+            cliente_id=cliente_id,
+            unidade_id=unidade_id,
+            entidade=payload.entidade,
+            regiao_id=payload.regiao_id,
+            condicao=payload.condicao or {"type": payload.tipo_evento},
+            severidade=payload.severidade,
+            cooldown_seconds=payload.cooldown_seconds,
+            destinatarios=payload.destinatarios,
+            alerta_inicio=payload.alerta_inicio,
+            alerta_normalizacao=payload.alerta_normalizacao,
+            debounce_seconds=payload.debounce_seconds,
+            hysteresis_seconds=payload.hysteresis_seconds,
+            metadata=payload.metadata,
+        )
+        return obter_regra(connection, rule_id)
+
+
+@api.post("/regras")
+def post_regra(payload: RegraIn, request: Request) -> dict[str, Any]:
+    return post_visual_rule(payload, request)
+
+
+@api.patch("/visual-rules/{rule_id}")
+def patch_visual_rule(rule_id: str, payload: RegraPatchIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        rule = obter_regra(connection, rule_id)
+        if rule is None:
+            raise HTTPException(status_code=404, detail="Regra nao encontrada.")
+        require_same_tenant(user, rule.get("cliente_id"), "Regra de outro cliente.")
+        updated = atualizar_regra(connection, rule_id, **payload.model_dump())
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Regra nao encontrada.")
+    return updated
+
+
+@api.post("/visual-rules/{rule_id}/simulate")
+def post_visual_rule_simulate(rule_id: str, payload: VisualRuleSimulationIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        rule = obter_regra(connection, rule_id)
+        if rule is None:
+            raise HTTPException(status_code=404, detail="Regra nao encontrada.")
+        require_same_tenant(user, rule.get("cliente_id"), "Regra de outro cliente.")
+        return evaluate_rule(connection, rule_id, payload.facts, at=payload.at)
+
+
+@api.post("/cameras/{camera_id}/visual-rules/defaults")
+def post_camera_visual_rule_defaults(camera_id: str, payload: VisualRuleDefaultsIn, request: Request) -> dict[str, Any]:
+    created: list[dict[str, Any]] = []
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        camera = obter_camera(connection, camera_id)
+        if camera is None:
+            raise HTTPException(status_code=404, detail="Camera nao encontrada.")
+        require_same_tenant(user, camera.get("cliente_id"), "Camera de outro cliente.")
+        existing_names = {rule["nome"] for rule in listar_regras(connection, camera_id=camera_id)}
+        for item in default_rule_payloads(camera_id, payload.zone_id):
+            if item["nome"] in existing_names:
+                continue
+            rule_id = criar_regra(
+                connection,
+                camera_id,
+                item["tipo_evento"],
+                item["tempo_minimo"],
+                True,
+                nome=item["nome"],
+                cliente_id=camera.get("cliente_id"),
+                unidade_id=camera.get("unidade_id"),
+                entidade=item.get("entidade"),
+                regiao_id=item.get("regiao_id"),
+                condicao=item["condicao"],
+                severidade=item["severidade"],
+                cooldown_seconds=item["cooldown_seconds"],
+                alerta_inicio=item["alerta_inicio"],
+                alerta_normalizacao=item["alerta_normalizacao"],
+            )
+            created.append(obter_regra(connection, rule_id))
+    return {"created": created, "total": len(created)}
 
 
 @api.post("/eventos")
@@ -1091,6 +1403,7 @@ def patch_evento_cause(evento_id: str, payload: EventCauseIn, request: Request) 
 
 @api.get("/operations/summary")
 def get_operations_summary(
+    request: Request,
     start: Optional[str] = None,
     end: Optional[str] = None,
     camera_id: Optional[str] = None,
@@ -1098,11 +1411,13 @@ def get_operations_summary(
 ) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
         return operations_summary(connection, start, end, camera_id, machine_name)
 
 
 @api.get("/operations/timeline")
 def get_operations_timeline(
+    request: Request,
     start: Optional[str] = None,
     end: Optional[str] = None,
     camera_id: Optional[str] = None,
@@ -1110,11 +1425,13 @@ def get_operations_timeline(
 ) -> list[dict[str, Any]]:
     with connect() as connection:
         init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
         return operations_timeline(connection, start, end, camera_id, machine_name)
 
 
 @api.get("/operations/events")
 def get_operations_events(
+    request: Request,
     start: Optional[str] = None,
     end: Optional[str] = None,
     camera_id: Optional[str] = None,
@@ -1124,17 +1441,20 @@ def get_operations_events(
 ) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
         events = list_operational_events(connection, start, end, camera_id, machine_name, limit, offset)
         return {"events": events, "limit": limit, "offset": offset}
 
 
 @api.get("/operations/current-status")
 def get_operations_current_status(
+    request: Request,
     camera_id: Optional[str] = None,
     machine_name: Optional[str] = None,
 ) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
         return current_status(connection, camera_id, machine_name)
 
 
@@ -1187,16 +1507,25 @@ def get_alert_recipients(request: Request) -> list[dict[str, Any]]:
         init_db(connection)
         user = require_user(request, connection)
         recipients = listar_alert_recipients(connection)
-        if not tenant_filter(user):
+        tenant = tenant_filter(user)
+        if not tenant:
             return recipients
-        cameras = {row["id"] for row in listar_por_cliente(connection, "cameras", tenant_filter(user))}
-        return [r for r in recipients if not r.get("camera_id") or r.get("camera_id") in cameras]
+        cameras = {row["id"] for row in listar_por_cliente(connection, "cameras", tenant)}
+        return [r for r in recipients if r.get("cliente_id") == tenant or (not r.get("cliente_id") and (not r.get("camera_id") or r.get("camera_id") in cameras))]
 
 
 @api.post("/alert-recipients")
-def post_alert_recipient(payload: AlertRecipientIn) -> dict[str, Any]:
+def post_alert_recipient(payload: AlertRecipientIn, request: Request) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        cliente_id = effective_cliente_id(user, payload.cliente_id)
+        if cliente_id is None and payload.camera_id:
+            camera = obter_camera(connection, payload.camera_id)
+            cliente_id = camera.get("cliente_id") if camera else None
+        if tenant_filter(user):
+            require_same_tenant(user, cliente_id)
         recipient_id = criar_alert_recipient(
             connection,
             payload.nome,
@@ -1205,14 +1534,21 @@ def post_alert_recipient(payload: AlertRecipientIn) -> dict[str, Any]:
             payload.camera_id,
             payload.area_id,
             payload.severidade_minima,
+            cliente_id,
+            payload.event_types,
         )
         return next(recipient for recipient in listar_alert_recipients(connection) if recipient["id"] == recipient_id)
 
 
 @api.patch("/alert-recipients/{recipient_id}")
-def patch_alert_recipient(recipient_id: str, payload: AlertRecipientPatchIn) -> dict[str, Any]:
+def patch_alert_recipient(recipient_id: str, payload: AlertRecipientPatchIn, request: Request) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
+        user = require_user(request, connection)
+        existing = obter_alert_recipient(connection, recipient_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Responsavel nao encontrado.")
+        require_same_tenant(user, existing.get("cliente_id"))
         recipient = atualizar_alert_recipient(
             connection,
             recipient_id,
@@ -1222,6 +1558,7 @@ def patch_alert_recipient(recipient_id: str, payload: AlertRecipientPatchIn) -> 
             camera_id=payload.camera_id,
             area_id=payload.area_id,
             severidade_minima=payload.severidade_minima,
+            event_types=payload.event_types,
         )
     if recipient is None:
         raise HTTPException(status_code=404, detail="Responsavel nao encontrado.")
@@ -1229,9 +1566,14 @@ def patch_alert_recipient(recipient_id: str, payload: AlertRecipientPatchIn) -> 
 
 
 @api.delete("/alert-recipients/{recipient_id}")
-def delete_alert_recipient(recipient_id: str) -> dict[str, object]:
+def delete_alert_recipient(recipient_id: str, request: Request) -> dict[str, object]:
     with connect() as connection:
         init_db(connection)
+        user = require_user(request, connection)
+        existing = obter_alert_recipient(connection, recipient_id)
+        if existing is None:
+            raise HTTPException(status_code=404, detail="Responsavel nao encontrado.")
+        require_same_tenant(user, existing.get("cliente_id"))
         deleted = excluir_alert_recipient(connection, recipient_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Responsavel nao encontrado.")
@@ -1239,7 +1581,14 @@ def delete_alert_recipient(recipient_id: str) -> dict[str, object]:
 
 
 @api.post("/alert-recipients/{recipient_id}/test")
-def post_alert_recipient_test(recipient_id: str) -> dict[str, object]:
+def post_alert_recipient_test(recipient_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        recipient = obter_alert_recipient(connection, recipient_id)
+        if recipient is None:
+            raise HTTPException(status_code=404, detail="Responsavel nao encontrado.")
+        require_same_tenant(user, recipient.get("cliente_id"))
     delivery_id = send_test_alert(recipient_id)
     if delivery_id is None:
         raise HTTPException(status_code=404, detail="Responsavel nao encontrado.")
@@ -1260,7 +1609,8 @@ def get_alert_deliveries(
         if not tenant_filter(user):
             return deliveries
         allowed_events = {event["id"] for event in listar_por_cliente(connection, "eventos", tenant_filter(user))}
-        return [d for d in deliveries if d.get("evento_id") in allowed_events or d.get("is_test")]
+        allowed_recipients = {recipient["id"] for recipient in get_alert_recipients(request)}
+        return [d for d in deliveries if d.get("evento_id") in allowed_events or d.get("recipient_id") in allowed_recipients]
 
 
 @api.get("/alert-deliveries/{delivery_id}")
@@ -1306,3 +1656,12 @@ def get_relatorio_diario(data: Optional[str] = None) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
         return daily_report_data(connection, data)
+
+
+api.add_api_route(
+    "/{internal_path:path}",
+    serve_internal_not_found,
+    methods=["GET"],
+    include_in_schema=False,
+    name="internal_not_found",
+)

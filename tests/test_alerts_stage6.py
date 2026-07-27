@@ -7,9 +7,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 from fastapi.testclient import TestClient
 
 from app import alerts
+from app.machine_monitoring import MachineMonitorConfig, MachineMonitorEngine
 from app.api import api
 from app.database import connect, init_db
 from app.models import (
@@ -21,6 +23,7 @@ from app.models import (
     criar_unidade,
     listar_alert_deliveries,
 )
+from app.restricted_area import AreaPoint
 
 
 class AlertsStage6Test(unittest.TestCase):
@@ -167,6 +170,76 @@ class AlertsStage6Test(unittest.TestCase):
         self.assertEqual(tested.status_code, 200)
         self.assertNotIn("rtsp://", text.lower())
         self.assertNotIn("senha", text.lower())
+
+    def test_machine_stoppage_event_automatically_sends_real_email_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console"}):
+            test_connect, camera_id, _area_id, _event_id = self.make_context(temp_dir)
+            with patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.connect", test_connect), patch("builtins.print") as printer:
+                with test_connect() as connection:
+                    criar_alert_recipient(
+                        connection,
+                        "Manutencao",
+                        "manutencao@example.com",
+                        camera_id=camera_id,
+                        cliente_id=connection.execute("SELECT cliente_id FROM cameras WHERE id = ?", (camera_id,)).fetchone()["cliente_id"],
+                        event_types=["machine_stoppage"],
+                    )
+                config = MachineMonitorConfig(
+                    id="mach_test",
+                    client_id="",
+                    unit_id="",
+                    camera_id=camera_id,
+                    nome="Extrusora",
+                    machine_polygon=[AreaPoint(0.1, 0.1), AreaPoint(0.9, 0.1), AreaPoint(0.9, 0.9)],
+                    operator_polygon=[AreaPoint(0.0, 0.1), AreaPoint(0.05, 0.1), AreaPoint(0.05, 0.9)],
+                    stop_seconds=0.1,
+                    recovery_seconds=0.1,
+                )
+                with test_connect() as connection:
+                    camera = connection.execute("SELECT cliente_id, unidade_id FROM cameras WHERE id = ?", (camera_id,)).fetchone()
+                config.client_id = camera["cliente_id"]
+                config.unit_id = camera["unidade_id"]
+                engine = MachineMonitorEngine(config)
+                frame = np.zeros((80, 120, 3), dtype=np.uint8)
+                with patch("app.machine_monitoring.save_machine_evidence", return_value=(None, None)):
+                    engine._open_event(time.monotonic(), frame)
+                    engine._open_event(time.monotonic(), frame)
+                rows = self.wait_for_deliveries(test_connect)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "sent")
+        self.assertEqual(rows[0]["destinatario"], "manutencao@example.com")
+        printer.assert_called()
+
+    def test_event_type_filter_prevents_unrelated_real_email(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console"}):
+            test_connect, camera_id, _area_id, _event_id = self.make_context(temp_dir)
+            with patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.connect", test_connect):
+                with test_connect() as connection:
+                    camera = connection.execute("SELECT cliente_id, unidade_id FROM cameras WHERE id = ?", (camera_id,)).fetchone()
+                    criar_alert_recipient(
+                        connection,
+                        "Area",
+                        "area@example.com",
+                        camera_id=camera_id,
+                        cliente_id=camera["cliente_id"],
+                        event_types=["restricted_area_occupied"],
+                    )
+                config = MachineMonitorConfig(
+                    id="mach_filter",
+                    client_id=camera["cliente_id"],
+                    unit_id=camera["unidade_id"],
+                    camera_id=camera_id,
+                    nome="Extrusora",
+                    machine_polygon=[AreaPoint(0.1, 0.1), AreaPoint(0.9, 0.1), AreaPoint(0.9, 0.9)],
+                    operator_polygon=[AreaPoint(0.0, 0.1), AreaPoint(0.05, 0.1), AreaPoint(0.05, 0.9)],
+                )
+                engine = MachineMonitorEngine(config)
+                with patch("app.machine_monitoring.save_machine_evidence", return_value=(None, None)):
+                    engine._open_event(time.monotonic(), np.zeros((80, 120, 3), dtype=np.uint8))
+                time.sleep(0.1)
+                with test_connect() as connection:
+                    rows = listar_alert_deliveries(connection)
+        self.assertEqual(rows, [])
 
 
 if __name__ == "__main__":

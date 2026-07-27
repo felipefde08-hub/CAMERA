@@ -14,17 +14,46 @@
   </head>
   <body class="campex-dashboard">
     <aside class="cx-sidebar">
-      <a class="cx-logo" href="/dashboard" aria-label="Campex">
-        <img src="/static/campex-logo-oficial.png" alt="Campex" />
-      </a>
-      <nav class="cx-nav" aria-label="Navegação principal">
-        <a class="active" href="/dashboard"><span></span>Visão geral</a>
-        <a href="/live-view"><span></span>Live View</a>
-        <a href="/dashboard"><span></span>Operações</a>
-        <a href="#eventsSection"><span></span>Eventos</a>
-        <a href="/settings/cameras"><span></span>Configurações</a>
+      <div class="cx-sidebar-top">
+        <a class="cx-logo" href="/dashboard" aria-label="Campex">
+          <img src="/static/campex-logo-oficial.png" alt="Campex" />
+          <strong>Campex</strong>
+        </a>
+        <button class="cx-collapse" type="button" aria-label="Recolher sidebar">‹</button>
+      </div>
+      <button class="cx-workspace-switcher" type="button" aria-label="Trocar workspace" title="FL Plásticos · Unidade principal">
+        <span class="cx-workspace-initials">FL</span>
+        <span class="cx-workspace-copy">
+          <strong>FL Plásticos</strong>
+          <small>Unidade principal</small>
+        </span>
+        <span class="cx-workspace-arrow">⌄</span>
+      </button>
+      <nav class="cx-nav cx-nav-grouped" aria-label="Navegação principal">
+        <small>OPERAÇÃO</small>
+        <a class="active" href="/dashboard"><span class="cx-nav-icon" data-icon="home"></span>Home</a>
+        <a href="/overview"><span class="cx-nav-icon" data-icon="overview"></span>Visão geral</a>
+        <a href="/cameras"><span class="cx-nav-icon" data-icon="camera"></span>Câmeras</a>
+        <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Eventos</a>
+        <hr />
+        <small>MONITORAMENTO</small>
+        <a href="/alerts"><span class="cx-nav-icon" data-icon="alert"></span>Alertas</a>
+        <a href="/evidence"><span class="cx-nav-icon" data-icon="evidence"></span>Evidências</a>
+        <a href="/rules"><span class="cx-nav-icon" data-icon="rules"></span>Regras</a>
+        <hr />
+        <small>INTELIGÊNCIA</small>
+        <a href="/reports"><span class="cx-nav-icon" data-icon="reports"></span>Relatórios</a>
+        <a href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Insights</a>
+        <a href="/history"><span class="cx-nav-icon" data-icon="history"></span>Histórico</a>
+        <hr />
+        <small>PLATAFORMA</small>
+        <a href="/integrations"><span class="cx-nav-icon" data-icon="integrations"></span>Integrações</a>
+        <a href="/users"><span class="cx-nav-icon" data-icon="users"></span>Usuários</a>
+        <a href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Configurações</a>
       </nav>
       <div class="cx-account">
+        <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
+        <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="status"></span>Sistema online</a>
         <div class="cx-avatar">FE</div>
         <div>
           <strong>Felipe</strong>
@@ -34,11 +63,8 @@
     </aside>
 
     <main class="cx-main">
-      <header class="cx-header">
-        <div>
-          <p>Campex Operations</p>
-          <h1>FL Plásticos</h1>
-        </div>
+      <header class="cx-header cx-topbar">
+        <div class="cx-header-breadcrumb" aria-label="Localização">FL Plásticos / Home</div>
         <div class="cx-header-tools">
           <label>
             Unidade
@@ -46,7 +72,6 @@
               <option>Unidade principal</option>
             </select>
           </label>
-          <span class="cx-live-dot"><i></i>Online</span>
           <label>
             Período
             <select id="periodFilter">
@@ -57,14 +82,147 @@
               <option value="custom">Personalizado</option>
             </select>
           </label>
-          <small>Atualizado <strong id="dashboardUpdated">--</strong></small>
+          <input class="cx-top-search" placeholder="Buscar eventos, câmeras ou alertas" />
+          <button class="cx-icon-button" type="button" aria-label="Notificações"><span class="cx-nav-icon" data-icon="alert"></span></button>
+          <small id="dashboardSyncState" class="cx-sync-state"><span id="dashboardSyncLabel">Atualizado</span> <strong id="dashboardUpdated">--</strong> <a id="dashboardLoginAction" href="/settings/cameras#login" hidden>Entrar</a></small>
+          <div class="cx-top-avatar">FE</div>
         </div>
       </header>
 
-      <section class="cx-page-title">
+      <section class="cx-home-page-head">
+        <div class="cx-home-title">
+          <h2>Olá, Felipe.</h2>
+          <p>Acompanhe os eventos, câmeras e estados da sua operação.</p>
+        </div>
+        <div class="cx-home-page-actions">
+          <a class="cx-secondary-action" href="/alerts">Configurar evento</a>
+          <a class="cx-primary-action" href="/settings/cameras">Adicionar câmera</a>
+        </div>
+      </section>
+
+      <section class="cx-home-priority" aria-label="Ação prioritária">
         <div>
+          <span>Configuração inicial</span>
+          <h2 id="homePriorityTitle">Conecte o primeiro ponto da operação</h2>
+          <p id="homePriorityDescription">Adicione uma câmera, escolha o evento que deseja acompanhar e comece a validar a Campex com a operação real.</p>
+          <ol class="cx-onboarding-steps" aria-label="Fluxo inicial">
+            <li>Adicionar câmera</li>
+            <li>Configurar evento</li>
+            <li>Validar ocorrências</li>
+          </ol>
+        </div>
+        <div class="cx-priority-actions">
+          <a id="homePriorityAction" class="cx-primary-action" href="/settings/cameras">Adicionar câmera</a>
+          <a class="cx-secondary-action" href="/settings/cameras#maquinas">Entender o fluxo</a>
+        </div>
+      </section>
+
+      <section class="cx-quick-actions" aria-label="Ações rápidas">
+        <a class="featured" href="/settings/cameras">
+          <span class="cx-action-icon"><span class="cx-nav-icon" data-icon="camera"></span></span>
+          <strong id="homeCameraActionTitle">Adicionar câmera</strong>
+          <p id="homeCameraActionDescription">Conecte o primeiro ponto da operação.</p>
+        </a>
+        <a href="/events">
+          <span class="cx-action-icon"><span class="cx-nav-icon" data-icon="history"></span></span>
+          <strong>Revisar eventos</strong>
+          <p>Acompanhe as últimas ocorrências.</p>
+        </a>
+        <a href="/alerts">
+          <span class="cx-action-icon"><span class="cx-nav-icon" data-icon="alert"></span></span>
+          <strong>Configurar alerta</strong>
+          <p>Defina quando a equipe será notificada.</p>
+        </a>
+        <a href="/reports">
+          <span class="cx-action-icon"><span class="cx-nav-icon" data-icon="reports"></span></span>
+          <strong>Gerar relatório</strong>
+          <p>Organize eventos por período e recorrência.</p>
+        </a>
+      </section>
+
+      <section class="cx-home-section">
+        <div class="cx-section-head cx-section-head-row">
           <h2>Resumo da operação</h2>
-          <p>Dados gerados por análise de vídeo em tempo real.</p>
+          <span class="cx-section-period">Últimas 24 horas</span>
+        </div>
+        <div class="cx-home-metrics">
+          <article data-home-link="/cameras" role="link" tabindex="0" aria-label="Abrir câmeras">
+            <i class="active"></i>
+            <span>Câmeras ativas</span>
+            <strong id="homeActiveCameras">—</strong>
+            <small id="homeActiveCamerasHint">Nenhuma câmera conectada</small>
+          </article>
+          <article data-home-link="/events" role="link" tabindex="0" aria-label="Abrir eventos">
+            <i class="neutral"></i>
+            <span>Eventos hoje</span>
+            <strong id="homeEventsToday">0</strong>
+            <small id="homeEventsTodayHint">Nenhuma ocorrência registrada</small>
+          </article>
+          <article data-home-link="/alerts" role="link" tabindex="0" aria-label="Abrir alertas">
+            <i class="warning"></i>
+            <span>Alertas pendentes</span>
+            <strong id="homePendingAlerts">0</strong>
+            <small id="homePendingAlertsHint">Nenhum alerta pendente</small>
+          </article>
+          <article data-home-link="/evidence" role="link" tabindex="0" aria-label="Abrir evidências">
+            <i class="success"></i>
+            <span>Evidências salvas</span>
+            <strong id="homeEvidenceCount">0</strong>
+            <small id="homeEvidenceCountHint">Nenhuma evidência disponível</small>
+          </article>
+        </div>
+      </section>
+
+      <section class="cx-home-lower-grid">
+        <article class="cx-home-section cx-home-events-section">
+          <div class="cx-section-head cx-section-head-row">
+            <div>
+              <h2>Eventos recentes</h2>
+              <p>Ocorrências identificadas no período.</p>
+            </div>
+            <div class="cx-home-section-actions">
+              <div class="cx-tabs" aria-label="Filtro de eventos">
+                <button type="button" class="active" data-home-event-filter="all">Todos</button>
+                <button type="button" data-home-event-filter="paradas">Paradas</button>
+                <button type="button" data-home-event-filter="pessoas">Pessoas</button>
+              </div>
+              <a class="cx-link" href="/events">Ver todos</a>
+            </div>
+          </div>
+          <div class="cx-table-wrap">
+            <table class="cx-table">
+              <thead>
+                <tr>
+                  <th>Evento</th>
+                  <th>Câmera</th>
+                  <th>Categoria</th>
+                  <th>Horário</th>
+                  <th>Status</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="homeRecentEvents">
+                <tr><td colspan="6">Carregando eventos...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <aside class="cx-home-section cx-home-cameras-section">
+          <div class="cx-section-head cx-section-head-row">
+            <h2>Câmeras</h2>
+            <a class="cx-link" href="/cameras">Ver todas</a>
+          </div>
+          <div id="homeCameraGrid" class="cx-home-cameras">
+            <div class="cx-empty-card">Carregando câmeras...</div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="cx-page-title cx-dashboard-detail-title">
+        <div>
+          <h2>Atividade complementar</h2>
+          <p>Detalhes operacionais gerados por análise de vídeo em tempo real.</p>
         </div>
         <div class="cx-filters">
           <label>
@@ -111,6 +269,44 @@
           <strong id="metricActiveNoOperator">Sem dados</strong>
           <small id="metricNoOperatorHint">Aguardando monitoramento</small>
         </article>
+      </section>
+
+      <section id="operationsSection" class="cx-panel cx-operations-panel">
+        <div class="cx-panel-head">
+          <div>
+            <h2>Operações</h2>
+            <p>Central operacional com máquinas, câmeras, estados e última atualização.</p>
+          </div>
+          <div class="cx-table-tools">
+            <input id="operationSearch" placeholder="Buscar operação" />
+            <select id="operationStateFilter">
+              <option value="">Todos os estados</option>
+              <option value="running">Ativa</option>
+              <option value="stopped">Parada</option>
+              <option value="suspected_stop">Suspeita de parada</option>
+              <option value="unavailable">Sem sinal</option>
+            </select>
+          </div>
+        </div>
+        <div class="cx-table-wrap">
+          <table class="cx-table">
+            <thead>
+              <tr>
+                <th>Operação</th>
+                <th>Máquina/Área</th>
+                <th>Estado</th>
+                <th>Operador</th>
+                <th>Pessoas</th>
+                <th>Câmera</th>
+                <th>Último evento</th>
+                <th>Atualização</th>
+              </tr>
+            </thead>
+            <tbody id="operationsTableBody">
+              <tr><td colspan="8">Carregando operações...</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section class="cx-dashboard-grid">
@@ -182,12 +378,28 @@
                 <p>Histórico compacto do período.</p>
               </div>
             </div>
-            <div id="operationsEvents" class="premium-events compact"></div>
+            <div class="cx-table-wrap compact-events-table">
+              <table class="cx-table">
+                <thead>
+                  <tr>
+                    <th>Data e hora</th>
+                    <th>Evento</th>
+                    <th>Máquina/Área</th>
+                    <th>Duração</th>
+                    <th>Evidência</th>
+                  </tr>
+                </thead>
+                <tbody id="operationsEvents">
+                  <tr><td colspan="5">Carregando eventos...</td></tr>
+                </tbody>
+              </table>
+            </div>
             <a class="cx-all-events" href="/dashboard#eventsSection">Ver todos os eventos</a>
           </article>
         </aside>
       </section>
     </main>
+    <script src="/static/shell.js"></script>
     <script src="/static/operations-dashboard.js"></script>
   </body>
 </html>

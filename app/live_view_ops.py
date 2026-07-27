@@ -100,7 +100,7 @@ class LiveViewOpsEngine:
             self._inference_frames += 1
             elapsed = max(0.001, time.monotonic() - self._last_inference_tick)
             self.state.inference_fps = round(self._inference_frames / elapsed, 2)
-        self.state.people_count = len(detections)
+        self.state.people_count = len([detection for detection in detections if detection.class_name == "person"])
         self._update_machine(frame)
         self._update_operator(frame, detections)
         self._update_relation()
@@ -134,6 +134,8 @@ class LiveViewOpsEngine:
         height, width = frame.shape[:2]
         count = 0
         for detection in detections:
+            if detection.class_name != "person":
+                continue
             if point_in_polygon(foot_point_normalized(detection, width, height), self.config.operator_polygon):
                 count += 1
         self.state.operator_people_count = count
@@ -193,7 +195,7 @@ def draw_live_view_overlay(
     height, width = annotated.shape[:2]
     for detection in detections:
         cv2.rectangle(annotated, (detection.x1, detection.y1), (detection.x2, detection.y2), (0, 255, 0), 2)
-        label = f"person {detection.confidence:.2f}"
+        label = f"{detection.class_name} {detection.confidence:.2f}"
         cv2.putText(annotated, label, (detection.x1, max(18, detection.y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2, cv2.LINE_AA)
     if config is not None:
         draw_polygon(annotated, config.machine_polygon, (255, 180, 0))

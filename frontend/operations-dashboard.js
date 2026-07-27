@@ -1,4 +1,7 @@
 const dashboardUpdated = document.querySelector("#dashboardUpdated");
+const dashboardSyncLabel = document.querySelector("#dashboardSyncLabel");
+const dashboardSyncState = document.querySelector("#dashboardSyncState");
+const dashboardLoginAction = document.querySelector("#dashboardLoginAction");
 const periodFilter = document.querySelector("#periodFilter");
 const cameraFilter = document.querySelector("#cameraFilter");
 const machineFilter = document.querySelector("#machineFilter");
@@ -12,10 +15,32 @@ const statusCameraText = document.querySelector("#statusCameraText");
 const currentMachineName = document.querySelector("#currentMachineName");
 const timeline = document.querySelector("#timeline");
 const operationsEvents = document.querySelector("#operationsEvents");
+const operationsTableBody = document.querySelector("#operationsTableBody");
+const operationSearch = document.querySelector("#operationSearch");
+const operationStateFilter = document.querySelector("#operationStateFilter");
 const timelineStartLabel = document.querySelector("#timelineStartLabel");
 const timelineMiddleLabel = document.querySelector("#timelineMiddleLabel");
 const timelineEndLabel = document.querySelector("#timelineEndLabel");
 const periodDonut = document.querySelector("#periodDonut");
+const homeEventSearch = document.querySelector("#homeEventSearch");
+const homeRecentEvents = document.querySelector("#homeRecentEvents");
+const homeCameraGrid = document.querySelector("#homeCameraGrid");
+const homeActiveCameras = document.querySelector("#homeActiveCameras");
+const homeEventsToday = document.querySelector("#homeEventsToday");
+const homePendingAlerts = document.querySelector("#homePendingAlerts");
+const homeEvidenceCount = document.querySelector("#homeEvidenceCount");
+const homeActiveCamerasHint = document.querySelector("#homeActiveCamerasHint");
+const homeEventsTodayHint = document.querySelector("#homeEventsTodayHint");
+const homePendingAlertsHint = document.querySelector("#homePendingAlertsHint");
+const homeEvidenceCountHint = document.querySelector("#homeEvidenceCountHint");
+const homePriorityTitle = document.querySelector("#homePriorityTitle");
+const homePriorityDescription = document.querySelector("#homePriorityDescription");
+const homePriorityAction = document.querySelector("#homePriorityAction");
+const homeCameraActionTitle = document.querySelector("#homeCameraActionTitle");
+const homeCameraActionDescription = document.querySelector("#homeCameraActionDescription");
+let homeEventFilter = "all";
+let homeEventsCache = [];
+let homeCamerasCache = [];
 
 const metrics = {
   total: document.querySelector("#metricTotal"),
@@ -41,8 +66,58 @@ async function requestJson(url) {
   const response = await fetch(url);
   const contentType = response.headers.get("content-type") || "";
   const payload = contentType.includes("application/json") ? await response.json() : { detail: await response.text() };
-  if (!response.ok) throw new Error(payload.detail || `Erro HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(payload.detail || `Erro HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return payload;
+}
+
+function renderLoggedOutDashboard() {
+  setDashboardSyncState("auth");
+  if (homeCamerasCache.length || homeEventsCache.length) {
+    homeCamerasCache = [];
+    homeEventsCache = [];
+  }
+  updateHomeSummary([], [], []);
+  renderHomeEvents();
+  renderHomeCameras();
+  if (timeline) timeline.innerHTML = '<div class="empty-dark">Entre para carregar o histórico operacional.</div>';
+  if (operationsEvents) operationsEvents.innerHTML = '<tr><td colspan="5">Entre para ver os eventos operacionais.</td></tr>';
+  if (operationsTableBody) operationsTableBody.innerHTML = '<tr><td colspan="8">Entre para ver as operações cadastradas.</td></tr>';
+}
+
+async function authStatus() {
+  return requestJson("/auth/status").catch(() => ({ authenticated: false, bootstrap: false }));
+}
+
+function setDashboardSyncState(state, detail = "") {
+  if (!dashboardUpdated || !dashboardSyncLabel) return;
+  dashboardSyncState?.classList.remove("auth-required", "error");
+  if (dashboardLoginAction) dashboardLoginAction.hidden = true;
+  dashboardUpdated.classList.remove("offline");
+  if (state === "loading") {
+    dashboardSyncLabel.textContent = "Atualizando";
+    dashboardUpdated.textContent = "agora";
+    return;
+  }
+  if (state === "auth") {
+    dashboardSyncState?.classList.add("auth-required");
+    dashboardSyncLabel.textContent = "Login necessário";
+    dashboardUpdated.textContent = "";
+    if (dashboardLoginAction) dashboardLoginAction.hidden = false;
+    return;
+  }
+  if (state === "error") {
+    dashboardSyncState?.classList.add("error");
+    dashboardSyncLabel.textContent = "Erro de atualização";
+    dashboardUpdated.textContent = detail || "verifique a API";
+    dashboardUpdated.classList.add("offline");
+    return;
+  }
+  dashboardSyncLabel.textContent = "Atualizado";
+  dashboardUpdated.textContent = detail || new Date().toLocaleTimeString();
 }
 
 function periodRange() {
@@ -98,6 +173,15 @@ function formatClock(value) {
   return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+function formatDurationShort(seconds) {
+  const value = Number(seconds || 0);
+  if (!value) return "—";
+  const minutes = Math.floor(value / 60);
+  const sec = Math.floor(value % 60);
+  if (minutes >= 60) return formatDuration(value);
+  return `${String(minutes).padStart(2, "0")} min ${String(sec).padStart(2, "0")} s`;
+}
+
 function hasOperationalData(summary) {
   return Boolean(
     Number(summary.tempo_maquina_ativa || 0) ||
@@ -116,6 +200,14 @@ function eventLabel(event) {
     active_without_operator: "Ativa sem operador",
   };
   return labels[event.event_type] || event.event_type;
+}
+
+function stateBadgeClass(state) {
+  const normalized = String(state || "").toLowerCase();
+  if (["running", "ativa", "online", "recovered"].includes(normalized)) return "success";
+  if (["stopped", "parada"].includes(normalized)) return "danger";
+  if (["suspected_stop", "ativa_sem_operador"].includes(normalized)) return "warning";
+  return "offline";
 }
 
 function timelineClass(item) {
@@ -193,40 +285,253 @@ function renderTimeline(items) {
 function renderEvents(payload) {
   const events = payload.events || [];
   if (!events.length) {
-    operationsEvents.innerHTML = '<div class="empty-dark">Nenhum evento operacional registrado.</div>';
+    operationsEvents.innerHTML = '<tr><td colspan="5">Nenhum evento operacional registrado.</td></tr>';
     return;
   }
   operationsEvents.innerHTML = events.map((event) => `
-    <div class="premium-event">
-      <i class="${timelineClass({ event_type: event.event_type, state: event.new_state })}"></i>
-      <div>
-        <span>${new Date(event.started_at).toLocaleTimeString()}${event.ended_at ? ` → ${new Date(event.ended_at).toLocaleTimeString()}` : " → em aberto"}</span>
-        <strong>${eventLabel(event)}: ${event.previous_state || "-"} → ${event.new_state}</strong>
-      </div>
-      <div>${formatDuration(event.duration_seconds)}</div>
-      <div>${event.snapshot_path ? `<span class="snapshot-pill">Evidência</span>` : ""}</div>
-    </div>
+    <tr>
+      <td>${new Date(event.started_at).toLocaleString()}${event.ended_at ? ` → ${new Date(event.ended_at).toLocaleTimeString()}` : ""}</td>
+      <td><span class="cx-status-dot ${timelineClass({ event_type: event.event_type, state: event.new_state })}"></span>${eventLabel(event)}: ${event.previous_state || "-"} → ${event.new_state}</td>
+      <td>${event.machine_name || "—"}</td>
+      <td>${formatDuration(event.duration_seconds)}</td>
+      <td>${event.snapshot_path ? `<span class="snapshot-pill">Evidência</span>` : "—"}</td>
+    </tr>
   `).join("");
+}
+
+function renderOperations(payload) {
+  if (!operationsTableBody) return;
+  const search = (operationSearch?.value || "").trim().toLowerCase();
+  const stateFilter = operationStateFilter?.value || "";
+  const rows = (payload.machines || []).filter((item) => {
+    const monitor = item.monitor || {};
+    const haystack = `${monitor.nome || ""} ${monitor.camera_id || ""} ${monitor.current_state || ""}`.toLowerCase();
+    if (search && !haystack.includes(search)) return false;
+    if (stateFilter && monitor.current_state !== stateFilter) return false;
+    return true;
+  });
+  if (!rows.length) {
+    operationsTableBody.innerHTML = '<tr><td colspan="8">Nenhuma operação encontrada.</td></tr>';
+    return;
+  }
+  operationsTableBody.innerHTML = rows.map((item) => {
+    const monitor = item.monitor || {};
+    const last = (item.ultimas_ocorrencias || [])[0];
+    return `
+      <tr>
+        <td><strong>Campex Operations</strong></td>
+        <td>${monitor.nome || "—"}</td>
+        <td><span class="cx-badge ${stateBadgeClass(monitor.current_state)}">${monitor.current_state || "unavailable"}</span></td>
+        <td>${monitor.operator_present ? "Presente" : "Ausente"}</td>
+        <td>${monitor.max_people || 0}</td>
+        <td>${monitor.camera_id || "—"}</td>
+        <td>${last ? `${last.tipo} · ${formatDuration(last.duracao)}` : "Sem evento"}</td>
+        <td>${monitor.atualizado_em || monitor.last_state_change || "—"}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function categoryForEvent(event) {
+  const text = `${event.tipo || event.event_type || ""} ${event.new_state || ""}`.toLowerCase();
+  if (text.includes("stoppage") || text.includes("parada") || text.includes("machine")) return "Máquina";
+  if (text.includes("person") || text.includes("restricted") || text.includes("pessoa")) return "Pessoas";
+  if (text.includes("alert")) return "Alerta";
+  return "Operação";
+}
+
+function statusForEvent(event) {
+  if (event.status === "acknowledged") return "Resolvido";
+  if (event.status === "open") return "Em análise";
+  if (event.status === "closed") return "Registrado";
+  if (event.event_type) return event.ended_at ? "Registrado" : "Em análise";
+  return "Registrado";
+}
+
+function eventTitle(event) {
+  if (event.tipo === "machine_stoppage") return "Parada detectada";
+  if (event.tipo === "restricted_area_occupied") return "Pessoa em área restrita";
+  if (event.event_type === "active_without_operator") return "Ativa sem operador";
+  if (event.event_type === "camera_status") return "Estado da câmera";
+  if (event.event_type === "machine_state") return "Estado da máquina";
+  return event.tipo || event.event_type || "Evento operacional";
+}
+
+function eventTime(event) {
+  const value = event.inicio || event.started_at || event.criado_em;
+  if (!value) return "—";
+  return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function eventEvidence(event) {
+  return event.midia_path || event.snapshot_path ? "Disponível" : "—";
+}
+
+function eventMatchesFilter(event) {
+  const category = categoryForEvent(event).toLowerCase();
+  const title = eventTitle(event).toLowerCase();
+  if (homeEventFilter === "paradas") return title.includes("parada") || title.includes("máquina");
+  if (homeEventFilter === "pessoas") return category.includes("pessoas");
+  if (homeEventFilter === "maquinas") return category.includes("máquina");
+  if (homeEventFilter === "alertas") return title.includes("alerta") || category.includes("alerta");
+  return true;
+}
+
+function renderHomeEvents() {
+  if (!homeRecentEvents) return;
+  const query = (homeEventSearch?.value || "").trim().toLowerCase();
+  const rows = homeEventsCache
+    .filter(eventMatchesFilter)
+    .filter((event) => !query || JSON.stringify(event).toLowerCase().includes(query) || eventTitle(event).toLowerCase().includes(query))
+    .slice(0, 5);
+  if (!rows.length) {
+    homeRecentEvents.innerHTML = `
+      <tr>
+        <td colspan="6">
+          <div class="cx-home-empty">
+            <span class="cx-nav-icon" data-icon="events"></span>
+            <strong>Nenhum evento registrado</strong>
+            <p>Os acontecimentos identificados pelas câmeras aparecerão aqui.</p>
+            <a class="cx-secondary-action" href="/alerts">Configurar primeiro evento</a>
+          </div>
+        </td>
+      </tr>
+    `;
+    return;
+  }
+  homeRecentEvents.innerHTML = rows.map((event) => `
+    <tr>
+      <td><strong>${eventTitle(event)}</strong></td>
+      <td>${event.camera_id || "—"}</td>
+      <td>${categoryForEvent(event)}</td>
+      <td>${eventTime(event)}</td>
+      <td><span class="cx-badge ${stateBadgeClass(statusForEvent(event))}">${statusForEvent(event)}</span></td>
+      <td><a class="cx-link" href="/events">Abrir</a></td>
+    </tr>
+  `).join("");
+}
+
+function renderHomeCameras() {
+  if (!homeCameraGrid) return;
+  const cameras = homeCamerasCache.slice(0, 4);
+  if (!cameras.length) {
+    homeCameraGrid.innerHTML = `
+      <div class="cx-home-empty compact">
+        <span class="cx-nav-icon" data-icon="camera"></span>
+        <strong>Nenhuma câmera conectada</strong>
+        <p>Adicione uma câmera para começar a acompanhar a operação.</p>
+        <a class="cx-primary-action" href="/settings/cameras">Adicionar câmera</a>
+      </div>
+    `;
+    return;
+  }
+  homeCameraGrid.innerHTML = cameras.map((camera) => `
+    <article class="cx-camera-row-card">
+      <div class="cx-camera-mini"><span class="cx-nav-icon" data-icon="camera"></span></div>
+      <div>
+        <strong>${camera.nome || "Câmera"}</strong>
+        <span>${camera.unidade_id || "Área não informada"}</span>
+      </div>
+      <span class="cx-badge ${camera.status === "online" ? "success" : "offline"}">${camera.status === "online" ? "Online" : "Offline"}</span>
+      <small>Último evento: ${camera.ultimo_frame || "sem registro"}</small>
+    </article>
+  `).join("");
+}
+
+function updateHomeSummary(cameras, events, deliveries) {
+  const activeCameras = cameras.filter((camera) => camera.status === "online").length;
+  if (homeActiveCameras) homeActiveCameras.textContent = activeCameras;
+  const today = new Date().toISOString().slice(0, 10);
+  const todayEvents = events.filter((event) => String(event.inicio || event.started_at || event.criado_em || "").startsWith(today));
+  if (homeEventsToday) homeEventsToday.textContent = todayEvents.length;
+  const pendingAlerts = deliveries.filter((delivery) => delivery.status === "pending").length;
+  const evidenceCount = events.filter((event) => event.midia_path || event.snapshot_path).length;
+  if (homePendingAlerts) homePendingAlerts.textContent = pendingAlerts;
+  if (homeEvidenceCount) homeEvidenceCount.textContent = evidenceCount;
+  if (homeActiveCamerasHint) homeActiveCamerasHint.textContent = activeCameras ? "Câmeras online agora" : "Nenhuma câmera conectada";
+  if (homeEventsTodayHint) homeEventsTodayHint.textContent = todayEvents.length ? "Ocorrências registradas" : "Nenhuma ocorrência registrada";
+  if (homePendingAlertsHint) homePendingAlertsHint.textContent = pendingAlerts ? "Entregas ainda abertas" : "Nenhum alerta pendente";
+  if (homeEvidenceCountHint) homeEvidenceCountHint.textContent = evidenceCount ? "Snapshots disponíveis" : "Nenhuma evidência disponível";
+  document.querySelectorAll(".cx-home-metrics article").forEach((card) => {
+    const value = Number(card.querySelector("strong")?.textContent || 0);
+    card.classList.toggle("is-zero", value === 0);
+  });
+  if (!homePriorityTitle || !homePriorityDescription || !homePriorityAction) return;
+  if (!cameras.length) {
+    homePriorityTitle.textContent = "Conecte o primeiro ponto da operação";
+    homePriorityDescription.textContent = "Adicione uma câmera, escolha o evento que deseja acompanhar e comece a validar a Campex com a operação real.";
+    homePriorityAction.textContent = "Adicionar câmera";
+    homePriorityAction.href = "/settings/cameras";
+    if (homeCameraActionTitle) homeCameraActionTitle.textContent = "Adicionar câmera";
+    if (homeCameraActionDescription) homeCameraActionDescription.textContent = "Conecte o primeiro ponto da operação.";
+    return;
+  }
+  if (todayEvents.length) {
+    homePriorityTitle.textContent = "Revise os eventos registrados hoje";
+    homePriorityDescription.textContent = "Confira horários, duração, evidências e estados que merecem atenção no período selecionado.";
+    homePriorityAction.textContent = "Revisar eventos";
+    homePriorityAction.href = "/events";
+    if (homeCameraActionTitle) homeCameraActionTitle.textContent = "Ver câmeras";
+    if (homeCameraActionDescription) homeCameraActionDescription.textContent = "Acompanhe pontos conectados.";
+    return;
+  }
+  homePriorityTitle.textContent = "Acompanhe as câmeras conectadas";
+  homePriorityDescription.textContent = "As câmeras cadastradas aparecem na lista com status, última atualização e acesso rápido à operação.";
+  homePriorityAction.textContent = "Ver câmeras";
+  homePriorityAction.href = "/cameras";
+  if (homeCameraActionTitle) homeCameraActionTitle.textContent = "Ver câmeras";
+  if (homeCameraActionDescription) homeCameraActionDescription.textContent = "Acompanhe pontos conectados.";
+}
+
+async function loadHome() {
+  try {
+    const auth = await authStatus();
+    if (!auth.authenticated && !auth.bootstrap) {
+      renderLoggedOutDashboard();
+      return;
+    }
+    const [cameras, eventList, operationalEvents, deliveries] = await Promise.all([
+      requestJson("/cameras/estado").catch(() => []),
+      requestJson("/eventos").catch(() => []),
+      requestJson(`/operations/events?${queryParams({ limit: 20, offset: 0 })}`).catch(() => ({ events: [] })),
+      requestJson("/alert-deliveries").catch(() => []),
+    ]);
+    homeCamerasCache = cameras;
+    homeEventsCache = [...eventList, ...(operationalEvents.events || [])]
+      .sort((a, b) => new Date(b.inicio || b.started_at || b.criado_em || 0) - new Date(a.inicio || a.started_at || a.criado_em || 0));
+    updateHomeSummary(cameras, homeEventsCache, deliveries);
+    renderHomeEvents();
+    renderHomeCameras();
+  } catch (_error) {
+    if (homeRecentEvents) homeRecentEvents.innerHTML = '<tr><td colspan="6">Não foi possível carregar a Home.</td></tr>';
+  }
 }
 
 async function loadDashboard() {
   try {
+    setDashboardSyncState("loading");
+    const auth = await authStatus();
+    if (!auth.authenticated && !auth.bootstrap) {
+      renderLoggedOutDashboard();
+      return;
+    }
     const params = queryParams();
-    const [summary, current, timelineItems, events] = await Promise.all([
+    const [summary, current, timelineItems, events, operations] = await Promise.all([
       requestJson(`/operations/summary?${params}`),
       requestJson(`/operations/current-status?${queryParams({})}`),
       requestJson(`/operations/timeline?${params}`),
       requestJson(`/operations/events?${queryParams({ limit: 30, offset: 0 })}`),
+      requestJson("/operations"),
     ]);
     renderSummary(summary);
     renderCurrent(current);
     renderTimeline(timelineItems);
     renderEvents(events);
-    dashboardUpdated.textContent = new Date().toLocaleTimeString();
-    dashboardUpdated.classList.remove("offline");
+    renderOperations(operations);
+    loadHome();
+    setDashboardSyncState("ok");
   } catch (error) {
-    dashboardUpdated.textContent = error.message;
-    dashboardUpdated.classList.add("offline");
+    setDashboardSyncState(error.status === 401 || error.status === 403 ? "auth" : "error", error.message);
   }
 }
 
@@ -238,5 +543,35 @@ async function loadDashboard() {
   });
 });
 
+[operationSearch, operationStateFilter].filter(Boolean).forEach((element) => {
+  element.addEventListener("input", loadDashboard);
+  element.addEventListener("change", loadDashboard);
+});
+
+document.querySelectorAll("[data-home-event-filter]").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll("[data-home-event-filter]").forEach((item) => item.classList.remove("active"));
+    button.classList.add("active");
+    homeEventFilter = button.dataset.homeEventFilter || "all";
+    renderHomeEvents();
+  });
+});
+
+[homeEventSearch].filter(Boolean).forEach((element) => {
+  element.addEventListener("input", renderHomeEvents);
+});
+
+document.querySelectorAll("[data-home-link]").forEach((card) => {
+  const open = () => { window.location.href = card.dataset.homeLink; };
+  card.addEventListener("click", open);
+  card.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      open();
+    }
+  });
+});
+
 loadDashboard();
+loadHome();
 setInterval(loadDashboard, 15000);

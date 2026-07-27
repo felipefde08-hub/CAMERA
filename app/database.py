@@ -21,6 +21,7 @@ def init_db(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS clientes (
             id TEXT PRIMARY KEY,
             nome TEXT NOT NULL,
+            documento TEXT,
             status TEXT NOT NULL DEFAULT 'ativo',
             criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -30,6 +31,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             cliente_id TEXT NOT NULL,
             nome TEXT NOT NULL,
             localizacao TEXT,
+            timezone TEXT NOT NULL DEFAULT 'America/Sao_Paulo',
             criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (cliente_id) REFERENCES clientes (id)
         );
@@ -55,6 +57,8 @@ def init_db(connection: sqlite3.Connection) -> None:
             config_ref TEXT,
             source_type TEXT,
             secure_ref TEXT,
+            canal TEXT,
+            ativa INTEGER NOT NULL DEFAULT 1,
             ultimo_frame TEXT,
             criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (cliente_id) REFERENCES clientes (id),
@@ -68,7 +72,22 @@ def init_db(connection: sqlite3.Connection) -> None:
             tipo_evento TEXT NOT NULL,
             tempo_minimo REAL NOT NULL DEFAULT 0,
             ativo INTEGER NOT NULL DEFAULT 1,
+            nome TEXT,
+            cliente_id TEXT,
+            unidade_id TEXT,
+            entidade TEXT,
+            regiao_id TEXT,
+            condicao_json TEXT,
+            severidade TEXT NOT NULL DEFAULT 'medium',
+            cooldown_seconds REAL NOT NULL DEFAULT 60,
+            destinatarios_json TEXT NOT NULL DEFAULT '[]',
+            alerta_inicio INTEGER NOT NULL DEFAULT 1,
+            alerta_normalizacao INTEGER NOT NULL DEFAULT 0,
+            debounce_seconds REAL NOT NULL DEFAULT 1,
+            hysteresis_seconds REAL NOT NULL DEFAULT 1,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
             criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (camera_id) REFERENCES cameras (id)
         );
 
@@ -125,14 +144,17 @@ def init_db(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS alert_recipients (
             id TEXT PRIMARY KEY,
+            cliente_id TEXT,
             nome TEXT NOT NULL,
             email TEXT NOT NULL,
+            event_types TEXT NOT NULL DEFAULT '[]',
             ativo INTEGER NOT NULL DEFAULT 1,
             camera_id TEXT,
             area_id TEXT,
             severidade_minima TEXT NOT NULL DEFAULT 'low',
             criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (cliente_id) REFERENCES clientes (id),
             FOREIGN KEY (camera_id) REFERENCES cameras (id),
             FOREIGN KEY (area_id) REFERENCES monitored_areas (id)
         );
@@ -141,6 +163,7 @@ def init_db(connection: sqlite3.Connection) -> None:
             id TEXT PRIMARY KEY,
             evento_id TEXT,
             recipient_id TEXT NOT NULL,
+            destinatario TEXT,
             canal TEXT NOT NULL DEFAULT 'email',
             status TEXT NOT NULL DEFAULT 'pending',
             attempts INTEGER NOT NULL DEFAULT 0,
@@ -159,6 +182,7 @@ def init_db(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS users (
             id TEXT PRIMARY KEY,
             cliente_id TEXT,
+            nome TEXT,
             email TEXT NOT NULL UNIQUE,
             password_hash TEXT NOT NULL,
             role TEXT NOT NULL,
@@ -244,8 +268,24 @@ def init_db(connection: sqlite3.Connection) -> None:
             snapshot_path TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+
+        CREATE TABLE IF NOT EXISTS visual_rule_states (
+            rule_id TEXT PRIMARY KEY,
+            candidate_state INTEGER NOT NULL DEFAULT 0,
+            candidate_since TEXT,
+            active_event_id TEXT,
+            active_since TEXT,
+            last_closed_at TEXT,
+            last_alert_at TEXT,
+            last_evaluated_at TEXT,
+            current_value_json TEXT NOT NULL DEFAULT '{}',
+            atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (rule_id) REFERENCES regras (id)
+        );
         """
     )
+    _ensure_column(connection, "clientes", "documento", "TEXT")
+    _ensure_column(connection, "unidades", "timezone", "TEXT NOT NULL DEFAULT 'America/Sao_Paulo'")
     _ensure_column(connection, "cameras", "cliente_id", "TEXT")
     _ensure_column(connection, "cameras", "edge_id", "TEXT")
     _ensure_column(connection, "cameras", "source_type", "TEXT")
@@ -264,6 +304,12 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "cameras", "analysis_enabled", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(connection, "cameras", "resolucao", "TEXT")
     _ensure_column(connection, "cameras", "fps", "REAL")
+    _ensure_column(connection, "cameras", "canal", "TEXT")
+    _ensure_column(connection, "cameras", "ativa", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(connection, "alert_recipients", "cliente_id", "TEXT")
+    _ensure_column(connection, "alert_recipients", "event_types", "TEXT NOT NULL DEFAULT '[]'")
+    _ensure_column(connection, "alert_deliveries", "destinatario", "TEXT")
+    _ensure_column(connection, "users", "nome", "TEXT")
     _ensure_column(connection, "eventos", "area_id", "TEXT")
     _ensure_column(connection, "eventos", "regra_id", "TEXT")
     _ensure_column(connection, "eventos", "severidade", "TEXT NOT NULL DEFAULT 'high'")
@@ -292,6 +338,22 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "eventos", "classified_by", "TEXT")
     _ensure_column(connection, "operational_events", "activity_score", "REAL")
     _ensure_column(connection, "operational_events", "snapshot_path", "TEXT")
+    _ensure_column(connection, "regras", "nome", "TEXT")
+    _ensure_column(connection, "regras", "cliente_id", "TEXT")
+    _ensure_column(connection, "regras", "unidade_id", "TEXT")
+    _ensure_column(connection, "regras", "entidade", "TEXT")
+    _ensure_column(connection, "regras", "regiao_id", "TEXT")
+    _ensure_column(connection, "regras", "condicao_json", "TEXT")
+    _ensure_column(connection, "regras", "severidade", "TEXT NOT NULL DEFAULT 'medium'")
+    _ensure_column(connection, "regras", "cooldown_seconds", "REAL NOT NULL DEFAULT 60")
+    _ensure_column(connection, "regras", "destinatarios_json", "TEXT NOT NULL DEFAULT '[]'")
+    _ensure_column(connection, "regras", "alerta_inicio", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(connection, "regras", "alerta_normalizacao", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(connection, "regras", "debounce_seconds", "REAL NOT NULL DEFAULT 1")
+    _ensure_column(connection, "regras", "hysteresis_seconds", "REAL NOT NULL DEFAULT 1")
+    _ensure_column(connection, "regras", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(connection, "regras", "atualizado_em", "TEXT")
+    _ensure_column(connection, "eventos", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
     connection.commit()
 
 

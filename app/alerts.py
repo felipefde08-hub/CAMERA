@@ -85,11 +85,22 @@ def stream_events():
         unsubscribe(subscriber)
 
 
-def event_alert_payload(event: dict[str, Any]) -> dict[str, Any]:
+def event_alert_payload(event: dict[str, Any], phase: str = "start") -> dict[str, Any]:
+    title = event.get("tipo") or "Evento operacional"
+    if event.get("tipo") == "restricted_area_occupied":
+        title = "Pessoa em área restrita"
+    elif event.get("tipo") == "active_without_operator":
+        title = "Máquina ativa sem operador"
+    elif event.get("tipo") == "machine_stoppage":
+        title = "Parada de máquina"
+    elif event.get("tipo") == "camera_offline":
+        title = "Câmera offline"
+    if phase == "normalization":
+        title = f"Normalizado: {title}"
     return {
-        "type": "incident_opened",
+        "type": "incident_normalized" if phase == "normalization" else "incident_opened",
         "event_id": event["id"],
-        "titulo": "Pessoa em área restrita",
+        "titulo": title,
         "camera_id": event.get("camera_id"),
         "area_id": event.get("area_id"),
         "unidade_id": event.get("unidade_id"),
@@ -106,7 +117,14 @@ def severity_allowed(event_severity: str | None, recipient_min: str | None) -> b
     return event_rank >= min_rank
 
 
-def enqueue_event_alert(event_id: str) -> None:
+def event_type_allowed(event_type: str | None, enabled_types: list[str] | None) -> bool:
+    if not enabled_types:
+        return True
+    return str(event_type or "") in enabled_types
+
+
+def enqueue_event_alert(event_id: str, phase: str = "start") -> None:
+    canal = "email_normalizacao" if phase == "normalization" else "email"
     with connect() as connection:
         init_db(connection)
         event = obter_evento(connection, event_id)
@@ -116,12 +134,13 @@ def enqueue_event_alert(event_id: str) -> None:
             recipient
             for recipient in listar_recipients_para_evento(connection, event)
             if severity_allowed(event.get("severidade"), recipient.get("severidade_minima"))
+            and event_type_allowed(event.get("tipo"), recipient.get("event_types"))
         ]
         delivery_ids = [
-            criar_alert_delivery(connection, recipient["id"], evento_id=event_id, canal="email")
+            criar_alert_delivery(connection, recipient["id"], evento_id=event_id, canal=canal)
             for recipient in recipients
         ]
-    publish_alert(event_alert_payload(event))
+    publish_alert(event_alert_payload(event, phase))
     for delivery_id in delivery_ids:
         schedule_delivery(delivery_id)
 
@@ -139,15 +158,18 @@ def _delivery_worker(delivery_id: str) -> None:
     try:
         max_attempts = env_int("CAMPEX_EMAIL_MAX_ATTEMPTS", 3)
         while True:
-            with connect() as connection:
-                init_db(connection)
-                delivery = obter_alert_delivery(connection, delivery_id)
-                if delivery is None or delivery["status"] == "sent":
-                    return
-                if int(delivery["attempts"] or 0) >= max_attempts:
-                    return
-                recipient = obter_alert_recipient(connection, delivery["recipient_id"])
-                event = obter_evento(connection, delivery["evento_id"]) if delivery.get("evento_id") else None
+            try:
+                with connect() as connection:
+                    init_db(connection)
+                    delivery = obter_alert_delivery(connection, delivery_id)
+                    if delivery is None or delivery["status"] == "sent":
+                        return
+                    if int(delivery["attempts"] or 0) >= max_attempts:
+                        return
+                    recipient = obter_alert_recipient(connection, delivery["recipient_id"])
+                    event = obter_evento(connection, delivery["evento_id"]) if delivery.get("evento_id") else None
+            except Exception:
+                return
             if recipient is None:
                 _mark_delivery(delivery, "failed", "Destinatario nao encontrado.")
                 return

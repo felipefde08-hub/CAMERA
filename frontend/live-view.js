@@ -20,6 +20,7 @@ const configureMachine = document.querySelector("#configureMachine");
 const configureOperatorZone = document.querySelector("#configureOperatorZone");
 const calibrateMachine = document.querySelector("#calibrateMachine");
 const clearMachine = document.querySelector("#clearMachine");
+const liveRailName = document.querySelector("#liveRailName");
 
 let sessionId = null;
 let statusTimer = null;
@@ -100,6 +101,7 @@ function renderStatus(payload) {
   const ops = payload.ops || {};
   machineConfig = ops.machine || machineConfig;
   liveViewName.textContent = payload.nome || "Live View";
+  if (liveRailName) liveRailName.textContent = payload.nome || "Live View";
   liveViewResolution.textContent = payload.width && payload.height ? `${payload.width}x${payload.height}` : "indisponível";
   liveViewFps.textContent = payload.fps ?? "indisponível";
   liveViewInferenceFps.textContent = ops.inference_fps ?? 0;
@@ -135,6 +137,7 @@ async function startLiveView() {
     return;
   }
   liveViewName.textContent = payload.nome || "Live View";
+  if (liveRailName) liveRailName.textContent = payload.nome || "Live View";
   setStatus("conectando", "Abrindo transmissão...");
   const started = await requestJson("/live-view/start", {
     method: "POST",

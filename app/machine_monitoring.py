@@ -12,6 +12,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from app.alerts import enqueue_event_alert
 from app.config import ROOT
 from app.database import connect, init_db
 from app.models import (
@@ -168,6 +169,8 @@ class MachineMonitorEngine:
         height, width = frame.shape[:2]
         ids: set[int] = set()
         for detection in detections:
+            if detection.class_name != "person":
+                continue
             if detection.track_id is None:
                 continue
             if point_in_polygon(foot_point_normalized(detection, width, height), self.config.operator_polygon):
@@ -246,6 +249,7 @@ class MachineMonitorEngine:
                 atualizar_evento_replay(connection, event_id, replay_error=error)
         self.state.event_id = event_id
         self._event_frames = self.replay_buffer.snapshot(self.config.replay_pre_seconds)
+        enqueue_event_alert(event_id)
 
     def _update_event(self, now: float) -> None:
         if not self.state.event_id or not self.state.event_started_at:

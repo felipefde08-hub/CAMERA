@@ -31,6 +31,22 @@ class PersonDetector(Protocol):
     def detect(self, frame: np.ndarray) -> list[Detection]: ...
 
 
+YOLO_CLASS_IDS = {
+    "person": 0,
+    "bicycle": 1,
+    "car": 2,
+    "motorcycle": 3,
+    "bus": 5,
+    "truck": 7,
+}
+
+
+def requested_classes() -> list[str]:
+    raw = os.getenv("CAMPEX_YOLO_CLASSES", "person")
+    classes = [item.strip().lower() for item in raw.split(",") if item.strip()]
+    return [item for item in classes if item in YOLO_CLASS_IDS] or ["person"]
+
+
 class YoloPersonDetector:
     def __init__(self, model_name: str, confidence: float) -> None:
         try:
@@ -39,17 +55,21 @@ class YoloPersonDetector:
             raise RuntimeError("YOLO indisponível. Instale com: pip install -r requirements-yolo.txt") from exc
         self.model_name = model_name
         self.confidence = confidence
+        self.class_names = requested_classes()
+        self.class_ids = [YOLO_CLASS_IDS[name] for name in self.class_names]
+        self.id_to_name = {YOLO_CLASS_IDS[name]: name for name in self.class_names}
         self.model = YOLO(model_name)
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
-        results = self.model.predict(source=frame, classes=[0], conf=self.confidence, verbose=False)
+        results = self.model.predict(source=frame, classes=self.class_ids, conf=self.confidence, verbose=False)
         detections: list[Detection] = []
         for result in results:
             if result.boxes is None:
                 continue
             xyxy = result.boxes.xyxy.cpu().numpy()
             confidences = result.boxes.conf.cpu().numpy()
-            for coords, confidence in zip(xyxy, confidences):
+            classes = result.boxes.cls.cpu().numpy() if result.boxes.cls is not None else [0] * len(xyxy)
+            for coords, confidence, class_id in zip(xyxy, confidences, classes):
                 x1, y1, x2, y2 = map(int, coords)
                 detections.append(
                     Detection(
@@ -58,6 +78,7 @@ class YoloPersonDetector:
                         x2=x2,
                         y2=y2,
                         confidence=float(confidence),
+                        class_name=self.id_to_name.get(int(class_id), "object"),
                     )
                 )
         return detections
@@ -115,12 +136,13 @@ class PersonAnalysisEngine:
         tracking_env = os.getenv("CAMPEX_TRACKING_ENABLED", "true").lower()
         self.tracking_enabled = tracking_enabled if tracking_enabled is not None else tracking_env in {"1", "true", "sim", "yes"}
         self.detector = detector or get_yolo_detector(self.model_name, self.confidence)
+        self.allowed_classes = set(getattr(self.detector, "class_names", requested_classes()))
         self.tracker = CentroidTracker()
         self.last_error: str | None = None
 
     def analyze(self, frame: np.ndarray) -> list[Detection]:
         detections = self.detector.detect(frame)
-        detections = [detection for detection in detections if detection.class_name == "person"]
+        detections = [detection for detection in detections if detection.class_name in self.allowed_classes]
         if self.tracking_enabled:
             detections = self.tracker.update(detections)
         self.last_error = None
@@ -131,7 +153,7 @@ class PersonAnalysisEngine:
         for detection in detections:
             cv2.rectangle(annotated, (detection.x1, detection.y1), (detection.x2, detection.y2), (0, 255, 0), 2)
             label_id = detection.track_id if detection.track_id is not None else "-"
-            label = f"person #{label_id} {detection.confidence:.2f}"
+            label = f"{detection.class_name} #{label_id} {detection.confidence:.2f}"
             cv2.putText(
                 annotated,
                 label,
@@ -146,11 +168,11 @@ class PersonAnalysisEngine:
 
 
 _DETECTOR_LOCK = threading.Lock()
-_DETECTORS: dict[tuple[str, float], YoloPersonDetector] = {}
+_DETECTORS: dict[tuple[str, float, tuple[str, ...]], YoloPersonDetector] = {}
 
 
 def get_yolo_detector(model_name: str, confidence: float) -> YoloPersonDetector:
-    key = (model_name, confidence)
+    key = (model_name, confidence, tuple(requested_classes()))
     with _DETECTOR_LOCK:
         detector = _DETECTORS.get(key)
         if detector is None:
@@ -162,4 +184,3 @@ def get_yolo_detector(model_name: str, confidence: float) -> YoloPersonDetector:
 def detector_cache_size() -> int:
     with _DETECTOR_LOCK:
         return len(_DETECTORS)
-

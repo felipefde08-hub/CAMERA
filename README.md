@@ -748,3 +748,180 @@ Limitações atuais:
 - o método usa visão computacional clássica, não modelo personalizado;
 - Replay Causal é gerado localmente e pode demorar dependendo do computador;
 - não há WhatsApp, cloud ou treinamento próprio nesta etapa.
+
+## Sprint final do piloto: cadastros persistentes
+
+Abra `http://127.0.0.1:8000/settings/cameras` para configurar o piloto local.
+
+Fluxo recomendado:
+
+1. cadastrar o cliente, por exemplo `FL Plásticos`;
+2. cadastrar a unidade;
+3. cadastrar o usuário do cliente;
+4. cadastrar a câmera RTSP;
+5. cadastrar a máquina/área vinculada à câmera;
+6. cadastrar o destinatário de alerta;
+7. clicar em `Enviar alerta de teste`;
+8. reiniciar a aplicação e conferir que os dados continuam salvos.
+
+Dados sensíveis:
+
+- senha de usuário é salva com hash;
+- senha RTSP é criptografada no banco;
+- a API não devolve senha nem URL RTSP completa;
+- operador e visualizador não recebem detalhes técnicos da câmera.
+
+Endpoints de configuração:
+
+- `GET /clientes`
+- `POST /clientes`
+- `GET /unidades`
+- `POST /unidades`
+- `GET /auth/users`
+- `POST /auth/users`
+- `POST /cameras/rtsp`
+- `GET /cameras/estado`
+- `GET /cameras/{camera_id}/machine-monitors`
+- `POST /cameras/{camera_id}/machine-monitors`
+- `GET /alert-recipients`
+- `POST /alert-recipients`
+- `POST /alert-recipients/{recipient_id}/test`
+- `GET /alert-deliveries`
+
+## Executando a Campex na fábrica — Windows
+
+Esta forma de execução é para o computador local instalado na fábrica. Ele acessa
+o DVR/câmeras RTSP pela rede interna, executa backend, processamento visual e
+interface web no próprio Windows e permite abrir a Campex pelo navegador em
+`localhost` ou por outros dispositivos da mesma rede local.
+
+Não use Vercel, cloud, port forwarding ou abertura de porta no roteador para
+acessar DVR/RTSP. Nesta etapa, a Campex deve funcionar somente dentro da rede
+local da fábrica.
+
+### Versão e componentes
+
+- Python recomendado: `Python 3.11 64-bit`.
+- Python mínimo aceito pelos scripts: `Python 3.9`.
+- Entrypoint real do backend: `python -m app.main`.
+- Comando real de inicialização no Windows: `.\scripts\start_factory_windows.ps1`.
+- Frontend separado: não precisa. O FastAPI serve a interface em HTML/CSS/JS.
+- Porta padrão: `8000`.
+- Host de fábrica: `0.0.0.0`, para permitir acesso por outros dispositivos da LAN.
+
+Dependências de sistema:
+
+- Git para clonar o repositório;
+- Python 3.11 64-bit com `Add python.exe to PATH` marcado;
+- FFmpeg no `PATH`, recomendado para melhor suporte a stream, snapshot e replay;
+- acesso de rede local ao DVR/câmeras RTSP;
+- firewall do Windows liberando a porta local escolhida, por exemplo `8000`,
+  somente na rede privada/local.
+
+Variáveis principais do `.env`:
+
+- `DATABASE_PATH`: caminho do SQLite local. Padrão: `data/visual_ops_product.sqlite3`;
+- `API_HOST`: usado pelo app. O script de fábrica força `0.0.0.0` ao iniciar;
+- `API_PORT`: porta HTTP local. Padrão: `8000`;
+- `CAMPEX_SECRET_KEY`: chave local de sessão;
+- `CAMPEX_CREDENTIAL_KEY`: chave local para credenciais sensíveis;
+- `CAMPEX_YOLO_MODEL`: modelo YOLO, por exemplo `yolo11n.pt`;
+- `CAMPEX_YOLO_CONFIDENCE`: confiança mínima;
+- `CAMPEX_ANALYSIS_FPS`: FPS de análise;
+- `CAMPEX_YOLO_CLASSES`: classes analisadas. Padrão: `person`;
+- `CAMPEX_EMAIL_MODE`: `console` ou `smtp`;
+- `CAMPEX_SMTP_HOST`, `CAMPEX_SMTP_PORT`, `CAMPEX_SMTP_USERNAME`,
+  `CAMPEX_SMTP_PASSWORD`, `CAMPEX_SMTP_USE_TLS`: somente se usar SMTP.
+
+Credenciais de DVR/RTSP não devem ser colocadas em logs, prints ou arquivos
+versionados. O arquivo `.env` já é ignorado pelo Git e o setup nunca sobrescreve
+um `.env` existente.
+
+### Instalação desde o clone
+
+Abra o PowerShell no Windows:
+
+```powershell
+git clone https://github.com/SEU_USUARIO/CAMERA.git
+cd CAMERA
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\scripts\setup_factory_windows.ps1
+```
+
+Depois edite o arquivo `.env` gerado e troque pelo menos:
+
+```text
+CAMPEX_SECRET_KEY=uma-chave-grande-do-piloto
+CAMPEX_CREDENTIAL_KEY=outra-chave-grande-do-piloto
+CAMPEX_EMAIL_MODE=console
+```
+
+Se for usar envio real de e-mail, configure também as variáveis SMTP.
+
+### Iniciar
+
+```powershell
+.\scripts\start_factory_windows.ps1
+```
+
+O terminal exibirá duas URLs:
+
+```text
+Localhost: http://127.0.0.1:8000
+Rede local: http://IP_DA_MAQUINA:8000
+```
+
+No próprio computador da fábrica, abra:
+
+```text
+http://127.0.0.1:8000/dashboard
+```
+
+Em outro dispositivo da mesma rede local, abra:
+
+```text
+http://IP_DA_MAQUINA:8000/dashboard
+```
+
+Também é possível iniciar por duplo clique:
+
+```text
+start_campex.bat
+```
+
+### Parar
+
+No terminal onde a Campex está rodando, pressione:
+
+```text
+Ctrl+C
+```
+
+Ou execute em outro PowerShell:
+
+```powershell
+.\scripts\stop_factory_windows.ps1
+```
+
+### Dados persistentes
+
+O setup cria e preserva:
+
+- banco local: `data/visual_ops_product.sqlite3`;
+- evidências: `data/evidence/`;
+- replays: `data/replays/`;
+- logs: `logs/`;
+- backups: `backups/`.
+
+Reiniciar a aplicação não apaga clientes, câmeras, eventos, regras, alertas ou
+evidências. O script de inicialização evita abrir duas instâncias ao mesmo tempo
+usando `logs/campex.pid`.
+
+### Observações de segurança
+
+- Não exponha a porta `8000` para a internet.
+- Não configure port forwarding no roteador.
+- Não tente acessar o DVR/RTSP por serviço em nuvem.
+- Use apenas a rede local da fábrica.
+- O RTSP e as senhas ficam no backend/banco local; o navegador não recebe a URL
+  completa nem a senha.

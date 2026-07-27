@@ -18,21 +18,27 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row)
 
 
-def criar_cliente(connection: sqlite3.Connection, nome: str, status: str = "ativo") -> str:
+def criar_cliente(connection: sqlite3.Connection, nome: str, status: str = "ativo", documento: str | None = None) -> str:
     item_id = new_id("cli")
     connection.execute(
-        "INSERT INTO clientes (id, nome, status) VALUES (?, ?, ?)",
-        (item_id, nome, status),
+        "INSERT INTO clientes (id, nome, documento, status) VALUES (?, ?, ?, ?)",
+        (item_id, nome, documento, status),
     )
     connection.commit()
     return item_id
 
 
-def criar_unidade(connection: sqlite3.Connection, cliente_id: str, nome: str, localizacao: str | None = None) -> str:
+def criar_unidade(
+    connection: sqlite3.Connection,
+    cliente_id: str,
+    nome: str,
+    localizacao: str | None = None,
+    timezone: str = "America/Sao_Paulo",
+) -> str:
     item_id = new_id("uni")
     connection.execute(
-        "INSERT INTO unidades (id, cliente_id, nome, localizacao) VALUES (?, ?, ?, ?)",
-        (item_id, cliente_id, nome, localizacao),
+        "INSERT INTO unidades (id, cliente_id, nome, localizacao, timezone) VALUES (?, ?, ?, ?, ?)",
+        (item_id, cliente_id, nome, localizacao, timezone),
     )
     connection.commit()
     return item_id
@@ -64,6 +70,8 @@ def criar_camera(
     rtsp_path: str | None = None,
     rtsp_username: str | None = None,
     rtsp_password: str | None = None,
+    canal: str | None = None,
+    ativa: bool = True,
 ) -> str:
     item_id = new_id("cam")
     encrypted_password = encrypt_secret(rtsp_password)
@@ -72,9 +80,9 @@ def criar_camera(
         INSERT INTO cameras (
             id, cliente_id, unidade_id, dispositivo_id, edge_id, nome, status,
             config_ref, source_type, secure_ref, rtsp_host, rtsp_port, rtsp_path,
-            rtsp_username, rtsp_password, rtsp_password_encrypted
+            rtsp_username, rtsp_password, rtsp_password_encrypted, canal, ativa
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             item_id,
@@ -93,6 +101,8 @@ def criar_camera(
             rtsp_username,
             None,
             encrypted_password,
+            canal,
+            1 if ativa else 0,
         ),
     )
     connection.commit()
@@ -109,14 +119,141 @@ def camera_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def criar_regra(connection: sqlite3.Connection, camera_id: str, tipo_evento: str, tempo_minimo: float = 0, ativo: bool = True) -> str:
+def criar_regra(
+    connection: sqlite3.Connection,
+    camera_id: str,
+    tipo_evento: str,
+    tempo_minimo: float = 0,
+    ativo: bool = True,
+    nome: str | None = None,
+    cliente_id: str | None = None,
+    unidade_id: str | None = None,
+    entidade: str | None = None,
+    regiao_id: str | None = None,
+    condicao: dict[str, Any] | None = None,
+    severidade: str = "medium",
+    cooldown_seconds: float = 60,
+    destinatarios: list[str] | None = None,
+    alerta_inicio: bool = True,
+    alerta_normalizacao: bool = False,
+    debounce_seconds: float = 1,
+    hysteresis_seconds: float = 1,
+    metadata: dict[str, Any] | None = None,
+) -> str:
     item_id = new_id("regra")
     connection.execute(
-        "INSERT INTO regras (id, camera_id, tipo_evento, tempo_minimo, ativo) VALUES (?, ?, ?, ?, ?)",
-        (item_id, camera_id, tipo_evento, tempo_minimo, 1 if ativo else 0),
+        """
+        INSERT INTO regras (
+            id, camera_id, tipo_evento, tempo_minimo, ativo, nome, cliente_id,
+            unidade_id, entidade, regiao_id, condicao_json, severidade,
+            cooldown_seconds, destinatarios_json, alerta_inicio,
+            alerta_normalizacao, debounce_seconds, hysteresis_seconds,
+            metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            item_id,
+            camera_id,
+            tipo_evento,
+            tempo_minimo,
+            1 if ativo else 0,
+            nome or tipo_evento,
+            cliente_id,
+            unidade_id,
+            entidade,
+            regiao_id,
+            json.dumps(condicao or {"type": tipo_evento}),
+            severidade,
+            cooldown_seconds,
+            json.dumps(destinatarios or []),
+            1 if alerta_inicio else 0,
+            1 if alerta_normalizacao else 0,
+            debounce_seconds,
+            hysteresis_seconds,
+            json.dumps(metadata or {}),
+        ),
     )
     connection.commit()
     return item_id
+
+
+def regra_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    data = dict(row)
+    data["ativo"] = bool(data.get("ativo"))
+    data["alerta_inicio"] = bool(data.get("alerta_inicio", 1))
+    data["alerta_normalizacao"] = bool(data.get("alerta_normalizacao", 0))
+    data["condicao"] = json.loads(data.pop("condicao_json", None) or "{}")
+    data["destinatarios"] = json.loads(data.pop("destinatarios_json", None) or "[]")
+    data["metadata"] = json.loads(data.pop("metadata_json", None) or "{}")
+    return data
+
+
+def listar_regras(connection: sqlite3.Connection, cliente_id: str | None = None, camera_id: str | None = None) -> list[dict[str, Any]]:
+    clauses: list[str] = []
+    values: list[Any] = []
+    if cliente_id:
+        clauses.append("(cliente_id = ? OR cliente_id IS NULL)")
+        values.append(cliente_id)
+    if camera_id:
+        clauses.append("camera_id = ?")
+        values.append(camera_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = connection.execute(f"SELECT * FROM regras {where} ORDER BY criado_em DESC", values).fetchall()
+    return [regra_public_dict(row) for row in rows]
+
+
+def obter_regra(connection: sqlite3.Connection, regra_id: str) -> dict[str, Any] | None:
+    row = connection.execute("SELECT * FROM regras WHERE id = ?", (regra_id,)).fetchone()
+    return regra_public_dict(row) if row else None
+
+
+def atualizar_regra(connection: sqlite3.Connection, regra_id: str, **updates: Any) -> dict[str, Any] | None:
+    current = obter_regra(connection, regra_id)
+    if current is None:
+        return None
+    next_data = {**current, **{key: value for key, value in updates.items() if value is not None}}
+    connection.execute(
+        """
+        UPDATE regras
+        SET nome = ?,
+            tipo_evento = ?,
+            tempo_minimo = ?,
+            ativo = ?,
+            entidade = ?,
+            regiao_id = ?,
+            condicao_json = ?,
+            severidade = ?,
+            cooldown_seconds = ?,
+            destinatarios_json = ?,
+            alerta_inicio = ?,
+            alerta_normalizacao = ?,
+            debounce_seconds = ?,
+            hysteresis_seconds = ?,
+            metadata_json = ?,
+            atualizado_em = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (
+            next_data.get("nome"),
+            next_data.get("tipo_evento"),
+            next_data.get("tempo_minimo") or 0,
+            1 if next_data.get("ativo") else 0,
+            next_data.get("entidade"),
+            next_data.get("regiao_id"),
+            json.dumps(next_data.get("condicao") or {}),
+            next_data.get("severidade") or "medium",
+            next_data.get("cooldown_seconds") or 0,
+            json.dumps(next_data.get("destinatarios") or []),
+            1 if next_data.get("alerta_inicio") else 0,
+            1 if next_data.get("alerta_normalizacao") else 0,
+            next_data.get("debounce_seconds") or 0,
+            next_data.get("hysteresis_seconds") or 0,
+            json.dumps(next_data.get("metadata") or {}),
+            regra_id,
+        ),
+    )
+    connection.commit()
+    return obter_regra(connection, regra_id)
 
 
 def registrar_evento(
@@ -162,6 +299,8 @@ def evento_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
     if "track_ids_json" in data:
         data["track_ids"] = json.loads(data.pop("track_ids_json") or "[]")
+    if "metadata_json" in data:
+        data["metadata"] = json.loads(data.pop("metadata_json") or "{}")
     return data
 
 
@@ -506,6 +645,8 @@ def listar(connection: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
         return [camera_public_dict(row) for row in rows]
     if table == "eventos":
         return [evento_public_dict(row) for row in rows]
+    if table == "regras":
+        return [regra_public_dict(row) for row in rows]
     return [row_to_dict(row) for row in rows]
 
 
@@ -600,6 +741,7 @@ def excluir_area_monitorada(connection: sqlite3.Connection, area_id: str) -> boo
 def alert_recipient_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
     data["ativo"] = bool(data["ativo"])
+    data["event_types"] = json.loads(data.get("event_types") or "[]")
     return data
 
 
@@ -622,15 +764,17 @@ def criar_alert_recipient(
     camera_id: str | None = None,
     area_id: str | None = None,
     severidade_minima: str = "low",
+    cliente_id: str | None = None,
+    event_types: list[str] | None = None,
 ) -> str:
     recipient_id = new_id("rec")
     connection.execute(
         """
         INSERT INTO alert_recipients (
-            id, nome, email, ativo, camera_id, area_id, severidade_minima
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            id, cliente_id, nome, email, event_types, ativo, camera_id, area_id, severidade_minima
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (recipient_id, nome, email, 1 if ativo else 0, camera_id, area_id, severidade_minima),
+        (recipient_id, cliente_id, nome, email, json.dumps(event_types or []), 1 if ativo else 0, camera_id, area_id, severidade_minima),
     )
     connection.commit()
     return recipient_id
@@ -645,6 +789,7 @@ def atualizar_alert_recipient(
     camera_id: str | None = None,
     area_id: str | None = None,
     severidade_minima: str | None = None,
+    event_types: list[str] | None = None,
 ) -> dict[str, Any] | None:
     existing = connection.execute("SELECT * FROM alert_recipients WHERE id = ?", (recipient_id,)).fetchone()
     if existing is None:
@@ -659,6 +804,7 @@ def atualizar_alert_recipient(
             camera_id = ?,
             area_id = ?,
             severidade_minima = ?,
+            event_types = ?,
             atualizado_em = CURRENT_TIMESTAMP
         WHERE id = ?
         """,
@@ -669,6 +815,7 @@ def atualizar_alert_recipient(
             camera_id if camera_id is not None else current.get("camera_id"),
             area_id if area_id is not None else current.get("area_id"),
             severidade_minima if severidade_minima is not None else current["severidade_minima"],
+            json.dumps(event_types if event_types is not None else current.get("event_types", [])),
             recipient_id,
         ),
     )
@@ -689,11 +836,12 @@ def listar_recipients_para_evento(connection: sqlite3.Connection, event: dict[st
         SELECT *
         FROM alert_recipients
         WHERE ativo = 1
+          AND (cliente_id IS NULL OR cliente_id = ?)
           AND (camera_id IS NULL OR camera_id = ?)
           AND (area_id IS NULL OR area_id = ?)
         ORDER BY criado_em DESC
         """,
-        (event.get("camera_id"), event.get("area_id")),
+        (event.get("cliente_id"), event.get("camera_id"), event.get("area_id")),
     ).fetchall()
     return [alert_recipient_public_dict(row) for row in rows]
 
@@ -722,10 +870,10 @@ def criar_alert_delivery(
     connection.execute(
         """
         INSERT INTO alert_deliveries (
-            id, evento_id, recipient_id, canal, status, is_test
-        ) VALUES (?, ?, ?, ?, ?, ?)
+            id, evento_id, recipient_id, destinatario, canal, status, is_test
+        ) VALUES (?, ?, ?, (SELECT email FROM alert_recipients WHERE id = ?), ?, ?, ?)
         """,
-        (delivery_id, evento_id, recipient_id, canal, status, 1 if is_test else 0),
+        (delivery_id, evento_id, recipient_id, recipient_id, canal, status, 1 if is_test else 0),
     )
     connection.commit()
     return delivery_id

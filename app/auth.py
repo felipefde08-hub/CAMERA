@@ -13,16 +13,16 @@ ROLES = {"admin_campex", "admin_cliente", "operador", "visualizador"}
 ADMIN_ROLES = {"admin_campex", "admin_cliente"}
 
 
-def create_user(connection, email: str, password: str, role: str, cliente_id: str | None = None) -> str:
+def create_user(connection, email: str, password: str, role: str, cliente_id: str | None = None, nome: str | None = None) -> str:
     if role not in ROLES:
         raise ValueError("Funcao invalida.")
     user_id = new_id("usr")
     connection.execute(
         """
-        INSERT INTO users (id, cliente_id, email, password_hash, role)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO users (id, cliente_id, nome, email, password_hash, role)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
-        (user_id, cliente_id, email.lower().strip(), hash_password(password), role),
+        (user_id, cliente_id, nome, email.lower().strip(), hash_password(password), role),
     )
     connection.commit()
     return user_id

@@ -14,25 +14,87 @@
   </head>
   <body class="campex-dashboard">
     <aside class="cx-sidebar">
-      <a class="cx-logo" href="/dashboard" aria-label="Campex">
-        <img src="/static/campex-logo-oficial.png" alt="Campex" />
-      </a>
-      <nav class="cx-nav" aria-label="Navegação principal">
-        <a href="/dashboard"><span></span>Visão geral</a>
-        <a href="/live-view"><span></span>Live View</a>
-        <a href="/dashboard"><span></span>Operações</a>
-        <a href="/dashboard#eventsSection"><span></span>Eventos</a>
-        <a class="active" href="/settings/cameras"><span></span>Configurações</a>
+      <div class="cx-sidebar-top">
+        <a class="cx-logo" href="/dashboard" aria-label="Campex">
+          <img src="/static/campex-logo-oficial.png" alt="Campex" />
+          <strong>Campex</strong>
+        </a>
+        <button class="cx-collapse" type="button" aria-label="Recolher sidebar">‹</button>
+      </div>
+      <button class="cx-workspace-switcher" type="button" aria-label="Trocar workspace" title="FL Plásticos · Unidade principal">
+        <span class="cx-workspace-initials">FL</span>
+        <span class="cx-workspace-copy">
+          <strong>FL Plásticos</strong>
+          <small>Unidade principal</small>
+        </span>
+        <span class="cx-workspace-arrow">⌄</span>
+      </button>
+      <nav class="cx-nav cx-nav-grouped" aria-label="Navegação principal">
+        <small>OPERAÇÃO</small>
+        <a href="/dashboard"><span class="cx-nav-icon" data-icon="home"></span>Home</a>
+        <a href="/overview"><span class="cx-nav-icon" data-icon="overview"></span>Visão geral</a>
+        <a href="/cameras"><span class="cx-nav-icon" data-icon="camera"></span>Câmeras</a>
+        <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Eventos</a>
+        <hr />
+        <small>MONITORAMENTO</small>
+        <a href="/alerts"><span class="cx-nav-icon" data-icon="alert"></span>Alertas</a>
+        <a href="/evidence"><span class="cx-nav-icon" data-icon="evidence"></span>Evidências</a>
+        <a href="/rules"><span class="cx-nav-icon" data-icon="rules"></span>Regras</a>
+        <hr />
+        <small>INTELIGÊNCIA</small>
+        <a href="/reports"><span class="cx-nav-icon" data-icon="reports"></span>Relatórios</a>
+        <a href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Insights</a>
+        <a href="/history"><span class="cx-nav-icon" data-icon="history"></span>Histórico</a>
+        <hr />
+        <small>PLATAFORMA</small>
+        <a href="/integrations"><span class="cx-nav-icon" data-icon="integrations"></span>Integrações</a>
+        <a href="/users"><span class="cx-nav-icon" data-icon="users"></span>Usuários</a>
+        <a class="active" href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Configurações</a>
       </nav>
+      <div class="cx-account">
+        <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
+        <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="status"></span>Sistema online</a>
+        <div class="cx-avatar">FE</div>
+        <div>
+          <strong>Configuração</strong>
+          <span>Admin</span>
+        </div>
+      </div>
     </aside>
     <main class="cx-main app-content">
-      <section class="panel">
-        <div class="header">
-          <div>
-            <h1>Configurações</h1>
-            <p>Câmeras RTSP</p>
-          </div>
+      <header class="cx-header cx-topbar">
+        <div>
+          <p>Campex Operations</p>
+          <h1>Configurações</h1>
+        </div>
+        <div class="cx-header-tools">
+          <input class="cx-top-search" placeholder="Busca" />
           <span id="apiStatus" class="badge">Verificando API</span>
+          <small>Ambiente local do piloto</small>
+          <button class="cx-icon-button" type="button" aria-label="Ajuda"><span class="cx-nav-icon" data-icon="help"></span></button>
+          <button class="cx-icon-button" type="button" aria-label="Notificações"><span class="cx-nav-icon" data-icon="alert"></span></button>
+          <div class="cx-top-avatar">FE</div>
+        </div>
+      </header>
+
+      <section class="cx-settings-layout">
+        <aside class="cx-settings-menu">
+          <a href="#cliente">Cliente</a>
+          <a href="#unidades">Unidades</a>
+          <a href="#usuarios">Usuários</a>
+          <a href="#cameras">Câmeras</a>
+          <a href="#maquinas">Máquinas e áreas</a>
+          <a href="#destinatarios">Destinatários</a>
+          <a href="#entregas">Histórico</a>
+        </aside>
+
+        <div class="cx-settings-content">
+      <section class="panel">
+        <div class="header compact-header">
+          <div>
+            <h2>Sessão</h2>
+            <p>Entre com usuário do cliente ou admin Campex.</p>
+          </div>
         </div>
 
         <form id="loginForm" class="form compact-form">
@@ -53,10 +115,102 @@
           <div id="loginStatus" class="muted">Sem login ou em modo configuração inicial.</div>
         </form>
 
+        <div class="settings-grid">
+          <div id="cliente">
+            <h2>Cliente</h2>
+            <form id="clientForm" class="form">
+              <label>
+                Nome do cliente
+                <input name="nome" required placeholder="Ex.: FL Plásticos" />
+              </label>
+              <label>
+                Documento opcional
+                <input name="documento" placeholder="CNPJ ou documento" />
+              </label>
+              <button type="submit">Cadastrar cliente</button>
+            </form>
+            <div id="clientList" class="compact-list"></div>
+          </div>
+          <div id="unidades">
+            <h2>Unidade</h2>
+            <form id="unitForm" class="form">
+              <label>
+                Cliente
+                <select name="cliente_id" id="unitClientSelect"></select>
+              </label>
+              <label>
+                Nome da unidade
+                <input name="nome" required placeholder="Ex.: Fábrica principal" />
+              </label>
+              <label>
+                Endereço opcional
+                <input name="localizacao" placeholder="Cidade, UF" />
+              </label>
+              <button type="submit">Cadastrar unidade</button>
+            </form>
+            <div id="unitList" class="compact-list"></div>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <div id="usuarios">
+            <h2>Usuários</h2>
+            <form id="userForm" class="form">
+              <label>
+                Cliente
+                <select name="cliente_id" id="userClientSelect"></select>
+              </label>
+              <label>
+                Nome
+                <input name="nome" placeholder="Nome do usuário" />
+              </label>
+              <label>
+                E-mail
+                <input name="email" type="email" required />
+              </label>
+              <label>
+                Senha provisória
+                <input name="senha" type="password" required />
+              </label>
+              <label>
+                Função
+                <select name="role">
+                  <option value="admin_cliente">Admin cliente</option>
+                  <option value="operador">Operador</option>
+                  <option value="visualizador">Visualizador</option>
+                  <option value="admin_campex">Admin Campex</option>
+                </select>
+              </label>
+              <button type="submit">Cadastrar usuário</button>
+            </form>
+            <div id="userList" class="compact-list"></div>
+          </div>
+          <div id="maquinas">
+            <h2>Máquinas / áreas</h2>
+            <form id="machineConfigForm" class="form">
+              <label>
+                Câmera
+                <select name="camera_id" id="machineCameraSelect"></select>
+              </label>
+              <label>
+                Nome da máquina
+                <input name="nome" required placeholder="Ex.: Extrusora principal" />
+              </label>
+              <button type="submit">Criar máquina padrão</button>
+            </form>
+            <div id="machineConfigList" class="compact-list"></div>
+          </div>
+        </div>
+
+        <h2 id="cameras">Câmeras RTSP</h2>
         <form id="cameraForm" class="form">
           <label>
             Nome da câmera
             <input name="nome" required placeholder="Ex.: Extrusora Principal" />
+          </label>
+          <label>
+            Unidade
+            <select name="unidade_id" id="cameraUnitSelect"></select>
           </label>
 
           <label>
@@ -183,7 +337,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section id="destinatarios" class="panel">
         <h2>Responsáveis por alertas</h2>
         <form id="recipientForm" class="form">
           <div class="grid">
@@ -229,11 +383,14 @@
         <div id="recipientList" class="recipient-list"></div>
       </section>
 
-      <section class="panel">
+      <section id="entregas" class="panel">
         <h2>Entregas de e-mail</h2>
         <div id="deliveryList" class="delivery-list"></div>
       </section>
+        </div>
+      </section>
     </main>
+    <script src="/static/shell.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

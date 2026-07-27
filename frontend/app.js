@@ -46,6 +46,18 @@ const nextMachineZoneButton = document.querySelector("#nextMachineZoneButton");
 const saveMachineButton = document.querySelector("#saveMachineButton");
 const machineList = document.querySelector("#machineList");
 const operationsList = document.querySelector("#operationsList");
+const clientForm = document.querySelector("#clientForm");
+const unitForm = document.querySelector("#unitForm");
+const userForm = document.querySelector("#userForm");
+const machineConfigForm = document.querySelector("#machineConfigForm");
+const clientList = document.querySelector("#clientList");
+const unitList = document.querySelector("#unitList");
+const userList = document.querySelector("#userList");
+const machineConfigList = document.querySelector("#machineConfigList");
+const unitClientSelect = document.querySelector("#unitClientSelect");
+const userClientSelect = document.querySelector("#userClientSelect");
+const cameraUnitSelect = document.querySelector("#cameraUnitSelect");
+const machineCameraSelect = document.querySelector("#machineCameraSelect");
 
 let currentCameraId = null;
 let currentCameraName = null;
@@ -64,6 +76,27 @@ let currentMachines = [];
 let lastRtspPayload = null;
 const seenAlertEvents = new Set();
 let liveAlerts = [];
+let knownClients = [];
+let knownUnits = [];
+let knownCameras = [];
+
+function formPayload(targetForm) {
+  const data = new FormData(targetForm);
+  const payload = {};
+  for (const [key, value] of data.entries()) {
+    const text = String(value).trim();
+    if (text) payload[key] = text;
+  }
+  return payload;
+}
+
+function fillSelect(select, items, emptyLabel) {
+  if (!select) return;
+  select.innerHTML = [
+    `<option value="">${emptyLabel}</option>`,
+    ...items.map((item) => `<option value="${item.id}">${item.nome}</option>`),
+  ].join("");
+}
 
 function cleanPayload(includeIdentity) {
   const data = new FormData(form);
@@ -81,7 +114,6 @@ function cleanPayload(includeIdentity) {
   }
   if (includeIdentity) {
     delete payload.cliente_id;
-    delete payload.unidade_id;
     delete payload.edge_id;
   }
   return payload;
@@ -194,10 +226,43 @@ function renderCameras(cameras) {
 
 async function loadCameras() {
   const cameras = await requestJson("/cameras/estado");
+  knownCameras = cameras;
   renderCameras(cameras);
+  fillSelect(machineCameraSelect, cameras, "Selecione uma câmera");
   if (cameras.length === 1 && !currentCameraId) {
     openCamera(cameras[0].id, cameras[0].nome).catch(() => {});
   }
+}
+
+async function loadConfigData() {
+  const [clients, units, users] = await Promise.all([
+    requestJson("/clientes").catch(() => []),
+    requestJson("/unidades").catch(() => []),
+    requestJson("/auth/users").catch(() => []),
+  ]);
+  knownClients = clients;
+  knownUnits = units;
+  fillSelect(unitClientSelect, clients, "Cliente padrão ou selecione");
+  fillSelect(userClientSelect, clients, "Cliente padrão ou selecione");
+  fillSelect(cameraUnitSelect, units, "Usar unidade padrão");
+  clientList.innerHTML = clients.length ? clients.map((client) => `
+    <article class="compact-card">
+      <strong>${client.nome}</strong>
+      <span>${client.documento || "sem documento"} · ${client.status}</span>
+    </article>
+  `).join("") : '<div class="muted">Nenhum cliente cadastrado.</div>';
+  unitList.innerHTML = units.length ? units.map((unit) => `
+    <article class="compact-card">
+      <strong>${unit.nome}</strong>
+      <span>${unit.localizacao || "sem endereço"} · ${unit.timezone || "America/Sao_Paulo"}</span>
+    </article>
+  `).join("") : '<div class="muted">Nenhuma unidade cadastrada.</div>';
+  userList.innerHTML = users.length ? users.map((user) => `
+    <article class="compact-card">
+      <strong>${user.nome || user.email}</strong>
+      <span>${user.email} · ${user.role} · ${user.ativo ? "ativo" : "inativo"}</span>
+    </article>
+  `).join("") : '<div class="muted">Nenhum usuário cadastrado.</div>';
 }
 
 function setViewerMessage(text, status = "offline") {
@@ -414,6 +479,74 @@ async function loadOperations() {
       <div>Operador ausente: ${item.operador_ausente_percentual}%</div>
     </article>
   `).join("");
+}
+
+async function loadMachineConfigList() {
+  if (!knownCameras.length) {
+    machineConfigList.innerHTML = '<div class="muted">Cadastre uma câmera antes de criar máquinas.</div>';
+    return;
+  }
+  const groups = await Promise.all(knownCameras.map(async (camera) => {
+    const monitors = await requestJson(`/cameras/${camera.id}/machine-monitors`).catch(() => []);
+    return { camera, monitors };
+  }));
+  const rows = groups.flatMap((group) => group.monitors.map((monitor) => ({ camera: group.camera, monitor })));
+  machineConfigList.innerHTML = rows.length ? rows.map(({ camera, monitor }) => `
+    <article class="compact-card">
+      <strong>${monitor.nome}</strong>
+      <span>${camera.nome} · ${monitor.ativo ? "ativa" : "inativa"} · ${monitor.calibration_status}</span>
+    </article>
+  `).join("") : '<div class="muted">Nenhuma máquina cadastrada.</div>';
+}
+
+async function saveClient(event) {
+  event.preventDefault();
+  await requestJson("/clientes", {
+    method: "POST",
+    body: JSON.stringify(formPayload(clientForm)),
+  });
+  clientForm.reset();
+  await loadConfigData();
+}
+
+async function saveUnit(event) {
+  event.preventDefault();
+  await requestJson("/unidades", {
+    method: "POST",
+    body: JSON.stringify(formPayload(unitForm)),
+  });
+  unitForm.reset();
+  await loadConfigData();
+}
+
+async function saveUser(event) {
+  event.preventDefault();
+  await requestJson("/auth/users", {
+    method: "POST",
+    body: JSON.stringify(formPayload(userForm)),
+  });
+  userForm.reset();
+  await loadConfigData();
+}
+
+async function saveDefaultMachine(event) {
+  event.preventDefault();
+  const payload = formPayload(machineConfigForm);
+  if (!payload.camera_id) {
+    machineConfigList.innerHTML = '<div class="muted">Selecione uma câmera para criar a máquina.</div>';
+    return;
+  }
+  await requestJson(`/cameras/${payload.camera_id}/machine-monitors`, {
+    method: "POST",
+    body: JSON.stringify({
+      nome: payload.nome,
+      ativo: true,
+      machine_polygon: [{ x: 0.2, y: 0.2 }, { x: 0.8, y: 0.2 }, { x: 0.8, y: 0.8 }, { x: 0.2, y: 0.8 }],
+      operator_polygon: [{ x: 0.05, y: 0.2 }, { x: 0.18, y: 0.2 }, { x: 0.18, y: 0.8 }, { x: 0.05, y: 0.8 }],
+    }),
+  });
+  machineConfigForm.reset();
+  await loadMachineConfigList();
 }
 
 async function loadEvents() {
@@ -718,7 +851,8 @@ async function login(event) {
       }),
     });
     loginStatus.textContent = `Logado como ${payload.user.email} (${payload.user.role})`;
-    await Promise.all([loadCameras(), loadEvents(), loadRecipients(), loadDeliveries(), loadSystemHealth()]);
+    await Promise.all([loadConfigData(), loadCameras(), loadEvents(), loadRecipients(), loadDeliveries(), loadSystemHealth()]);
+    await loadMachineConfigList();
   } catch (error) {
     loginStatus.textContent = `Login falhou: ${error.message}`;
   }
@@ -752,6 +886,26 @@ async function loadSystemHealth() {
 testButton.addEventListener("click", testConnection);
 liveViewButton.addEventListener("click", openLiveView);
 loginForm.addEventListener("submit", login);
+clientForm.addEventListener("submit", (event) => {
+  saveClient(event).catch((error) => {
+    clientList.innerHTML = `<div class="muted">Erro ao salvar cliente: ${error.message}</div>`;
+  });
+});
+unitForm.addEventListener("submit", (event) => {
+  saveUnit(event).catch((error) => {
+    unitList.innerHTML = `<div class="muted">Erro ao salvar unidade: ${error.message}</div>`;
+  });
+});
+userForm.addEventListener("submit", (event) => {
+  saveUser(event).catch((error) => {
+    userList.innerHTML = `<div class="muted">Erro ao salvar usuário: ${error.message}</div>`;
+  });
+});
+machineConfigForm.addEventListener("submit", (event) => {
+  saveDefaultMachine(event).catch((error) => {
+    machineConfigList.innerHTML = `<div class="muted">Erro ao salvar máquina: ${error.message}</div>`;
+  });
+});
 form.addEventListener("submit", saveCamera);
 cameraList.addEventListener("click", async (event) => {
   const button = event.target.closest("button[data-action]");
@@ -920,7 +1074,8 @@ deliveryList.addEventListener("click", async (event) => {
 });
 window.addEventListener("resize", drawAreaCanvas);
 checkApi();
-loadCameras().catch(() => renderCameras([]));
+loadConfigData().catch(() => {});
+loadCameras().then(loadMachineConfigList).catch(() => renderCameras([]));
 loadEvents().catch(() => renderEvents([]));
 loadRecipients().catch(() => {});
 loadDeliveries().catch(() => {});
