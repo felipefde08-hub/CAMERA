@@ -1,5 +1,5 @@
 param(
-    [string]$PythonCommand = "",
+    [string]$PythonExe = "",
     [switch]$WithYoloRequirements
 )
 
@@ -15,11 +15,16 @@ function Write-Step($Message) {
 function Resolve-Python {
     param([string]$Preferred)
     $candidates = @()
-    if ($Preferred) { $candidates += $Preferred }
-    $candidates += @("py -3.11", "py -3.10", "py -3.9", "python")
+    if ($Preferred) { $candidates += @{Exe = $Preferred; Args = @()} }
+    $candidates += @(
+        @{Exe = "py"; Args = @("-3.11")},
+        @{Exe = "py"; Args = @("-3.10")},
+        @{Exe = "py"; Args = @("-3.9")},
+        @{Exe = "python"; Args = @()}
+    )
     foreach ($candidate in $candidates) {
         try {
-            $version = & cmd.exe /c "$candidate --version" 2>$null
+            $version = & $candidate.Exe @($candidate.Args + "--version") 2>$null
             if ($LASTEXITCODE -eq 0 -and $version) {
                 return $candidate
             }
@@ -29,11 +34,11 @@ function Resolve-Python {
     throw "Python nao encontrado. Instale Python 3.11 64-bit e marque 'Add python.exe to PATH'."
 }
 
-$Python = Resolve-Python $PythonCommand
+$Python = Resolve-Python $PythonExe
 Write-Step "Python encontrado"
-& cmd.exe /c "$Python --version"
+& $Python.Exe @($Python.Args + "--version")
 
-$VersionText = & cmd.exe /c "$Python -c ""import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"""
+$VersionText = & $Python.Exe @($Python.Args + @("-c", "import sys; print(str(sys.version_info.major)+'.'+str(sys.version_info.minor))"))
 $Version = [version]$VersionText
 if ($Version -lt [version]"3.9") {
     throw "A Campex requer Python 3.9 ou superior. Recomendado para Windows: Python 3.11 64-bit."
@@ -44,7 +49,7 @@ if ($Version.Major -eq 3 -and $Version.Minor -ne 11) {
 
 Write-Step "Criando ambiente virtual"
 if (!(Test-Path ".venv")) {
-    & cmd.exe /c "$Python -m venv .venv"
+    & $Python.Exe @($Python.Args + @("-m", "venv", ".venv"))
 } else {
     Write-Host "Ambiente .venv ja existe. Mantendo." -ForegroundColor Yellow
 }
@@ -62,7 +67,11 @@ if ($WithYoloRequirements -and (Test-Path "requirements-yolo.txt")) {
 }
 
 Write-Step "Validando dependencias"
-& $VenvPython -c "import cv2, fastapi, uvicorn, numpy, ultralytics; print('Dependencias Python OK')"
+& $VenvPython -c "import cv2, fastapi, uvicorn, numpy; print('Dependencias principais OK')"
+& $VenvPython -c "import ultralytics; print('Ultralytics/YOLO OK')" 2>$null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Aviso: Ultralytics/YOLO nao validou agora. A interface abre, mas a IA pode precisar de instalacao/rede/modelo." -ForegroundColor Yellow
+}
 
 Write-Step "Verificando FFmpeg"
 $ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue

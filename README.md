@@ -858,6 +858,12 @@ CAMPEX_EMAIL_MODE=console
 
 Se for usar envio real de e-mail, configure também as variáveis SMTP.
 
+Se o setup der erro, rode o diagnóstico e envie a saída:
+
+```powershell
+.\scripts\diagnose_factory_windows.ps1
+```
+
 ### Iniciar
 
 ```powershell
