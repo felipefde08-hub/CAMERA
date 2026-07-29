@@ -52,6 +52,18 @@ class LiveViewOpsTest(unittest.TestCase):
         self.assertEqual(state["operator_people_count"], 1)
         self.assertIn("operador presente", state["relation"])
 
+    def test_unconfigured_machine_is_not_camera_without_signal(self) -> None:
+        engine = LiveViewOpsEngine()
+        engine.set_ai(True)
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        engine.update(frame, [Detection(10, 10, 30, 80, 0.9, track_id=1)])
+
+        state = engine.public_state()
+
+        self.assertEqual(state["machine_state"], "NAO_CONFIGURADA")
+        self.assertEqual(state["people_count"], 1)
+        self.assertEqual(state["relation"], "Aguardando configuração")
+
     def test_machine_state_changes_after_calibration(self) -> None:
         engine = LiveViewOpsEngine()
         engine.configure_machine(

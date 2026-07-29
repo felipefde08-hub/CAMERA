@@ -187,9 +187,15 @@ class OperationalSnapshot:
 class OperationsRecorder:
     def __init__(self, session_id: str, camera_id: str | None = None, evidence_root: Path | None = None) -> None:
         self.session_id = session_id
-        self.camera_id = camera_id or session_id
+        self.camera_id = self._persistent_camera_id(camera_id)
         self.evidence_root = evidence_root or (ROOT / "data" / "operations_snapshots")
         self._states: dict[str, str] = {}
+
+    @staticmethod
+    def _persistent_camera_id(camera_id: str | None) -> str | None:
+        if not camera_id or camera_id.startswith("live_"):
+            return None
+        return camera_id
 
     def update_status(
         self,
@@ -200,9 +206,9 @@ class OperationsRecorder:
         machine = (ops_state or {}).get("machine") if ops_state else None
         snapshot = OperationalSnapshot(
             session_id=self.session_id,
-            camera_id=self.camera_id,
+            camera_id=self.camera_id or self.session_id,
             machine_name=machine.get("nome") if machine else None,
-            machine_state=str((ops_state or {}).get("machine_state") or "SEM SINAL"),
+            machine_state=str((ops_state or {}).get("machine_state") or "NAO_CONFIGURADA"),
             operator_state="PRESENTE" if (ops_state or {}).get("operator_present") else "AUSENTE",
             camera_status="online" if camera_status == "online" else "offline",
             calibration_status=str((ops_state or {}).get("calibration_status") or "não calibrada"),
@@ -237,11 +243,14 @@ class OperationsRecorder:
         try:
             with connect() as connection:
                 init_operations_db(connection)
+                if self._is_redundant_open_event(connection, event_type, new_state):
+                    self._states[event_type] = new_state
+                    return
                 close_open_operational_event(connection, self.session_id, event_type, now)
                 insert_operational_event(
                     connection,
                     self.session_id,
-                    snapshot.camera_id,
+                    self.camera_id,
                     snapshot.machine_name,
                     event_type,
                     previous,
@@ -255,6 +264,19 @@ class OperationsRecorder:
             self._states[event_type] = new_state
         except Exception:
             LOGGER.exception("Falha ao persistir evento operacional.")
+
+    def _is_redundant_open_event(self, connection: sqlite3.Connection, event_type: str, new_state: str) -> bool:
+        row = connection.execute(
+            """
+            SELECT new_state
+            FROM operational_events
+            WHERE session_id = ? AND event_type = ? AND ended_at IS NULL
+            ORDER BY started_at DESC, created_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (self.session_id, event_type),
+        ).fetchone()
+        return bool(row and row["new_state"] == new_state)
 
     def _latest_state(self, event_type: str) -> str | None:
         try:
@@ -285,7 +307,7 @@ class OperationsRecorder:
             return None
         try:
             now = datetime.now(timezone.utc).astimezone()
-            folder = self.evidence_root / self.camera_id / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
+            folder = self.evidence_root / (self.camera_id or self.session_id) / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
             folder.mkdir(parents=True, exist_ok=True)
             path = folder / f"{now:%H%M%S}_{event_type}_{new_state}_{uuid.uuid4().hex[:6]}.jpg"
             if not cv2.imwrite(str(path), frame):
@@ -344,7 +366,7 @@ def operations_summary(
         "tempo_ativa_sem_operador": round(active_without_operator, 2),
         "quantidade_ausencias_operador": len(operator_absences),
         "disponibilidade_camera": round(((total_monitored - offline) / total_monitored) * 100, 2) if total_monitored else 0,
-        "situacao_atual_maquina": current.get("machine_state", "SEM SINAL"),
+        "situacao_atual_maquina": current.get("machine_state", "NAO_CONFIGURADA"),
         "situacao_atual_operador": current.get("operator_state", "AUSENTE"),
     }
 
@@ -381,9 +403,9 @@ def current_status(connection: sqlite3.Connection, camera_id: str | None = None,
         values.append(machine_name)
     where = f"AND {' AND '.join(clauses)}" if clauses else ""
     status: dict[str, Any] = {
-        "machine_state": "SEM SINAL",
+        "machine_state": "NAO_CONFIGURADA",
         "operator_state": "AUSENTE",
-        "camera_status": "offline",
+        "camera_status": "desconhecida",
         "people_count": 0,
         "machine_name": machine_name,
         "last_update": None,

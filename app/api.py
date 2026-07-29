@@ -3,14 +3,18 @@ from __future__ import annotations
 from typing import Any, Optional
 import hashlib
 import time
+import os
+import psutil
+from pathlib import Path
+import logging
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.camera_rtsp import build_rtsp_url, test_rtsp_connection
-from app.alerts import resume_pending_deliveries, retry_delivery, send_test_alert, stream_events
+from app.alerts import enqueue_event_alert, resume_pending_deliveries, retry_delivery, send_test_alert, stream_events
 from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, get_request_user, require_role, require_user, tenant_filter, update_user_password, users_exist
 from app.config import ROOT
 from app.database import connect, init_db
@@ -28,6 +32,7 @@ from app.models import (
     criar_cliente,
     criar_dispositivo,
     criar_area_monitorada,
+    criar_ocorrencia_zona,
     criar_machine_monitor,
     criar_regra,
     criar_unidade,
@@ -53,7 +58,7 @@ from app.models import (
     atualizar_regra,
 )
 from app.pilot import acceptance_checklist, health_snapshot
-from app.machine_monitoring import calibrate_threshold
+from app.machine_monitoring import baseline_stats, calibrate_threshold
 from app.operations_history import (
     current_status,
     list_operational_events,
@@ -66,6 +71,7 @@ from app.visual_rule_engine import condition_templates, default_rule_payloads, e
 from shared.schemas import now_iso
 
 api = FastAPI(title="Visual Operations Internal API")
+logger = logging.getLogger("campex.api")
 FRONTEND_DIR = ROOT / "frontend"
 live_streams = LiveStreamManager()
 live_view_sessions: dict[str, dict[str, Any]] = {}
@@ -134,6 +140,7 @@ class CameraRtspTestIn(BaseModel):
 
 class LiveViewStartIn(CameraRtspTestIn):
     nome: str = "Live View"
+    camera_id: Optional[str] = None
 
 
 class RegraIn(BaseModel):
@@ -184,6 +191,12 @@ class VisualRuleDefaultsIn(BaseModel):
     zone_id: Optional[str] = None
 
 
+class DevTestEventIn(BaseModel):
+    camera_id: Optional[str] = None
+    area_id: Optional[str] = None
+    event_type: str = "workstation_unattended"
+
+
 class EventoIn(BaseModel):
     cliente_id: str
     unidade_id: str
@@ -214,16 +227,62 @@ class AreaPointIn(BaseModel):
 
 
 class AreaIn(BaseModel):
-    nome: str
-    pontos: list[AreaPointIn]
-    tipo: str = "restricted_area"
-    ativa: bool = True
+    camera_id: Optional[str] = None
+    cliente_id: Optional[str] = None
+    unidade_id: Optional[str] = None
+    machine_id: Optional[str] = None
+    nome: Optional[str] = None
+    name: Optional[str] = None
+    pontos: Optional[list[AreaPointIn]] = None
+    polygon: Optional[list[AreaPointIn]] = None
+    tipo: Optional[str] = None
+    area_type: Optional[str] = None
+    ativa: Optional[bool] = None
+    active: Optional[bool] = None
+    collaborator_name: Optional[str] = None
+    expected_start: Optional[str] = None
+    expected_end: Optional[str] = None
+    absence_tolerance_seconds: Optional[float] = None
+    dwell_limit_seconds: Optional[float] = None
+    expected_min_people: Optional[int] = None
+    metadata: Optional[dict[str, Any]] = None
+
+    def resolved_name(self) -> str:
+        value = self.name or self.nome
+        if not value:
+            raise ValueError("Nome da zona obrigatorio.")
+        return value
+
+    def resolved_type(self) -> str:
+        return self.area_type or self.tipo or "restricted_area"
+
+    def resolved_points(self) -> list[AreaPointIn]:
+        points = self.polygon or self.pontos
+        if points is None:
+            raise ValueError("Poligono da zona obrigatorio.")
+        return points
+
+    def resolved_active(self) -> bool:
+        if self.active is not None:
+            return self.active
+        if self.ativa is not None:
+            return self.ativa
+        return True
 
 
 class AreaPatchIn(BaseModel):
+    machine_id: Optional[str] = None
     nome: Optional[str] = None
+    tipo: Optional[str] = None
     pontos: Optional[list[AreaPointIn]] = None
     ativa: Optional[bool] = None
+    collaborator_name: Optional[str] = None
+    expected_start: Optional[str] = None
+    expected_end: Optional[str] = None
+    absence_tolerance_seconds: Optional[float] = None
+    dwell_limit_seconds: Optional[float] = None
+    expected_min_people: Optional[int] = None
+    metadata: Optional[dict[str, Any]] = None
 
 
 class AlertRecipientIn(BaseModel):
@@ -279,6 +338,15 @@ class MachineMonitorIn(BaseModel):
     recovery_seconds: float = 3.0
     replay_pre_seconds: float = 60.0
     replay_post_seconds: float = 30.0
+    operator_absence_seconds: float = 30.0
+    stopped_with_operator_seconds: float = 120.0
+    microstop_window_seconds: float = 3600.0
+    microstop_limit: int = 5
+    loss_model: Optional[str] = None
+    loss_per_minute: Optional[float] = None
+    units_per_minute: Optional[float] = None
+    margin_per_unit: Optional[float] = None
+    indicator_polygon: Optional[list[AreaPointIn]] = None
 
 
 class MachineMonitorPatchIn(BaseModel):
@@ -290,12 +358,26 @@ class MachineMonitorPatchIn(BaseModel):
     motion_threshold: Optional[float] = None
     stop_seconds: Optional[float] = None
     recovery_seconds: Optional[float] = None
+    operator_absence_seconds: Optional[float] = None
+    stopped_with_operator_seconds: Optional[float] = None
+    microstop_window_seconds: Optional[float] = None
+    microstop_limit: Optional[int] = None
+    loss_model: Optional[str] = None
+    loss_per_minute: Optional[float] = None
+    units_per_minute: Optional[float] = None
+    margin_per_unit: Optional[float] = None
+    indicator_polygon: Optional[list[AreaPointIn]] = None
 
 
 class MachineCalibrationIn(BaseModel):
     running_motion: Optional[float] = None
     stopped_motion: Optional[float] = None
+    samples: Optional[list[float]] = None
     duration_seconds: float = 20.0
+
+
+class AssistedMachineCalibrationIn(BaseModel):
+    duration_seconds: float = 30.0
 
 
 class EventCauseIn(BaseModel):
@@ -410,6 +492,7 @@ INTERNAL_ROUTE_FILES = {
     "/settings/cameras": "index.html",
     "/settings/notifications": "workspace.html",
     "/settings/account": "workspace.html",
+    "/help": "workspace.html",
 }
 
 FRONTEND_404_PREFIXES = {"settings"}
@@ -425,7 +508,9 @@ API_404_PREFIXES = {
     "eventos",
     "events",
     "health",
+    "live-grid",
     "live-view",
+    "people-zones",
     "operations",
     "relatorios",
     "static",
@@ -468,6 +553,36 @@ def live_view_page() -> FileResponse:
 @api.get("/live-view/")
 def live_view_page_slash() -> FileResponse:
     return live_view_page()
+
+
+@api.get("/live-grid")
+def live_grid_page() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "live-grid.html")
+
+
+@api.get("/live-grid/")
+def live_grid_page_slash() -> FileResponse:
+    return live_grid_page()
+
+
+@api.get("/people-zones")
+def people_zones_page() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "people-zones.html")
+
+
+@api.get("/people-zones/")
+def people_zones_page_slash() -> FileResponse:
+    return people_zones_page()
+
+
+@api.get("/local-diagnostics-view")
+def local_diagnostics_view_page() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "local-diagnostics.html")
+
+
+@api.get("/local-diagnostics-view/")
+def local_diagnostics_view_page_slash() -> FileResponse:
+    return local_diagnostics_view_page()
 
 
 @api.get("/operations-dashboard")
@@ -715,33 +830,66 @@ def post_camera_test_connection(payload: CameraRtspTestIn) -> dict[str, object]:
 
 @api.post("/live-view/start")
 def post_live_view_start(payload: LiveViewStartIn) -> dict[str, object]:
-    try:
-        rtsp = build_rtsp_url(
-            host=payload.host,
-            port=payload.porta_rtsp,
-            path=payload.caminho_rtsp,
-            username=payload.usuario,
-            password=payload.senha,
-            full_url=payload.rtsp_url,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    session_id = "live_" + hashlib.sha256(f"{payload.nome}|{rtsp.safe_url}".encode()).hexdigest()[:16]
+    camera_id = payload.camera_id
+    camera_name = payload.nome
+    if camera_id and not payload.rtsp_url and not payload.host:
+        with connect() as connection:
+            init_db(connection)
+            camera = obter_camera(connection, camera_id, include_secret=True)
+        if camera is None:
+            raise HTTPException(status_code=404, detail="Câmera não encontrada.")
+        camera_name = str(camera.get("nome") or payload.nome)
+        try:
+            rtsp = build_rtsp_url(
+                host=camera.get("rtsp_host"),
+                port=int(camera.get("rtsp_port") or 554),
+                path=camera.get("rtsp_path"),
+                username=camera.get("rtsp_username"),
+                password=camera.get("rtsp_password"),
+                full_url=None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    else:
+        try:
+            rtsp = build_rtsp_url(
+                host=payload.host,
+                port=payload.porta_rtsp,
+                path=payload.caminho_rtsp,
+                username=payload.usuario,
+                password=payload.senha,
+                full_url=payload.rtsp_url,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    session_id = "live_" + hashlib.sha256(f"{camera_id or camera_name}|{rtsp.safe_url}".encode()).hexdigest()[:16]
     live_view_sessions[session_id] = {
-        "nome": payload.nome,
+        "nome": camera_name,
         "source": rtsp.url,
         "safe_url": rtsp.safe_url,
+        "camera_id": camera_id,
+        "stream_id": camera_id or session_id,
         "created_at": time.time(),
     }
-    stream = live_streams.get_or_create(session_id, rtsp.url)
-    stream.enable_live_view_ops()
+    stream_id = str(camera_id or session_id)
+    stream = live_streams.get_or_create(stream_id, rtsp.url)
+    ops = stream.enable_live_view_ops()
+    load_live_view_machine_config(ops, payload.camera_id)
     stream.start()
     status = stream.public_status()
     return {
         "session_id": session_id,
-        "nome": payload.nome,
+        "stream_id": stream_id,
+        "nome": camera_name,
         "status": status,
     }
+
+
+def live_view_stream_id(session_id: str) -> str:
+    session = live_view_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Live View não encontrada.")
+    return str(session.get("stream_id") or session.get("camera_id") or session_id)
 
 
 @api.get("/live-view/{session_id}/status")
@@ -749,7 +897,7 @@ def get_live_view_status(session_id: str) -> dict[str, object]:
     session = live_view_sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Live View não encontrada.")
-    stream = live_streams.get(session_id)
+    stream = live_streams.get(live_view_stream_id(session_id))
     status = stream.public_status() if stream else {"status": "offline", "width": None, "height": None, "fps": None}
     ops = stream.live_view_ops.public_state() if stream and stream.live_view_ops else {}
     return {"session_id": session_id, "nome": session["nome"], **status, "ops": ops}
@@ -760,7 +908,7 @@ def get_live_view_stream(session_id: str) -> StreamingResponse:
     session = live_view_sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Live View não encontrada.")
-    stream = live_streams.get_or_create(session_id, str(session["source"]))
+    stream = live_streams.get_or_create(live_view_stream_id(session_id), str(session["source"]))
     stream.enable_live_view_ops()
     stream.start()
     return StreamingResponse(stream.frames(), media_type="multipart/x-mixed-replace; boundary=frame")
@@ -770,14 +918,63 @@ def live_view_ops_for(session_id: str):
     session = live_view_sessions.get(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Live View não encontrada.")
-    stream = live_streams.get_or_create(session_id, str(session["source"]))
-    return stream.enable_live_view_ops()
+    stream = live_streams.get_or_create(live_view_stream_id(session_id), str(session["source"]))
+    ops = stream.enable_live_view_ops()
+    load_live_view_machine_config(ops, session.get("camera_id"))
+    return ops
+
+
+def load_live_view_machine_config(ops, camera_id: str | None) -> None:
+    if not camera_id or ops.config is not None:
+        return
+    with connect() as connection:
+        init_db(connection)
+        monitors = listar_machine_monitors_camera(connection, camera_id)
+    if monitors:
+        ops.load_machine_config(monitors[0])
+
+
+def persist_live_view_machine_config(session_id: str, ops, nome: str | None = None) -> None:
+    session = live_view_sessions.get(session_id)
+    camera_id = session.get("camera_id") if session else None
+    if not camera_id or ops.config is None:
+        return
+    machine = ops.public_state().get("machine")
+    if not machine:
+        return
+    with connect() as connection:
+        init_db(connection)
+        camera = obter_camera(connection, str(camera_id))
+        if camera is None:
+            return
+        monitors = listar_machine_monitors_camera(connection, str(camera_id))
+        if monitors:
+            atualizar_machine_monitor(
+                connection,
+                monitors[0]["id"],
+                nome=nome or machine["nome"],
+                machine_polygon=machine["machine_polygon"],
+                operator_polygon=machine["operator_polygon"],
+                motion_threshold=machine.get("threshold"),
+                calibration_status="calibrated" if machine.get("calibrated") else "aguardando calibração",
+            )
+            return
+        criar_machine_monitor(
+            connection,
+            str(camera.get("cliente_id") or ""),
+            str(camera.get("unidade_id")),
+            str(camera_id),
+            nome or machine["nome"],
+            machine["machine_polygon"],
+            machine["operator_polygon"],
+            True,
+        )
 
 
 @api.post("/live-view/{session_id}/ai/start")
 def post_live_view_ai_start(session_id: str) -> dict[str, object]:
     ops = live_view_ops_for(session_id)
-    stream = live_streams.get(session_id)
+    stream = live_streams.get(live_view_stream_id(session_id))
     if stream:
         stream.set_analysis(True)
     return ops.public_state()
@@ -786,7 +983,7 @@ def post_live_view_ai_start(session_id: str) -> dict[str, object]:
 @api.post("/live-view/{session_id}/ai/stop")
 def post_live_view_ai_stop(session_id: str) -> dict[str, object]:
     ops = live_view_ops_for(session_id)
-    stream = live_streams.get(session_id)
+    stream = live_streams.get(live_view_stream_id(session_id))
     if stream:
         stream.set_analysis(False)
     return ops.public_state()
@@ -795,36 +992,56 @@ def post_live_view_ai_stop(session_id: str) -> dict[str, object]:
 @api.post("/live-view/{session_id}/machine")
 def post_live_view_machine(session_id: str, payload: LiveViewMachineIn) -> dict[str, object]:
     ops = live_view_ops_for(session_id)
-    return ops.configure_machine(
+    state = ops.configure_machine(
         payload.nome,
         [point.model_dump() for point in payload.machine_polygon],
         [point.model_dump() for point in payload.operator_polygon] if payload.operator_polygon else None,
         payload.tipo,
     )
+    persist_live_view_machine_config(session_id, ops, payload.nome)
+    return state
 
 
 @api.post("/live-view/{session_id}/operator-zone")
 def post_live_view_operator_zone(session_id: str, payload: LiveViewOperatorZoneIn) -> dict[str, object]:
     ops = live_view_ops_for(session_id)
-    return ops.configure_operator_zone([point.model_dump() for point in payload.operator_polygon])
+    try:
+        state = ops.configure_operator_zone([point.model_dump() for point in payload.operator_polygon])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    persist_live_view_machine_config(session_id, ops)
+    return state
 
 
 @api.post("/live-view/{session_id}/machine/calibrate-active")
 def post_live_view_machine_calibrate_active(session_id: str) -> dict[str, object]:
     ops = live_view_ops_for(session_id)
-    return ops.calibrate_active()
+    try:
+        state = ops.calibrate_active()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    persist_live_view_machine_config(session_id, ops)
+    return state
 
 
 @api.delete("/live-view/{session_id}/machine")
 def delete_live_view_machine(session_id: str) -> dict[str, object]:
     ops = live_view_ops_for(session_id)
+    session = live_view_sessions.get(session_id)
+    camera_id = session.get("camera_id") if session else None
+    if camera_id:
+        with connect() as connection:
+            init_db(connection)
+            for monitor in listar_machine_monitors_camera(connection, str(camera_id)):
+                excluir_machine_monitor(connection, monitor["id"])
     return ops.clear()
 
 
 @api.post("/live-view/{session_id}/stop")
 def post_live_view_stop(session_id: str) -> dict[str, object]:
-    stopped = live_streams.stop(session_id)
-    live_view_sessions.pop(session_id, None)
+    session = live_view_sessions.pop(session_id, None)
+    stream_id = str(session.get("stream_id") or session_id) if session else session_id
+    stopped = False if session and session.get("camera_id") else live_streams.stop(stream_id)
     return {"session_id": session_id, "status": "offline", "stopped": stopped}
 
 
@@ -862,6 +1079,13 @@ def load_camera_source(camera_id: str) -> tuple[dict[str, Any], str]:
         camera = obter_camera(connection, camera_id, include_secret=True)
     if camera is None:
         raise HTTPException(status_code=404, detail="Camera nao encontrada.")
+    if os.getenv("CAMPEX_VIDEO_SOURCE_MODE", "").strip().lower() == "file":
+        video_file = os.getenv("CAMPEX_VIDEO_FILE", "").strip()
+        if not video_file:
+            raise HTTPException(status_code=400, detail="CAMPEX_VIDEO_SOURCE_MODE=file exige CAMPEX_VIDEO_FILE.")
+        if not Path(video_file).exists():
+            raise HTTPException(status_code=400, detail="Arquivo de video de teste nao encontrado.")
+        return camera, video_file
     source = camera.get("config_ref")
     if camera.get("rtsp_host"):
         source = build_rtsp_url(
@@ -924,6 +1148,161 @@ def get_camera_live_status(camera_id: str) -> dict[str, object]:
     return stream.public_status()
 
 
+@api.get("/live-streams/status")
+def get_live_streams_status() -> dict[str, object]:
+    streams = live_streams.statuses()
+    return {
+        "active_streams": len(streams),
+        "streams": streams,
+        "cpu_percent": psutil.cpu_percent(interval=None),
+        "memory_percent": psutil.virtual_memory().percent,
+    }
+
+
+@api.get("/people-zones/summary")
+def get_people_zones_summary(camera_id: Optional[str] = None) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        cameras = listar(connection, "cameras")
+        if camera_id:
+            cameras = [camera for camera in cameras if camera["id"] == camera_id]
+        camera_ids = {camera["id"] for camera in cameras}
+        zones = []
+        events = []
+        for current_camera_id in camera_ids:
+            zones.extend(listar_areas_camera(connection, current_camera_id))
+            events.extend(listar_eventos_filtrados(connection, camera_id=current_camera_id))
+    live = {status["camera_id"]: status for status in live_streams.statuses()}
+    workstation_zones = [zone for zone in zones if zone.get("tipo") == "workstation"]
+    zone_states = []
+    for zone in zones:
+        status = live.get(zone["camera_id"], {})
+        current = next((item for item in status.get("zones", []) if item.get("area_id") == zone["id"]), {})
+        zone_events = [event for event in events if event.get("area_id") == zone["id"]]
+        unattended = [event for event in zone_events if event.get("tipo") == "workstation_unattended"]
+        unattended_seconds = sum(float(event.get("duracao") or 0) for event in unattended if event.get("duracao") is not None)
+        active_unattended = next((event for event in unattended if event.get("status") == "open"), None)
+        zone_states.append({
+            "id": zone["id"],
+            "camera_id": zone["camera_id"],
+            "nome": zone["nome"],
+            "tipo": zone["tipo"],
+            "ativa": zone["ativa"],
+            "ocupacao_atual": current.get("pessoas_dentro", 0),
+            "estado": current.get("estado", "sem_dados"),
+            "evento_ativo": current.get("event_active", False),
+            "evento_id": current.get("event_id"),
+            "colaborador_turno": zone.get("collaborator_name"),
+            "tolerancia_ausencia": zone.get("absence_tolerance_seconds"),
+            "ausencias": len(unattended),
+            "tempo_total_desocupado": unattended_seconds,
+            "inicio_desocupacao": active_unattended.get("inicio") if active_unattended else None,
+        })
+    people_visible = sum(int(status.get("people_count") or 0) for status in live.values())
+    return {
+        "catalog": [
+            "restricted_zone_occupied",
+            "workstation_unattended",
+            "minimum_staff_not_met",
+            "shift_start_incomplete",
+            "excessive_zone_dwell",
+            "after_hours_presence",
+        ],
+        "cameras": cameras,
+        "zones": zone_states,
+        "workstations": [zone for zone in zone_states if zone["tipo"] == "workstation"],
+        "expected_staff": len([zone for zone in workstation_zones if zone.get("ativa")]),
+        "identified_people": people_visible,
+        "active_events": [event for event in events if event.get("status") == "open"],
+        "events": events[:100],
+    }
+
+
+@api.get("/local-diagnostics")
+def get_local_diagnostics() -> dict[str, object]:
+    disk = psutil.disk_usage(str(ROOT))
+    with connect() as connection:
+        init_db(connection)
+        zones = connection.execute("SELECT COUNT(*) AS total FROM monitored_areas WHERE ativa = 1").fetchone()["total"]
+        rules = connection.execute("SELECT COUNT(*) AS total FROM regras WHERE ativo = 1").fetchone()["total"]
+        open_events = connection.execute("SELECT COUNT(*) AS total FROM eventos WHERE status = 'open'").fetchone()["total"]
+        outbox = connection.execute("SELECT COUNT(*) AS total FROM sync_outbox WHERE status IN ('pending', 'failed')").fetchone()["total"]
+        last_delivery = connection.execute("SELECT status, last_attempt_at, sent_at, erro FROM alert_deliveries ORDER BY criado_em DESC LIMIT 1").fetchone()
+    streams = live_streams.statuses()
+    return {
+        "sqlite": "ok",
+        "cameras_online": len([stream for stream in streams if stream.get("status") == "online"]),
+        "ultimo_frame": max([str(stream.get("last_frame_at") or "") for stream in streams], default=None),
+        "ia_ativa": len([stream for stream in streams if stream.get("ai_status") == "ativa"]),
+        "zonas_ativas": zones,
+        "regras_ativas": rules,
+        "eventos_abertos": open_events,
+        "outbox_pendente": outbox,
+        "email_mode": os.getenv("CAMPEX_EMAIL_MODE", "console"),
+        "ultima_entrega": dict(last_delivery) if last_delivery else None,
+        "disco_livre_percentual": round(100 - disk.percent, 2),
+    }
+
+
+def test_events_enabled() -> bool:
+    return os.getenv("CAMPEX_ENABLE_TEST_EVENT", "").lower() in {"1", "true", "sim", "yes"} and os.getenv("CAMPEX_ENV", "development").lower() != "production"
+
+
+def create_test_evidence(camera_id: str, area_id: str, event_type: str) -> str:
+    import cv2
+    import numpy as np
+
+    folder = ROOT / "data" / "evidence" / "test" / camera_id
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{int(time.time() * 1000)}_{event_type}_{area_id}.jpg"
+    image = np.zeros((360, 640, 3), dtype=np.uint8)
+    cv2.putText(image, "Campex - evidencia de teste", (24, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(image, event_type, (24, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (80, 170, 255), 2, cv2.LINE_AA)
+    if not cv2.imwrite(str(path), image):
+        raise HTTPException(status_code=500, detail="Nao foi possivel salvar evidencia de teste.")
+    return str(path.relative_to(ROOT))
+
+
+@api.post("/dev/test-event")
+def post_dev_test_event(payload: DevTestEventIn) -> dict[str, object]:
+    if not test_events_enabled():
+        raise HTTPException(status_code=404, detail="Ocorrencia de teste indisponivel neste ambiente.")
+    with connect() as connection:
+        init_db(connection)
+        camera = obter_camera(connection, payload.camera_id) if payload.camera_id else None
+        if camera is None:
+            cameras = listar(connection, "cameras")
+            camera = cameras[0] if cameras else None
+        if camera is None:
+            raise HTTPException(status_code=400, detail="Cadastre uma camera antes de gerar ocorrencia de teste.")
+        areas = listar_areas_camera(connection, camera["id"])
+        area = next((item for item in areas if item["id"] == payload.area_id), None) if payload.area_id else (areas[0] if areas else None)
+        if area is None:
+            raise HTTPException(status_code=400, detail="Cadastre uma zona antes de gerar ocorrencia de teste.")
+        rules = listar_regras(connection, camera_id=camera["id"])
+        rule = next((item for item in rules if item.get("regiao_id") == area["id"] and item.get("tipo_evento") == payload.event_type), None)
+        evidence_path = create_test_evidence(camera["id"], area["id"], payload.event_type)
+        event_id = criar_ocorrencia_zona(
+            connection,
+            cliente_id=str(area.get("cliente_id") or camera.get("cliente_id") or ""),
+            unidade_id=str(area.get("unidade_id") or camera.get("unidade_id") or ""),
+            camera_id=camera["id"],
+            area_id=area["id"],
+            regra_id=rule["id"] if rule else None,
+            tipo=payload.event_type,
+            inicio=now_iso(),
+            quantidade_inicial=0,
+            quantidade_maxima=0,
+            track_ids=[],
+            confianca=1.0,
+            midia_path=evidence_path,
+            severidade=str(rule.get("severidade") if rule else "high"),
+            metadata={"is_test": True, "source": "dev_test_event", "zone_name": area["nome"], "zone_type": area["tipo"]},
+        )
+    enqueue_event_alert(event_id)
+    return {"event_id": event_id, "status": "created", "is_test": True, "evidence_path": evidence_path}
+
+
 @api.post("/cameras/{camera_id}/analysis/start")
 def post_camera_analysis_start(camera_id: str) -> dict[str, object]:
     _camera, source = load_camera_source(camera_id)
@@ -958,21 +1337,81 @@ def get_camera_areas(camera_id: str, request: Request) -> list[dict[str, Any]]:
         return listar_areas_camera(connection, camera_id)
 
 
-@api.post("/cameras/{camera_id}/areas")
+@api.post("/cameras/{camera_id}/areas", status_code=status.HTTP_201_CREATED)
 def post_camera_area(camera_id: str, payload: AreaIn) -> dict[str, Any]:
     try:
-        points = normalize_points([point.model_dump() for point in payload.pontos])
+        zone_name = payload.resolved_name()
+        zone_type = payload.resolved_type()
+        zone_active = payload.resolved_active()
+        points = normalize_points([point.model_dump() for point in payload.resolved_points()])
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if payload.tipo != "restricted_area":
-        raise HTTPException(status_code=400, detail="Tipo de area invalido para o MVP.")
-    with connect() as connection:
-        init_db(connection)
-        if obter_camera(connection, camera_id) is None:
-            raise HTTPException(status_code=404, detail="Camera nao encontrada.")
-        area_id = criar_area_monitorada(connection, camera_id, payload.nome, points, payload.tipo, payload.ativa)
-        areas = listar_areas_camera(connection, camera_id)
-    return next(area for area in areas if area["id"] == area_id)
+    allowed_types = {"workstation", "restricted_area", "dwell_area", "machine_region", "operator_zone", "restricted_zone", "work_area"}
+    if zone_type not in allowed_types:
+        raise HTTPException(status_code=400, detail="Tipo de zona invalido para People & Zones V1.")
+    try:
+        with connect() as connection:
+            init_db(connection)
+            camera = obter_camera(connection, camera_id)
+            if camera is None:
+                raise HTTPException(status_code=404, detail="Camera nao encontrada.")
+            area_id = criar_area_monitorada(
+                connection,
+                camera_id,
+                zone_name,
+                points,
+                zone_type,
+                zone_active,
+                metadata=payload.metadata,
+                collaborator_name=payload.collaborator_name,
+                expected_start=payload.expected_start,
+                expected_end=payload.expected_end,
+                absence_tolerance_seconds=payload.absence_tolerance_seconds,
+                dwell_limit_seconds=payload.dwell_limit_seconds,
+                expected_min_people=payload.expected_min_people,
+                machine_id=payload.machine_id,
+            )
+            event_by_type = {
+                "restricted_area": "restricted_zone_occupied",
+                "restricted_zone": "restricted_zone_occupied",
+                "workstation": "workstation_unattended",
+                "operator_zone": "workstation_unattended",
+                "dwell_area": "excessive_zone_dwell",
+                "work_area": "excessive_zone_dwell",
+            }
+            event_type = event_by_type.get(zone_type)
+            if event_type:
+                minimum_seconds = (
+                    payload.absence_tolerance_seconds
+                    if zone_type == "workstation"
+                    else payload.dwell_limit_seconds
+                    if zone_type == "dwell_area"
+                    else (payload.metadata or {}).get("minimum_seconds", 5)
+                )
+                criar_regra(
+                    connection,
+                    camera_id,
+                    event_type,
+                    tempo_minimo=float(minimum_seconds or 0),
+                    ativo=zone_active,
+                    nome=f"{zone_name} · {event_type}",
+                    cliente_id=str(camera.get("cliente_id") or ""),
+                    unidade_id=str(camera.get("unidade_id") or ""),
+                    entidade="person",
+                    regiao_id=area_id,
+                    condicao={"type": "absence_in_zone" if event_type == "workstation_unattended" else "presence_in_zone", "zone_id": area_id},
+                    severidade=(payload.metadata or {}).get("severidade", "high" if event_type in {"restricted_zone_occupied", "workstation_unattended"} else "medium"),
+                    cooldown_seconds=float((payload.metadata or {}).get("cooldown_seconds", 60)),
+                    alerta_inicio=True,
+                    alerta_normalizacao=True,
+                )
+            areas = listar_areas_camera(connection, camera_id)
+        return next(area for area in areas if area["id"] == area_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Falha ao persistir zona para camera %s", camera_id)
+        raise HTTPException(status_code=500, detail="Nao foi possivel salvar a zona. A configuracao nao foi alterada.") from exc
 
 
 @api.patch("/areas/{area_id}")
@@ -985,7 +1424,22 @@ def patch_area(area_id: str, payload: AreaPatchIn) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     with connect() as connection:
         init_db(connection)
-        area = atualizar_area_monitorada(connection, area_id, payload.nome, points, payload.ativa)
+        area = atualizar_area_monitorada(
+            connection,
+            area_id,
+            payload.nome,
+            points,
+            tipo=payload.tipo,
+            ativa=payload.ativa,
+            metadata=payload.metadata,
+            collaborator_name=payload.collaborator_name,
+            expected_start=payload.expected_start,
+            expected_end=payload.expected_end,
+            absence_tolerance_seconds=payload.absence_tolerance_seconds,
+            dwell_limit_seconds=payload.dwell_limit_seconds,
+            expected_min_people=payload.expected_min_people,
+            machine_id=payload.machine_id,
+        )
     if area is None:
         raise HTTPException(status_code=404, detail="Area nao encontrada.")
     return area
@@ -1062,6 +1516,15 @@ def post_machine_monitor(camera_id: str, payload: MachineMonitorIn, request: Req
             payload.recovery_seconds,
             payload.replay_pre_seconds,
             payload.replay_post_seconds,
+            payload.operator_absence_seconds,
+            payload.stopped_with_operator_seconds,
+            payload.microstop_window_seconds,
+            payload.microstop_limit,
+            payload.loss_model,
+            payload.loss_per_minute,
+            payload.units_per_minute,
+            payload.margin_per_unit,
+            normalize_points([point.model_dump() for point in payload.indicator_polygon]) if payload.indicator_polygon else None,
         )
         return obter_machine_monitor(connection, monitor_id)
 
@@ -1089,6 +1552,15 @@ def patch_machine_monitor(monitor_id: str, payload: MachineMonitorPatchIn, reque
             motion_threshold=payload.motion_threshold,
             stop_seconds=payload.stop_seconds,
             recovery_seconds=payload.recovery_seconds,
+            operator_absence_seconds=payload.operator_absence_seconds,
+            stopped_with_operator_seconds=payload.stopped_with_operator_seconds,
+            microstop_window_seconds=payload.microstop_window_seconds,
+            microstop_limit=payload.microstop_limit,
+            loss_model=payload.loss_model,
+            loss_per_minute=payload.loss_per_minute,
+            units_per_minute=payload.units_per_minute,
+            margin_per_unit=payload.margin_per_unit,
+            indicator_polygon=normalize_points([point.model_dump() for point in payload.indicator_polygon]) if payload.indicator_polygon else None,
         )
     return updated
 
@@ -1136,6 +1608,132 @@ def post_machine_monitor_calibrate(monitor_id: str, payload: MachineCalibrationI
             calibration_status="calibrated",
             running_motion=running,
             stopped_motion=stopped,
+        )
+
+
+@api.post("/machine-monitors/{monitor_id}/calibrate-active")
+def post_machine_monitor_calibrate_active(monitor_id: str, payload: MachineCalibrationIn, request: Request) -> dict[str, Any]:
+    return calibrate_machine_monitor_phase(monitor_id, payload, request, "active")
+
+
+@api.post("/machine-monitors/{monitor_id}/calibrate-stopped")
+def post_machine_monitor_calibrate_stopped(monitor_id: str, payload: MachineCalibrationIn, request: Request) -> dict[str, Any]:
+    return calibrate_machine_monitor_phase(monitor_id, payload, request, "stopped")
+
+
+@api.post("/machine-monitors/{monitor_id}/calibration/active/start")
+def post_machine_monitor_assisted_active_start(monitor_id: str, payload: AssistedMachineCalibrationIn, request: Request) -> dict[str, object]:
+    return start_assisted_machine_calibration(monitor_id, payload, request, "active")
+
+
+@api.post("/machine-monitors/{monitor_id}/calibration/stopped/start")
+def post_machine_monitor_assisted_stopped_start(monitor_id: str, payload: AssistedMachineCalibrationIn, request: Request) -> dict[str, object]:
+    return start_assisted_machine_calibration(monitor_id, payload, request, "stopped")
+
+
+@api.get("/machine-monitors/{monitor_id}/calibration/status")
+def get_machine_monitor_calibration_status(monitor_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        monitor = obter_machine_monitor(connection, monitor_id)
+        if monitor is None:
+            raise HTTPException(status_code=404, detail="Monitor nao encontrado.")
+        if tenant_filter(user) and monitor.get("client_id") != tenant_filter(user):
+            raise HTTPException(status_code=403, detail="Monitor de outro cliente.")
+    stream = live_streams.get(str(monitor["camera_id"]))
+    stream_status = stream.calibration_status() if stream else {"status": "idle"}
+    return {
+        "machine_id": monitor_id,
+        "camera_id": monitor["camera_id"],
+        "stream": stream_status,
+        "active_calibration": monitor.get("active_calibration"),
+        "stopped_calibration": monitor.get("stopped_calibration"),
+        "active_baseline": monitor.get("active_baseline"),
+        "stopped_baseline": monitor.get("stopped_baseline"),
+        "separation_score": monitor.get("separation_score"),
+        "calibration_result": monitor.get("calibration_result"),
+        "calibration_status": monitor.get("calibration_status"),
+    }
+
+
+def start_assisted_machine_calibration(monitor_id: str, payload: AssistedMachineCalibrationIn, request: Request, phase: str) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        monitor = obter_machine_monitor(connection, monitor_id)
+        if monitor is None:
+            raise HTTPException(status_code=404, detail="Monitor nao encontrado.")
+        if tenant_filter(user) and monitor.get("client_id") != tenant_filter(user):
+            raise HTTPException(status_code=403, detail="Monitor de outro cliente.")
+        region = next(
+            (
+                area
+                for area in listar_areas_camera(connection, str(monitor["camera_id"]))
+                if area.get("ativa", True)
+                and area.get("tipo") == "machine_region"
+                and (not area.get("machine_id") or area.get("machine_id") == monitor_id)
+            ),
+            None,
+        )
+    if region is None:
+        raise HTTPException(status_code=400, detail="Calibracao exige uma machine_region salva para esta camera.")
+    _camera, source = load_camera_source(str(monitor["camera_id"]))
+    stream = live_streams.get_or_create(str(monitor["camera_id"]), source)
+    stream.start()
+    try:
+        status_payload = stream.start_machine_calibration(
+            monitor,
+            region["pontos"],
+            phase,
+            duration_seconds=payload.duration_seconds,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "machine_id": monitor_id,
+        "camera_id": monitor["camera_id"],
+        "phase": phase,
+        "machine_region_id": region["id"],
+        "status": status_payload,
+    }
+
+
+def calibrate_machine_monitor_phase(monitor_id: str, payload: MachineCalibrationIn, request: Request, phase: str) -> dict[str, Any]:
+    samples = payload.samples or []
+    if phase == "active" and payload.running_motion is not None:
+        samples = [payload.running_motion]
+    if phase == "stopped" and payload.stopped_motion is not None:
+        samples = [payload.stopped_motion]
+    try:
+        baseline, noise = baseline_stats(samples)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        monitor = obter_machine_monitor(connection, monitor_id)
+        if monitor is None:
+            raise HTTPException(status_code=404, detail="Monitor nao encontrado.")
+        if tenant_filter(user) and monitor.get("client_id") != tenant_filter(user):
+            raise HTTPException(status_code=403, detail="Monitor de outro cliente.")
+        active = baseline if phase == "active" else monitor.get("active_baseline") or monitor.get("running_motion")
+        stopped = baseline if phase == "stopped" else monitor.get("stopped_baseline") or monitor.get("stopped_motion")
+        threshold = calibrate_threshold(active, stopped) if active is not None and stopped is not None else monitor.get("motion_threshold")
+        status_text = "calibrated" if active is not None and stopped is not None else f"{phase}_calibrated"
+        return atualizar_machine_monitor(
+            connection,
+            monitor_id,
+            motion_threshold=threshold,
+            calibration_status=status_text,
+            running_motion=active,
+            stopped_motion=stopped,
+            active_baseline=active,
+            stopped_baseline=stopped,
+            active_noise=noise if phase == "active" else None,
+            stopped_noise=noise if phase == "stopped" else None,
         )
 
 

@@ -29,6 +29,7 @@ INTERNAL_ROUTES = [
     "/settings/cameras",
     "/settings/notifications",
     "/settings/account",
+    "/help",
 ]
 
 

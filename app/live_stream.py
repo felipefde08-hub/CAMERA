@@ -4,18 +4,22 @@ import threading
 import time
 import os
 from dataclasses import asdict, dataclass
-from typing import Callable
+from datetime import datetime, timezone
+from typing import Any, Callable
 
 import cv2
+import numpy as np
 
 from app.database import connect, init_db
 from edge_agent.camera_connector import CameraSource, UniversalCameraConnector, now_iso
 from app.live_view_ops import LiveViewOpsEngine
 from app.person_detection import Detection, PersonAnalysisEngine
 from app.incidents import IncidentManager
+from app.people_zones import PeopleZonesEngine
 from app.machine_monitoring import MachineMonitorEngine, config_from_dict, draw_machine_overlay
-from app.models import listar_areas_ativas_camera, listar_machine_monitors_ativos_camera
+from app.models import atualizar_machine_monitor, listar_areas_ativas_camera, listar_machine_monitors_ativos_camera, registrar_machine_calibration
 from app.operations_history import OperationsRecorder
+from app.observation_engine import ObservationEngine
 from app.operational_rule_runtime import OperationalRuleRuntime, facts_from_stream
 from app.restricted_area import (
     AreaPresence,
@@ -59,10 +63,18 @@ class LiveStreamStatus:
     machine_threshold: float | None = None
     machine_operator_present: bool = False
     machine_event_id: str | None = None
+    zones: list[dict[str, object]] | None = None
+    active_zone_events: list[dict[str, object]] | None = None
+    observation: dict[str, object] | None = None
+    calibration: dict[str, object] | None = None
 
     def to_public_dict(self) -> dict[str, object]:
         data = asdict(self)
         data["ids_na_area"] = self.ids_na_area or []
+        data["zones"] = self.zones or []
+        data["active_zone_events"] = self.active_zone_events or []
+        data["observation"] = self.observation or {}
+        data["calibration"] = self.calibration or {}
         return data
 
 
@@ -94,13 +106,18 @@ class LiveCameraStream:
         self._last_raw_frame = None
         self._area_presence_tracker = AreaPresenceTracker()
         self._active_area: RestrictedArea | None = None
+        self._active_areas: list[dict[str, object]] = []
         self._last_area_load_seconds = 0.0
         self._incident_manager = IncidentManager(camera_id)
+        self._people_zones = PeopleZonesEngine(camera_id)
         self._machine_engines: dict[str, MachineMonitorEngine] = {}
         self._last_machine_load_seconds = 0.0
         self.live_view_ops: LiveViewOpsEngine | None = None
         self._operations_recorder = OperationsRecorder(camera_id, camera_id)
         self._rule_runtime = OperationalRuleRuntime(camera_id)
+        self._observation_engine = ObservationEngine(camera_id)
+        self._calibration_lock = threading.Lock()
+        self._calibration: dict[str, Any] | None = None
 
     def _evaluate_rules(
         self,
@@ -152,6 +169,7 @@ class LiveCameraStream:
         if thread:
             thread.join(timeout=5.0)
         self._incident_manager.close_interrupted()
+        self._people_zones.close_interrupted()
         self._rule_runtime.camera_status("offline", self._last_raw_frame)
         with self._lock:
             self.status.status = "offline"
@@ -243,19 +261,161 @@ class LiveCameraStream:
                 self.status.analysis_error = str(exc)
             return None
 
-    def _load_active_area(self) -> RestrictedArea | None:
+    def start_machine_calibration(self, monitor: dict[str, Any], region: list[dict[str, float]], phase: str, duration_seconds: float = 30.0) -> dict[str, object]:
+        if phase not in {"active", "stopped"}:
+            raise ValueError("Fase de calibracao invalida.")
+        with self._calibration_lock:
+            if self._calibration and self._calibration.get("status") == "running":
+                raise RuntimeError("Ja existe uma calibracao em andamento nesta camera.")
+            started = now_iso()
+            self._calibration = {
+                "status": "running",
+                "phase": phase,
+                "machine_id": monitor["id"],
+                "camera_id": self.camera_id,
+                "duration_seconds": max(0.01, float(duration_seconds)),
+                "started_at": started,
+                "started_monotonic": time.monotonic(),
+                "samples": [],
+                "invalid_frames": 0,
+                "region": region,
+                "previous_gray": None,
+                "algorithm_version": "frame-diff-roi-v1",
+                "result": None,
+                "error": None,
+            }
+        return self.calibration_status()
+
+    def calibration_status(self) -> dict[str, object]:
+        with self._calibration_lock:
+            if not self._calibration:
+                return {"status": "idle"}
+            data = {key: value for key, value in self._calibration.items() if key not in {"previous_gray", "samples"}}
+            samples = list(self._calibration.get("samples") or [])
+        elapsed = max(0.0, time.monotonic() - float(data.get("started_monotonic") or time.monotonic()))
+        duration = float(data.get("duration_seconds") or 1.0)
+        data["progress"] = min(100, round((elapsed / duration) * 100, 1)) if data.get("status") == "running" else 100
+        data["samples_count"] = len(samples)
+        data["last_sample"] = samples[-1] if samples else None
+        data.pop("started_monotonic", None)
+        return data
+
+    def _update_calibration(self, frame) -> None:
+        with self._calibration_lock:
+            session = self._calibration
+            if not session or session.get("status") != "running":
+                return
+            elapsed = time.monotonic() - float(session["started_monotonic"])
+            duration = float(session["duration_seconds"])
+            if elapsed >= duration:
+                session["status"] = "finishing"
+                snapshot = dict(session)
+            else:
+                snapshot = None
+                try:
+                    score, previous = calibration_activity_score(frame, session["region"], session.get("previous_gray"))
+                    session["previous_gray"] = previous
+                    if score is None:
+                        session["invalid_frames"] += 1
+                    else:
+                        session["samples"].append(round(float(score), 4))
+                except Exception as exc:
+                    session["invalid_frames"] += 1
+                    session["error"] = str(exc)
+                return
+        self._finish_calibration(snapshot)
+
+    def _finish_calibration(self, session: dict[str, Any]) -> None:
+        samples = list(session.get("samples") or [])
+        finished = now_iso()
+        if not samples:
+            result = {
+                "status": "failed",
+                "phase": session["phase"],
+                "error": "Nenhuma amostra valida foi capturada.",
+                "samples_count": 0,
+                "finished_at": finished,
+            }
+            with self._calibration_lock:
+                self._calibration = {**session, **result}
+            return
+        stats = calibration_stats(samples)
+        phase = str(session["phase"])
+        monitor_id = str(session["machine_id"])
+        algorithm = str(session["algorithm_version"])
+        region = list(session.get("region") or [])
+        try:
+            with connect() as connection:
+                init_db(connection)
+                registrar_machine_calibration(
+                    connection,
+                    machine_id=monitor_id,
+                    camera_id=self.camera_id,
+                    phase=phase,
+                    samples=samples,
+                    stats=stats,
+                    algorithm_version=algorithm,
+                    region=region,
+                    started_at=str(session["started_at"]),
+                    finished_at=finished,
+                )
+                monitor = next((item for item in listar_machine_monitors_ativos_camera(connection, self.camera_id) if item["id"] == monitor_id), None)
+                active_calibration = stats if phase == "active" else (monitor or {}).get("active_calibration")
+                stopped_calibration = stats if phase == "stopped" else (monitor or {}).get("stopped_calibration")
+                separation = calibration_separation(active_calibration, stopped_calibration)
+                atualizar_machine_monitor(
+                    connection,
+                    monitor_id,
+                    motion_threshold=separation.get("threshold"),
+                    calibration_status="calibrated" if separation["result"] == "READY" else "calibration_needs_review",
+                    running_motion=active_calibration.get("mean") if active_calibration else None,
+                    stopped_motion=stopped_calibration.get("mean") if stopped_calibration else None,
+                    active_baseline=active_calibration.get("mean") if active_calibration else None,
+                    stopped_baseline=stopped_calibration.get("mean") if stopped_calibration else None,
+                    active_noise=active_calibration.get("std") if active_calibration else None,
+                    stopped_noise=stopped_calibration.get("std") if stopped_calibration else None,
+                    active_calibration=active_calibration if phase == "active" else None,
+                    stopped_calibration=stopped_calibration if phase == "stopped" else None,
+                    separation_score=separation.get("score"),
+                    calibration_result=separation["result"],
+                    calibration_algorithm_version=algorithm,
+                )
+        except Exception as exc:
+            with self._calibration_lock:
+                self._calibration = {**session, "status": "failed", "error": str(exc), "samples_count": len(samples), "finished_at": finished}
+            return
+        with self._calibration_lock:
+            self._calibration = {
+                "status": "completed",
+                "phase": phase,
+                "machine_id": monitor_id,
+                "camera_id": self.camera_id,
+                "samples_count": len(samples),
+                "invalid_frames": int(session.get("invalid_frames") or 0),
+                "stats": stats,
+                "separation": separation,
+                "started_at": session["started_at"],
+                "finished_at": finished,
+                "algorithm_version": algorithm,
+            }
+        with self._lock:
+            self.status.calibration = self.calibration_status()
+
+    def _load_active_areas(self) -> list[dict[str, object]]:
         now = time.monotonic()
         if now - self._last_area_load_seconds < 2.0:
-            return self._active_area
+            return self._active_areas
         self._last_area_load_seconds = now
         try:
             with connect() as connection:
                 init_db(connection)
                 areas = listar_areas_ativas_camera(connection, self.camera_id)
+            self._active_areas = areas
             self._active_area = area_from_dict(areas[0]) if areas else None
         except Exception:
+            self._active_areas = []
             self._active_area = None
-        return self._active_area
+        return self._active_areas
 
     def _load_machine_engines(self) -> list[MachineMonitorEngine]:
         now = time.monotonic()
@@ -279,7 +439,8 @@ class LiveCameraStream:
     def _maybe_analyze(self, frame):
         with self._lock:
             enabled = self._analysis_enabled
-        area = self._load_active_area()
+        areas = self._load_active_areas()
+        area = area_from_dict(areas[0]) if areas else None
         if not enabled:
             presence = AreaPresence(
                 area_id=area.id if area else None,
@@ -291,6 +452,8 @@ class LiveCameraStream:
                 self.status.area_estado = presence.estado
                 self.status.pessoas_na_area = presence.pessoas_dentro
                 self.status.ids_na_area = presence.ids_dentro or []
+                self.status.zones = []
+                self.status.active_zone_events = []
             output = draw_area_overlay(frame, area, presence, set(), [])
             output = self._update_machines(output, self._load_machine_engines(), presence)
             self._evaluate_rules(output, area_presence=presence)
@@ -328,16 +491,20 @@ class LiveCameraStream:
             self.status.pessoas_na_area = presence.pessoas_dentro
             self.status.ids_na_area = presence.ids_dentro or []
         machine_engines = self._load_machine_engines()
-        if area is not None:
-            output = draw_area_overlay(frame, area, presence, inside_ids, self._last_detections)
-            incident_state = self._incident_manager.update(area, presence, self._last_detections, output)
-            output = self._update_machines(output, machine_engines, presence)
+        if areas:
+            output, people_zones = self._people_zones.update(areas, self._last_detections, frame)
+            output = self._update_machines(output, machine_engines, presence, people_zones.get("zones") or [])
             with self._lock:
-                for key, value in incident_state.items():
-                    setattr(self.status, key, value)
+                self.status.zones = people_zones.get("zones") or []
+                self.status.active_zone_events = people_zones.get("active_events") or []
+                first_active = (people_zones.get("active_events") or [None])[0]
+                self.status.incident_active = bool(first_active)
+                self.status.incident_id = first_active.get("event_id") if first_active else None
+                self.status.incident_started_at = first_active.get("started_at_iso") if first_active else None
+                self.status.incident_people = int(first_active.get("current_people") or 0) if first_active else 0
             self._evaluate_rules(output, area_presence=presence)
             return output
-        self._incident_manager.update(None, presence, self._last_detections, frame)
+        self._people_zones.update([], self._last_detections, frame)
         output = engine.draw(frame, self._last_detections)
         output = self._update_machines(output, machine_engines, presence)
         self._evaluate_rules(output, area_presence=presence)
@@ -366,26 +533,39 @@ class LiveCameraStream:
         )
         return output
 
-    def _update_machines(self, frame, machine_engines: list[MachineMonitorEngine], area_presence: AreaPresence | None = None):
+    def _update_machines(self, frame, machine_engines: list[MachineMonitorEngine], area_presence: AreaPresence | None = None, zone_states: list[dict[str, object]] | None = None):
         output = frame
+        zone_states = list(zone_states or [])
         for engine in machine_engines:
             try:
                 state = engine.update(output, self._last_detections)
                 output = draw_machine_overlay(output, engine.config, state)
+                machine_state = "ACTIVE" if state.state == "ACTIVE" else "STOPPED" if state.state == "STOPPED" else "UNKNOWN"
+                if area_presence and not zone_states:
+                    zone_states.append({**area_presence.to_dict(), "tipo": "restricted_zone"})
+                observation = self._observation_engine.build(
+                    machine_id=engine.config.id,
+                    machine_state=machine_state,
+                    machine_activity_score=state.smoothed_motion,
+                    machine_confidence=state.confidence,
+                    operator_present=state.operator_present,
+                    zone_states=zone_states or [],
+                )
                 with self._lock:
                     self.status.machine_state = state.state
                     self.status.machine_motion = round(state.smoothed_motion, 3)
                     self.status.machine_threshold = round(state.threshold, 3)
                     self.status.machine_operator_present = state.operator_present
                     self.status.machine_event_id = state.event_id
+                    self.status.observation = observation
                 self._evaluate_rules(
                     output,
                     area_presence=area_presence,
-                    machine_state="ATIVA" if state.state in {"running", "recovered"} else "PARADA" if state.state in {"stopped", "suspected_stop"} else "SEM SINAL",
+                    machine_state="ATIVA" if state.state == "ACTIVE" else "PARADA" if state.state == "STOPPED" else "UNKNOWN",
                     machine_motion=state.smoothed_motion,
                     operator_present=state.operator_present,
                     operator_people_count=1 if state.operator_present else 0,
-                    confidence=1.0,
+                    confidence=state.confidence,
                 )
             except Exception as exc:
                 with self._lock:
@@ -439,6 +619,7 @@ class LiveCameraStream:
                         break
 
                     self._last_raw_frame = frame.copy()
+                    self._update_calibration(frame)
                     output_frame = self._maybe_live_view_ops(frame)
                     encoded, jpeg = cv2.imencode(".jpg", output_frame)
                     if not encoded:
@@ -461,6 +642,7 @@ class LiveCameraStream:
                 analysis_thread.join(timeout=3.0)
             connector.stop()
             self._incident_manager.close_interrupted()
+            self._people_zones.close_interrupted()
             with self._lock:
                 if self.status.status != "offline":
                     self.status.status = "offline"
@@ -490,7 +672,83 @@ class LiveCameraStream:
 
     def public_status(self) -> dict[str, object]:
         with self._lock:
-            return self.status.to_public_dict()
+            data = self.status.to_public_dict()
+            if data.get("status") in {"conectando", "reconectando"} and self._last_jpeg is not None:
+                last_frame_at = str(data.get("last_frame_at") or "")
+                try:
+                    parsed = datetime.fromisoformat(last_frame_at.replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    is_recent = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() <= 5
+                except ValueError:
+                    is_recent = False
+                if is_recent:
+                    data["status"] = "online"
+                    data["error"] = None
+            data["calibration"] = self.calibration_status()
+            return data
+
+
+def calibration_activity_score(frame, polygon: list[dict[str, float]], previous_gray):
+    if frame is None or not polygon or len(polygon) < 3:
+        return None, previous_gray
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    mask = np.zeros(gray.shape, dtype=np.uint8)
+    height, width = gray.shape[:2]
+    pts = np.array([[int(max(0, min(1, float(point["x"]))) * width), int(max(0, min(1, float(point["y"]))) * height)] for point in polygon], dtype=np.int32)
+    cv2.fillPoly(mask, [pts], 255)
+    if previous_gray is None:
+        return None, gray
+    diff = cv2.absdiff(gray, previous_gray)
+    values = diff[mask > 0]
+    if values.size == 0:
+        return None, gray
+    return float(np.mean(values)), gray
+
+
+def calibration_stats(samples: list[float]) -> dict[str, object]:
+    array = np.array(samples, dtype=float)
+    return {
+        "samples_count": int(array.size),
+        "mean": round(float(np.mean(array)), 4),
+        "median": round(float(np.median(array)), 4),
+        "std": round(float(np.std(array)), 4),
+        "min": round(float(np.min(array)), 4),
+        "max": round(float(np.max(array)), 4),
+        "p10": round(float(np.percentile(array, 10)), 4),
+        "p25": round(float(np.percentile(array, 25)), 4),
+        "p75": round(float(np.percentile(array, 75)), 4),
+        "p90": round(float(np.percentile(array, 90)), 4),
+        "p95": round(float(np.percentile(array, 95)), 4),
+    }
+
+
+def calibration_separation(active: dict[str, object] | None, stopped: dict[str, object] | None) -> dict[str, object]:
+    if not active or not stopped:
+        return {"result": "INVALID", "score": None, "overlap": None, "threshold": None, "message": "Calibre ativa e parada para calcular separacao."}
+    active_mean = float(active.get("mean") or 0)
+    stopped_mean = float(stopped.get("mean") or 0)
+    active_std = float(active.get("std") or 0)
+    stopped_std = float(stopped.get("std") or 0)
+    distance = active_mean - stopped_mean
+    noise = max(active_std + stopped_std, 1e-6)
+    score = round(distance / noise, 3)
+    overlap = not (float(stopped.get("p90") or stopped_mean) < float(active.get("p10") or active_mean))
+    threshold = round((active_mean + stopped_mean) / 2.0, 4)
+    if distance <= 0:
+        result = "INVALID"
+        message = "A atividade parada ficou igual ou maior que a ativa. Reposicione a ROI."
+    elif score >= 3 and not overlap:
+        result = "READY"
+        message = "Ativa e parada visualmente distinguiveis."
+    elif score >= 1.5:
+        result = "WEAK_SEPARATION"
+        message = "Separacao fraca. Reposicione a ROI ou valide tecnicamente antes de monitorar."
+    else:
+        result = "INVALID"
+        message = "Separacao insuficiente entre ativa e parada."
+    return {"result": result, "score": score, "overlap": overlap, "threshold": threshold, "message": message}
 
 
 class LiveStreamManager:
@@ -513,6 +771,11 @@ class LiveStreamManager:
     def get(self, camera_id: str) -> LiveCameraStream | None:
         with self._lock:
             return self._streams.get(camera_id)
+
+    def statuses(self) -> list[dict[str, object]]:
+        with self._lock:
+            streams = list(self._streams.values())
+        return [stream.public_status() for stream in streams]
 
     def stop(self, camera_id: str) -> bool:
         with self._lock:

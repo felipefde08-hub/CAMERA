@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: campex-cloud
+    runtime: python
+    plan: starter
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python -m cloud.main"
+    healthCheckPath: "/health"
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: campex-cloud-db
+          property: connectionString
+      - key: CLOUD_HOST
+        value: "0.0.0.0"
+
+databases:
+  - name: campex-cloud-db
+    plan: starter

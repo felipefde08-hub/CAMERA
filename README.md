@@ -931,3 +931,339 @@ usando `logs/campex.pid`.
 - Use apenas a rede local da fábrica.
 - O RTSP e as senhas ficam no backend/banco local; o navegador não recebe a URL
   completa nem a senha.
+
+## Primeira integração Edge -> Cloud
+
+Esta etapa envia apenas eventos operacionais. O Cloud não acessa RTSP, IP do DVR,
+vídeo ao vivo nem câmera privada da fábrica.
+
+Fluxo:
+
+```text
+evento local -> SQLite local -> sync_outbox -> HTTPS -> Campex Cloud -> PostgreSQL -> dashboard
+```
+
+### Cloud local de desenvolvimento
+
+Sem `DATABASE_URL`, o Cloud usa SQLite local em `data/campex_cloud.sqlite3`:
+
+```bash
+python3 -m cloud.main
+```
+
+Abra:
+
+```text
+http://127.0.0.1:8000/health
+```
+
+### Cloud no Render
+
+Comandos configurados:
+
+```text
+Build Command: pip install -r requirements.txt
+Start Command: python -m cloud.main
+Health Check Path: /health
+```
+
+O arquivo `render.yaml` cria um Web Service e um PostgreSQL.
+
+Variáveis do Cloud:
+
+```text
+DATABASE_URL=postgresql://...
+CLOUD_HOST=0.0.0.0
+PORT=8000
+```
+
+O Render normalmente preenche `DATABASE_URL` a partir do banco configurado no
+`render.yaml`. Nenhuma credencial deve ser commitada.
+
+### Migration
+
+A migration reproduzível está em:
+
+```text
+cloud/migrations/001_edge_cloud.sql
+```
+
+Ela cria:
+
+- `edge_devices`;
+- `edge_events`;
+- índices de evento, cliente, unidade, câmera, Edge e data de recebimento.
+
+### Cadastrar o primeiro Edge da FL Plásticos
+
+Gere um segredo forte e guarde somente no `.env` do Edge:
+
+```bash
+python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(48))
+PY
+```
+
+Cadastre o Edge no Cloud:
+
+```bash
+curl -X POST https://SUA-CAMPEX-CLOUD.onrender.com/admin/edge-devices \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "edge_fl_plasticos_01",
+    "tenant_id": "cli_fl_plasticos",
+    "cliente_id": "cli_fl_plasticos",
+    "unidade_id": "uni_fl_plasticos_matriz",
+    "nome": "Edge FL Plasticos - Matriz",
+    "secret": "COLE_AQUI_O_SEGREDO_GERADO"
+  }'
+```
+
+No `.env` local da Edge Box:
+
+```text
+CAMPEX_EDGE_ID=edge_fl_plasticos_01
+CAMPEX_EDGE_SECRET=COLE_AQUI_O_SEGREDO_GERADO
+CAMPEX_CLOUD_URL=https://SUA-CAMPEX-CLOUD.onrender.com
+```
+
+### Sincronizar eventos da outbox
+
+Quando um evento é criado localmente por `registrar_evento`, ele recebe
+`event_uuid` e entra em `sync_outbox`.
+
+Para validar manualmente sem mexer em RTSP, YOLO ou regras:
+
+```bash
+python3 manage.py sync-cloud
+```
+
+Se o Cloud estiver fora do ar, a outbox permanece no SQLite local com status
+`failed` e tenta novamente depois com backoff. O monitoramento local continua
+funcionando.
+
+Para deixar a sincronização tentando continuamente:
+
+```bash
+python3 manage.py sync-cloud --loop
+```
+
+### Validar no Cloud
+
+```bash
+curl https://SUA-CAMPEX-CLOUD.onrender.com/health
+curl https://SUA-CAMPEX-CLOUD.onrender.com/eventos
+```
+
+`POST /edge/events` exige:
+
+- `X-Edge-Id`;
+- `X-Edge-Secret`;
+- `Idempotency-Key` igual ao `event_uuid`.
+
+Reenviar o mesmo `event_uuid` não duplica evento.
+
+## Validação local Edge -> Cloud com PostgreSQL
+
+Esta validação roda Edge e Cloud no mesmo computador, mas mantém as camadas
+separadas:
+
+```text
+Campex Edge local -> SQLite local -> sync_outbox -> HTTP local -> Campex Cloud local -> PostgreSQL local -> dashboard Cloud
+```
+
+O Edge nunca acessa o PostgreSQL. O Cloud nunca acessa o SQLite do Edge.
+
+### 1. Iniciar PostgreSQL local
+
+Com Docker instalado:
+
+```bash
+docker compose -f docker-compose.cloud-local.yml up -d
+```
+
+URL local do banco:
+
+```text
+postgresql://campex:campex_local_dev@127.0.0.1:5432/campex_cloud
+```
+
+### 2. Iniciar o Cloud local
+
+Use uma porta diferente da aplicação Edge local. Exemplo: Cloud na `8010`.
+
+```bash
+export DATABASE_URL="postgresql://campex:campex_local_dev@127.0.0.1:5432/campex_cloud"
+export PORT=8010
+python3 -m cloud.main
+```
+
+Validar:
+
+```bash
+curl http://127.0.0.1:8010/health
+```
+
+Abrir dashboard Cloud:
+
+```text
+http://127.0.0.1:8010/dashboard
+```
+
+### 3. Configurar o Edge local para falar com o Cloud
+
+Em outro terminal:
+
+```bash
+export CAMPEX_CLOUD_URL="http://127.0.0.1:8010"
+export CAMPEX_EDGE_ID="edge_fl_plasticos_01"
+export CAMPEX_EDGE_SECRET="secret-local-com-mais-de-12"
+export CAMPEX_TENANT_ID="cli_fl_plasticos"
+export CAMPEX_UNIDADE_ID="uni_fl_plasticos_matriz"
+export CAMPEX_CAMERA_ID="cam_fl_plasticos_01"
+```
+
+### 4. Cadastrar o Edge da FL Plásticos no Cloud
+
+O script de validação abaixo cadastra o Edge automaticamente se ainda não existir.
+Para cadastrar manualmente:
+
+```bash
+curl -X POST http://127.0.0.1:8010/admin/edge-devices \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "edge_fl_plasticos_01",
+    "tenant_id": "cli_fl_plasticos",
+    "cliente_id": "cli_fl_plasticos",
+    "unidade_id": "uni_fl_plasticos_matriz",
+    "nome": "Edge FL Plasticos - Matriz",
+    "secret": "secret-local-com-mais-de-12"
+  }'
+```
+
+Em piloto real, troque `CAMPEX_EDGE_SECRET` por uma chave forte gerada localmente.
+Não coloque essa chave no Git.
+
+### 5. Disparar um evento de teste sem câmera real
+
+Com o Cloud ligado:
+
+```bash
+python3 scripts/validate_edge_cloud_local.py
+```
+
+Resultado esperado:
+
+```text
+Evento local criado: evt_...
+Outbox pendente antes: 0
+Sincronizados agora: 1
+Outbox pendente depois: 0
+Dashboard Cloud: http://127.0.0.1:8010/dashboard
+```
+
+Abra:
+
+```text
+http://127.0.0.1:8010/dashboard
+```
+
+O dashboard deve mostrar exatamente o evento recebido pelo Cloud. Ele vem de
+`edge_events`, não do SQLite do Edge.
+
+### 6. Validar Cloud desligado -> Edge guarda -> Cloud volta -> sincroniza
+
+Com o Cloud desligado, crie um evento local normalmente. Por exemplo, usando IDs
+já existentes no Edge:
+
+```bash
+python3 manage.py add-evento \
+  --cliente-id cli_fl_plasticos \
+  --unidade-id uni_fl_plasticos_matriz \
+  --camera-id cam_fl_plasticos_01 \
+  --tipo machine_stoppage \
+  --duracao 300 \
+  --operador-presente nao \
+  --confianca 0.91
+```
+
+Confira que ficou pendente:
+
+```bash
+python3 manage.py sync-cloud
+```
+
+Se o Cloud estiver desligado, a outbox fica preservada com status `failed`.
+
+Ligue o Cloud novamente e rode:
+
+```bash
+python3 manage.py sync-cloud
+```
+
+Resultado esperado:
+
+```text
+Sincronizados agora: 1
+Pendentes depois: 0
+```
+
+### 7. Confirmar diretamente no Cloud
+
+```bash
+curl http://127.0.0.1:8010/eventos
+curl http://127.0.0.1:8010/operations/events
+```
+
+Reenviar o mesmo `event_uuid` retorna `duplicate` e não cria uma segunda linha.
+
+### 8. Validar com a câmera real da FL Plásticos
+
+Use este teste apenas depois que a Live View e a regra operacional já estiverem
+funcionando localmente.
+
+1. Inicie o Edge normalmente na fábrica e confirme que a câmera está abrindo.
+2. Deixe o Cloud local desligado.
+3. Gere uma ocorrência real pela regra configurada, por exemplo parada de máquina
+   ou pessoa em área restrita.
+4. Confira que o evento entrou na outbox local:
+
+```bash
+python3 manage.py sync-cloud
+```
+
+Com o Cloud desligado, o esperado é ficar pendente/failed, preservado no SQLite.
+
+5. Ligue o Cloud local:
+
+```bash
+export DATABASE_URL="postgresql://campex:campex_local_dev@127.0.0.1:5432/campex_cloud"
+export PORT=8010
+python3 -m cloud.main
+```
+
+6. Em outro terminal, sincronize:
+
+```bash
+export CAMPEX_CLOUD_URL="http://127.0.0.1:8010"
+export CAMPEX_EDGE_ID="edge_fl_plasticos_01"
+export CAMPEX_EDGE_SECRET="secret-local-com-mais-de-12"
+python3 manage.py sync-cloud
+```
+
+7. Abra o dashboard Cloud:
+
+```text
+http://127.0.0.1:8010/dashboard
+```
+
+Critério esperado:
+
+- aparece um único evento para a ocorrência;
+- `event_uuid` não muda entre reenvios;
+- horário original da ocorrência vem do Edge;
+- `camera_id`, `unidade_id`, `tipo`, `severidade`, `status` e `duracao`
+  aparecem no payload recebido pelo Cloud;
+- não existe envio frame a frame;
+- se o evento fechar depois, o mesmo `event_uuid` é atualizado, não duplicado.

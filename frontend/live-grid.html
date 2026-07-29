@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Campex Monitoramento</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css?v=campex-live-grid-20260729" />
+  </head>
+  <body class="campex-dashboard">
+    <aside class="cx-sidebar">
+      <div class="cx-sidebar-top">
+        <a class="cx-logo" href="/dashboard" aria-label="Campex">
+          <img src="/static/campex-logo-oficial.png" alt="Campex" />
+          <strong>Campex</strong>
+        </a>
+        <button class="cx-collapse" type="button" aria-label="Recolher sidebar">‹</button>
+      </div>
+      <button class="cx-workspace-switcher" type="button" aria-label="Trocar workspace" title="Cliente piloto · Unidade principal">
+        <span class="cx-workspace-initials">CP</span>
+        <span class="cx-workspace-copy">
+          <strong>Cliente piloto</strong>
+          <small>Unidade principal</small>
+        </span>
+        <span class="cx-workspace-arrow">⌄</span>
+      </button>
+      <nav class="cx-nav cx-nav-grouped" aria-label="Navegação principal">
+        <small>OPERAÇÃO</small>
+        <a href="/dashboard"><span class="cx-nav-icon" data-icon="home"></span>Home</a>
+        <a href="/overview"><span class="cx-nav-icon" data-icon="overview"></span>Visão geral</a>
+        <a class="active" href="/cameras"><span class="cx-nav-icon" data-icon="camera"></span>Câmeras</a>
+        <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Eventos</a>
+        <hr />
+        <small>MONITORAMENTO</small>
+        <a href="/alerts"><span class="cx-nav-icon" data-icon="alert"></span>Alertas</a>
+        <a href="/evidence"><span class="cx-nav-icon" data-icon="evidence"></span>Evidências</a>
+        <a href="/rules"><span class="cx-nav-icon" data-icon="rules"></span>Regras</a>
+        <hr />
+        <small>INTELIGÊNCIA</small>
+        <a href="/reports"><span class="cx-nav-icon" data-icon="reports"></span>Relatórios</a>
+        <a href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Insights</a>
+        <a href="/history"><span class="cx-nav-icon" data-icon="history"></span>Histórico</a>
+        <hr />
+        <small>PLATAFORMA</small>
+        <a href="/integrations"><span class="cx-nav-icon" data-icon="integrations"></span>Integrações</a>
+        <a href="/users"><span class="cx-nav-icon" data-icon="users"></span>Usuários</a>
+        <a href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Configurações</a>
+      </nav>
+      <div class="cx-account">
+        <a href="/help" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
+        <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="status"></span>Sistema online</a>
+        <div class="cx-avatar">C</div>
+        <div>
+          <strong>Operador</strong>
+          <span>Campex</span>
+        </div>
+      </div>
+    </aside>
+    <main class="cx-main app-content live-grid-shell">
+      <header class="cx-header cx-topbar">
+        <div>
+          <p>Campex Operations</p>
+          <h1>Monitoramento</h1>
+        </div>
+        <div class="cx-header-tools">
+          <span id="gridResources" class="badge">Carregando recursos</span>
+          <a class="button-link" href="/settings/cameras">Configurar câmeras</a>
+        </div>
+      </header>
+
+      <section class="cx-live-grid-page">
+        <div class="cx-panel-head">
+          <div>
+            <h2>Duas câmeras simultâneas</h2>
+            <p>Selecione até quatro câmeras cadastradas. Cada câmera mantém conexão, status e IA próprios.</p>
+          </div>
+        </div>
+        <div id="gridCameraPicker" class="cx-grid-picker"></div>
+        <div id="gridMessage" class="muted">Carregando câmeras cadastradas...</div>
+        <section id="liveGrid" class="cx-live-grid"></section>
+      </section>
+    </main>
+    <script src="/static/shell.js"></script>
+    <script src="/static/live-grid.js"></script>
+  </body>
+</html>

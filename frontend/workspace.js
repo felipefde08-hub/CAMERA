@@ -63,14 +63,14 @@ const routes = {
     breadcrumb: "Operação / Eventos",
     permissions: [],
     heading: "Eventos",
-    subtitle: "Tabela completa de ocorrências operacionais com filtros.",
+    subtitle: "Ocorrências operacionais com duração, severidade, evidência, alerta e responsável.",
     endpoint: "/eventos",
     action: "Exportar eventos",
     emptyTitle: "Nenhum evento registrado.",
     emptyDescription: "Os eventos aparecerão aqui quando a operação gerar histórico.",
-    tabs: ["Todos", "Paradas", "Pessoas", "Máquinas", "Com evidência"],
-    filters: ["Período", "Câmera", "Tipo de evento", "Status", "Área", "Evidência"],
-    columns: ["Evento", "Câmera", "Categoria", "Horário", "Duração", "Status", "Evidência", "Ações"],
+    tabs: ["Todos", "Aberto", "Em análise", "Reconhecido", "Encerrado", "Descartado", "Com evidência"],
+    filters: ["Período", "Tipo", "Categoria", "Unidade", "Área", "Câmera", "Severidade", "Status", "Evidência", "Alerta"],
+    columns: ["Data e hora", "Tipo", "Categoria", "Unidade", "Área", "Câmera", "Máquina/equipamento", "Duração", "Severidade", "Status", "Evidência", "Alerta", "Responsável", "Ação"],
     row: eventRow,
     detail: eventDetail,
   },
@@ -80,23 +80,18 @@ const routes = {
     breadcrumb: "Monitoramento / Alertas",
     permissions: [],
     heading: "Alertas",
-    subtitle: "Alertas enviados, pendentes, resolvidos e regras.",
+    subtitle: "Configuração e histórico de entregas de alertas, sem misturar falha de envio com evento aguardando análise.",
     endpoint: "/alert-deliveries",
     action: "Criar regra de alerta",
     actionHref: "/settings/cameras#destinatarios",
     emptyTitle: "Nenhum alerta registrado.",
     emptyDescription: "Configure destinatários para registrar entregas de alertas operacionais.",
-    tabs: ["Todos", "Pendentes", "Enviados", "Resolvidos", "Regras"],
-    filters: ["Status", "Destinatário", "Evento"],
-    columns: ["Tipo", "Câmera", "Evento", "Destinatário", "Horário", "Status"],
-    row: (delivery) => [
-      delivery.is_test ? "Teste" : "E-mail",
-      "—",
-      delivery.evento_id || "Teste",
-      delivery.destinatario || delivery.recipient_id || "—",
-      delivery.sent_at || delivery.last_attempt_at || delivery.criado_em || "—",
-      badge(alertStatusLabel(delivery.status)),
-    ],
+    tabs: ["Regras de alerta", "Destinatários", "Entregas", "Falhas"],
+    filters: ["Evento", "Severidade", "Destinatário", "Canal", "Status", "Falha"],
+    columns: ["Evento", "Destinatário", "Canal", "Horário", "Resultado", "Tentativas", "Erro", "Status", "Ações"],
+    load: loadAlertsWorkspace,
+    row: alertRow,
+    detail: alertDeliveryDetail,
   },
   "/evidence": {
     title: "Evidências",
@@ -104,18 +99,19 @@ const routes = {
     breadcrumb: "Monitoramento / Evidências",
     permissions: [],
     heading: "Evidências",
-    subtitle: "Biblioteca de registros visuais capturados em eventos.",
+    subtitle: "Biblioteca operacional de snapshots associados a eventos reais.",
     endpoint: "/eventos",
     action: "Abrir eventos",
     actionHref: "/events",
     emptyTitle: "Nenhuma evidência salva.",
-    emptyDescription: "Snapshots aparecerão aqui quando eventos relevantes forem registrados.",
+    emptyDescription: "As evidências serão exibidas quando um evento configurado registrar uma ocorrência visual.",
     tabs: ["Grade", "Lista"],
-    filters: ["Câmera", "Data", "Evento", "Área"],
-    columns: ["Título", "Horário", "Duração", "Origem", "Status", "Abrir"],
-    filterRows: (rows) => rows.filter((event) => event.midia_path),
-    row: (event) => [eventTitle(event), event.inicio || "—", event.duracao ?? "—", event.camera_id || "—", badge(event.status || "Registrado"), evidenceLink(event)],
+    filters: ["Período", "Evento", "Categoria", "Área", "Câmera", "Severidade", "Retenção"],
+    columns: ["Snapshot", "Evento", "Horário", "Unidade", "Área", "Câmera", "Tipo", "Severidade", "Duração", "Retenção", "Status", "Abrir"],
+    filterRows: (rows) => rows.filter((event) => event.midia_path || event.snapshot_path),
+    row: evidenceRow,
     card: evidenceCard,
+    detail: evidenceDetail,
   },
   "/rules": {
     title: "Regras",
@@ -123,22 +119,27 @@ const routes = {
     breadcrumb: "Monitoramento / Regras",
     permissions: [],
     heading: "Regras",
-    subtitle: "Motor configurável para combinar entidades, zonas, estados e duração.",
+    subtitle: "Construtor operacional de regras visuais em linguagem de operação.",
     endpoint: "/visual-rules",
     action: "Configurar regra",
     actionType: "visual-rule",
     emptyTitle: "Nenhuma regra configurada.",
     emptyDescription: "Crie uma regra visual para transformar estados do vídeo em eventos e alertas.",
-    tabs: ["Todas", "Ativas", "Inativas"],
-    filters: ["Câmera", "Tipo", "Severidade"],
-    columns: ["Regra", "Condição", "Câmera", "Duração", "Cooldown", "Status", "Ações"],
+    tabs: ["Todas", "Ativas", "Inativas", "Em desenvolvimento"],
+    filters: ["Unidade", "Câmera", "Área", "Condição", "Severidade", "Status"],
+    columns: ["Nome", "Unidade", "Câmera", "Área/zona", "Condição", "Tempo mínimo", "Severidade", "Cooldown", "Alerta", "Status", "Última ativação", "Ações"],
     row: (rule) => [
       `<strong>${rule.nome || rule.tipo_evento}</strong>`,
-      rule.condicao?.type || rule.tipo_evento,
+      rule.unidade_id || "—",
       rule.camera_id || "—",
+      rule.regiao_id || rule.area_id || "—",
+      humanCondition(rule),
       `${rule.tempo_minimo || 0}s`,
+      badge(rule.severidade || "medium"),
       `${rule.cooldown_seconds || 0}s`,
+      rule.alerta_inicio || rule.alerta_normalizacao ? "Configurado" : "Sem alerta",
       badge(rule.ativo ? "Ativa" : "Inativa"),
+      rule.last_triggered_at || rule.ultima_ativacao || "—",
       rowMenu(),
     ],
     detail: ruleDetail,
@@ -149,16 +150,16 @@ const routes = {
     breadcrumb: "Inteligência / Relatórios",
     permissions: [],
     heading: "Relatórios",
-    subtitle: "Relatórios por período, câmera, área e evento.",
+    subtitle: "Leitura gerencial por período, unidade, áreas, categorias, alertas e evidências.",
     endpoint: "/relatorios/diario",
     action: "Gerar relatório",
     emptyTitle: "Nenhum relatório gerado.",
     emptyDescription: "Organize eventos, duração e recorrência por período.",
-    tabs: ["Hoje", "7 dias", "Câmera", "Evento"],
-    filters: ["Período", "Câmera", "Área", "Evento"],
-    columns: ["Indicador", "Valor"],
+    tabs: ["Resumo operacional", "Eventos por período", "Duração", "Disponibilidade", "Área", "Alertas", "Evidências"],
+    filters: ["Período", "Unidade", "Áreas", "Categorias", "Formato"],
+    columns: ["Relatório", "Período", "Criado em", "Responsável", "Status", "Formato", "Ação"],
     transform: (payload) => Object.entries(payload || {}).map(([key, value]) => ({ key, value })),
-    row: (item) => [item.key, typeof item.value === "object" ? JSON.stringify(item.value) : item.value ?? "—"],
+    row: (item) => [reportLabel(item.key), "Período atual", "—", "—", badge(item.value ? "Prévia" : "Sem dados"), "Tela", typeof item.value === "object" ? JSON.stringify(item.value) : item.value ?? "—"],
   },
   "/insights": {
     title: "Insights",
@@ -166,20 +167,16 @@ const routes = {
     breadcrumb: "Inteligência / Insights",
     permissions: [],
     heading: "Insights",
-    subtitle: "Padrões e recorrências encontrados no histórico.",
+    subtitle: "Padrões gerados somente quando há dados suficientes para sustentar a constatação.",
     endpoint: "/operations/summary",
     action: "Atualizar insights",
-    emptyTitle: "Nenhum insight disponível.",
-    emptyDescription: "A Campex mostrará padrões quando houver histórico operacional suficiente.",
-    tabs: ["Todos", "Paradas", "Operador", "Câmera"],
-    filters: ["Período", "Câmera", "Máquina"],
-    columns: ["Insight", "Valor"],
-    transform: (payload) => [
-      Number(payload.percentual_atividade_estimada || 0) ? { name: "Atividade estimada", value: `${payload.percentual_atividade_estimada}%` } : null,
-      Number(payload.maior_parada || 0) ? { name: "Maior parada", value: `${payload.maior_parada}s` } : null,
-      Number(payload.tempo_ativa_sem_operador || 0) ? { name: "Ativa sem operador", value: `${payload.tempo_ativa_sem_operador}s` } : null,
-    ].filter(Boolean),
-    row: (item) => [item.name, item.value],
+    emptyTitle: "Ainda não existem dados suficientes para gerar padrões confiáveis.",
+    emptyDescription: "A Campex só apresenta insights quando há ocorrências suficientes, período definido e base comparável.",
+    tabs: ["Todos", "Recorrência", "Duração", "Horário", "Câmera", "Comparação"],
+    filters: ["Período", "Categoria", "Área", "Câmera", "Confiança"],
+    columns: ["Constatação", "Dados utilizados", "Período", "Confiança", "Investigar"],
+    load: loadInsightsWorkspace,
+    row: (item) => [item.statement, item.data, item.period, badge(item.confidence), `<a class="cx-link" href="${item.href}">Investigar</a>`],
   },
   "/history": {
     title: "Histórico",
@@ -220,16 +217,24 @@ const routes = {
     breadcrumb: "Plataforma / Usuários",
     permissions: [],
     heading: "Usuários",
-    subtitle: "Equipe e permissões.",
+    subtitle: "Equipe, convites e permissões vinculadas ao cliente.",
     endpoint: "/auth/users",
-    action: "Adicionar usuário",
+    action: "Convidar usuário",
     actionHref: "/settings/cameras#usuarios",
     emptyTitle: "Nenhum usuário cadastrado.",
-    emptyDescription: "Cadastre usuários do cliente para organizar acessos e permissões.",
+    emptyDescription: "O administrador convida usuários; a identidade é vinculada ao cliente e as permissões são aplicadas.",
     tabs: ["Todos", "Admins", "Operadores", "Visualizadores"],
-    filters: ["Função", "Status"],
-    columns: ["Nome", "E-mail", "Função", "Status"],
-    row: (user) => [user.nome || "—", user.email || "—", user.role || "—", badge(user.ativo ? "Ativo" : "Inativo")],
+    filters: ["Função", "Cliente", "Unidade", "Status"],
+    columns: ["Nome", "E-mail", "Função", "Cliente", "Unidades", "Status", "Último acesso"],
+    row: (user) => [
+      user.nome || "—",
+      user.email || "—",
+      user.role || "—",
+      user.cliente_id || "Cliente vinculado",
+      user.unidades?.join?.(", ") || "Conforme permissão",
+      badge(user.ativo ? "Ativo" : "Inativo"),
+      user.ultimo_acesso || "—",
+    ],
   },
   "/settings": {
     title: "Configurações",
@@ -237,21 +242,27 @@ const routes = {
     breadcrumb: "Plataforma / Configurações",
     permissions: [],
     heading: "Configurações",
-    subtitle: "Preferências e atalhos de configuração do piloto local.",
+    subtitle: "Empresa, unidades, usuários, câmeras, máquinas, alertas, segurança e retenção.",
     endpoint: "/health",
     action: "Configurar câmeras",
     actionHref: "/settings/cameras",
     emptyTitle: "Nenhuma configuração encontrada.",
     emptyDescription: "Abra uma área de configuração para ajustar o piloto local.",
-    tabs: ["Geral", "Câmeras", "Notificações", "Conta"],
+    tabs: ["Empresa", "Unidades", "Usuários", "Câmeras", "Máquinas e áreas", "Alertas", "Integrações", "Segurança", "Retenção"],
     filters: ["Área"],
     columns: ["Configuração", "Destino"],
     transform: () => [
+      { name: "Empresa", href: "/settings/cameras#clientes", note: "Cliente, documento e status." },
+      { name: "Unidades", href: "/settings/cameras#unidades", note: "Unidades operacionais vinculadas ao cliente." },
+      { name: "Usuários", href: "/users", note: "Convites, permissões e vínculo ao cliente." },
       { name: "Câmeras", href: "/settings/cameras" },
-      { name: "Notificações", href: "/settings/notifications" },
-      { name: "Conta", href: "/settings/account" },
+      { name: "Máquinas e áreas", href: "/settings/cameras#maquinas", note: "Zonas e parâmetros de calibração." },
+      { name: "Alertas", href: "/settings/notifications", note: "Destinatários e entregas." },
+      { name: "Integrações", href: "/integrations", note: "Conexões futuras com sistemas da operação." },
+      { name: "Segurança", href: "/settings/account", note: "Sessão, credenciais protegidas e acesso local." },
+      { name: "Retenção de evidências", href: "/evidence", note: "Política local de snapshots." },
     ],
-    row: (item) => [item.name, `<a class="cx-link" href="${item.href}">Abrir</a>`],
+    row: (item) => [item.name, `<span>${item.note || "Configuração do piloto local."}</span> <a class="cx-link" href="${item.href}">Abrir</a>`],
   },
   "/settings/cameras": {
     title: "Configurações de câmeras",
@@ -304,6 +315,24 @@ const routes = {
     ],
     row: (item) => [item.name, badge(item.status)],
   },
+  "/help": {
+    title: "Ajuda",
+    section: "support",
+    breadcrumb: "Suporte / Ajuda",
+    permissions: [],
+    heading: "Ajuda",
+    subtitle: "Orientações para operar o piloto local da Campex.",
+    endpoint: "/health",
+    action: "Abrir configurações",
+    actionHref: "/settings/cameras",
+    emptyTitle: "Central de ajuda local",
+    emptyDescription: "Use esta área para revisar os próximos passos: cadastrar câmera, validar eventos, revisar evidências e configurar alertas.",
+    tabs: ["Primeiros passos", "Conectar câmera", "Configurar zona", "Criar regra", "Configurar alerta", "Revisar evento", "Evidências", "Problemas", "Diagnóstico", "Contato"],
+    filters: ["Tema", "Status"],
+    columns: ["Tema", "Orientação", "Status", "Ação"],
+    load: loadHelpWorkspace,
+    row: (item) => [item.name, item.note, badge(item.status || "Disponível"), item.href ? `<a class="cx-link" href="${item.href}">Abrir</a>` : "—"],
+  },
 };
 
 async function requestJson(url, options) {
@@ -321,9 +350,9 @@ async function authStatus() {
 function badge(value) {
   const text = String(value || "—");
   const key = text.toLowerCase();
-  const klass = key.includes("ativa") || key.includes("ativo") || key.includes("online") || key.includes("enviado") || key.includes("sent")
+  const klass = key.includes("ativa") || key.includes("ativo") || key.includes("online") || key.includes("enviado") || key.includes("sent") || key.includes("disponível") || key.includes("sem falhas")
     ? "success"
-    : key.includes("pend") || key.includes("config")
+      : key.includes("pend") || key.includes("config") || key.includes("atenção")
       ? "warning"
       : key.includes("sinal") || key.includes("offline") || key.includes("erro") || key.includes("fal")
         ? "danger"
@@ -341,9 +370,223 @@ function cameraStatusLabel(status) {
 
 function alertStatusLabel(status) {
   if (status === "sent") return "Enviado";
-  if (status === "pending") return "Pendente";
-  if (status === "failed") return "Pendente";
+  if (status === "pending") return "Em processamento";
+  if (status === "failed") return "Falha de entrega";
   return status || "Resolvido";
+}
+
+async function loadAlertsWorkspace() {
+  const [deliveries, recipients, rules] = await Promise.all([
+    requestJson("/alert-deliveries").catch(() => []),
+    requestJson("/alert-recipients").catch(() => []),
+    requestJson("/visual-rules").catch(() => []),
+  ]);
+  const deliveryRows = (Array.isArray(deliveries) ? deliveries : deliveries.deliveries || []).map((item) => ({ ...item, workspace_kind: "entrega" }));
+  const recipientRows = (Array.isArray(recipients) ? recipients : recipients.recipients || []).map((item) => ({ ...item, workspace_kind: "destinatario" }));
+  const ruleRows = (Array.isArray(rules) ? rules : rules.rules || []).map((item) => ({ ...item, workspace_kind: "regra" }));
+  return [...ruleRows, ...recipientRows, ...deliveryRows];
+}
+
+async function loadInsightsWorkspace() {
+  const [summary, eventsPayload, operationsPayload] = await Promise.all([
+    requestJson("/operations/summary").catch(() => ({})),
+    requestJson("/operations/events?limit=200&offset=0").catch(() => ({ events: [] })),
+    requestJson("/operations").catch(() => ({ machines: [] })),
+  ]);
+  const events = eventsPayload.events || [];
+  const insights = [];
+  if (events.length < 3) return insights;
+
+  const byType = countBy(events, (event) => event.event_type || event.tipo || "Evento operacional");
+  const topType = topEntry(byType);
+  if (topType && topType[1] >= 2) {
+    insights.push({
+      statement: `${topType[0]} se repetiu ${topType[1]} vezes no período.`,
+      data: `${topType[1]} de ${events.length} ocorrências`,
+      period: "Período atual",
+      confidence: `${topType[1]} ocorrências`,
+      href: "/history",
+    });
+  }
+
+  const byArea = sumBy(events, (event) => event.machine_name || event.area_id || event.camera_id || "Sem área", (event) => Number(event.duration_seconds || event.duracao || 0));
+  const topArea = topEntry(byArea);
+  const totalDuration = Array.from(byArea.values()).reduce((sum, value) => sum + value, 0);
+  if (topArea && totalDuration > 0 && topArea[1] / totalDuration >= 0.35) {
+    insights.push({
+      statement: `${topArea[0]} concentrou ${Math.round((topArea[1] / totalDuration) * 100)}% da duração total das ocorrências.`,
+      data: `${Math.round(topArea[1])}s de ${Math.round(totalDuration)}s`,
+      period: "Período atual",
+      confidence: `${events.length} eventos`,
+      href: "/events",
+    });
+  }
+
+  const byHour = countBy(events, (event) => {
+    const date = new Date(event.started_at || event.inicio || event.criado_em || "");
+    return Number.isNaN(date.getTime()) ? "Sem horário" : `${String(date.getHours()).padStart(2, "0")}:00`;
+  });
+  const topHour = topEntry(byHour);
+  if (topHour && topHour[1] >= 2 && topHour[0] !== "Sem horário") {
+    insights.push({
+      statement: `${topHour[0]} foi o horário com maior concentração de ocorrências.`,
+      data: `${topHour[1]} ocorrências`,
+      period: "Período atual",
+      confidence: `${topHour[1]} ocorrências`,
+      href: "/events",
+    });
+  }
+
+  const offlineSeconds = Number(summary.tempo_total_monitorado || 0) * (1 - Number(summary.disponibilidade_camera || 100) / 100);
+  if (offlineSeconds >= 60) {
+    insights.push({
+      statement: `Houve indisponibilidade estimada de câmera no período.`,
+      data: `${Math.round(offlineSeconds)}s offline estimados`,
+      period: "Período atual",
+      confidence: summary.disponibilidade_camera ? `${summary.disponibilidade_camera}% disponibilidade` : "baixo",
+      href: "/cameras",
+    });
+  }
+
+  const machines = operationsPayload.machines || [];
+  const unavailableMachines = machines.filter((item) => item.monitor?.current_state === "unavailable");
+  if (unavailableMachines.length) {
+    insights.push({
+      statement: `${unavailableMachines.length} operação(ões) estão sem estado operacional disponível.`,
+      data: "Estados atuais de máquinas/áreas",
+      period: "Agora",
+      confidence: `${unavailableMachines.length} registros`,
+      href: "/overview",
+    });
+  }
+
+  return insights;
+}
+
+async function loadHelpWorkspace() {
+  const [health, systemHealth, cameras, deliveries] = await Promise.all([
+    requestJson("/health").catch(() => ({ status: "erro" })),
+    requestJson("/system/health").catch(() => ({})),
+    requestJson("/cameras/estado").catch(() => []),
+    requestJson("/alert-deliveries").catch(() => []),
+  ]);
+  const onlineCameras = cameras.filter((camera) => camera.status === "online").length;
+  const failedDeliveries = deliveries.filter((delivery) => delivery.status === "failed").length;
+  return [
+    { name: "Primeiros passos", note: "Conecte uma câmera, configure uma zona, crie uma regra e valide os primeiros eventos.", status: "Disponível", href: "/settings/cameras" },
+    { name: "Conectar câmera", note: "Cadastre o RTSP no backend. A senha fica protegida e não aparece no navegador.", status: "Disponível", href: "/settings/cameras" },
+    { name: "Configurar zona", note: "Abra Live View, desenhe a área, revise os pontos e salve a configuração.", status: "Disponível", href: "/live-view" },
+    { name: "Criar regra", note: "Use Regras para definir condição, duração mínima, severidade, cooldown e alertas.", status: "Disponível", href: "/rules" },
+    { name: "Configurar alerta", note: "Cadastre destinatários e acompanhe entregas, falhas e testes.", status: failedDeliveries ? "Atenção" : "Disponível", href: "/alerts" },
+    { name: "Revisar evento", note: "Abra Eventos, confira snapshot, timeline, metadados e reconheça quando analisado.", status: "Disponível", href: "/events" },
+    { name: "Entender evidências", note: "Snapshots aparecem apenas quando eventos configurados registram ocorrência visual.", status: "Disponível", href: "/evidence" },
+    { name: "Solução de problemas", note: "Verifique câmera online, último frame, API local, banco e entregas de alerta.", status: "Disponível", href: "/help" },
+    { name: "Backend", note: `API local: ${health.status || "indisponível"}`, status: health.status === "ok" ? "Online" : "Atenção" },
+    { name: "Banco", note: systemHealth.database || systemHealth.banco || "SQLite local configurado", status: "Local" },
+    { name: "Câmera", note: `${onlineCameras} câmera(s) online de ${cameras.length}`, status: onlineCameras ? "Online" : "Sem histórico recente", href: "/cameras" },
+    { name: "Último frame", note: latestFrameText(cameras), status: cameras.length ? "Disponível" : "Sem dados" },
+    { name: "Processamento", note: "Status de IA e regras aparece por câmera na Live View e no status operacional.", status: "Local" },
+    { name: "Alertas", note: `${failedDeliveries} falha(s) de entrega registradas`, status: failedDeliveries ? "Atenção" : "Sem falhas", href: "/alerts" },
+    { name: "Armazenamento", note: "Snapshots e banco ficam no diretório local de dados da instalação.", status: "Local" },
+    { name: "Contato com a Campex", note: "Use o acompanhamento assistido do piloto para suporte técnico e validação operacional.", status: "Assistido" },
+  ];
+}
+
+function countBy(items, keyFn) {
+  const map = new Map();
+  items.forEach((item) => {
+    const key = keyFn(item);
+    map.set(key, (map.get(key) || 0) + 1);
+  });
+  return map;
+}
+
+function sumBy(items, keyFn, valueFn) {
+  const map = new Map();
+  items.forEach((item) => {
+    const key = keyFn(item);
+    map.set(key, (map.get(key) || 0) + valueFn(item));
+  });
+  return map;
+}
+
+function topEntry(map) {
+  return Array.from(map.entries()).sort((a, b) => b[1] - a[1])[0];
+}
+
+function latestFrameText(cameras) {
+  const values = cameras.map((camera) => camera.ultimo_frame).filter(Boolean).sort().reverse();
+  return values[0] || "Nenhum frame recente informado";
+}
+
+function alertRow(item) {
+  if (item.workspace_kind === "regra") {
+    return [
+      item.tipo_evento || item.nome || "Regra",
+      item.destinatarios || "Destinatários configurados por cliente",
+      item.canais || "e-mail",
+      item.last_triggered_at || "—",
+      item.alerta_inicio ? "Ao iniciar" : item.alerta_normalizacao ? "Ao normalizar" : "Sem envio",
+      item.cooldown_seconds || 0,
+      "—",
+      badge(item.ativo ? "Ativa" : "Inativa"),
+      rowMenu(),
+    ];
+  }
+  if (item.workspace_kind === "destinatario") {
+    return [
+      item.event_types?.join?.(", ") || "Tipos configurados",
+      `${item.nome || "—"} · ${item.email || "—"}`,
+      "e-mail",
+      "—",
+      item.ativo ? "Disponível" : "Pausado",
+      "—",
+      "—",
+      badge(item.ativo ? "Ativo" : "Inativo"),
+      `<button type="button" data-test-recipient="${item.id}">Enviar teste</button>`,
+    ];
+  }
+  return [
+    item.evento_id || "Teste",
+    item.destinatario || item.recipient_id || "—",
+    item.channel || item.canal || "e-mail",
+    item.sent_at || item.last_attempt_at || item.criado_em || "—",
+    item.status === "sent" ? "Entregue" : item.status === "failed" ? "Falha" : "Em processamento",
+    item.attempts || item.tentativas || 1,
+    item.erro || item.error || "—",
+    badge(alertStatusLabel(item.status)),
+    item.status === "failed" ? '<button type="button" class="cx-row-menu" data-open-detail>•••</button>' : rowMenu(),
+  ];
+}
+
+function eventStatusLabel(status) {
+  if (status === "open") return "Aberto";
+  if (status === "analysis" || status === "em_analise") return "Em análise";
+  if (status === "acknowledged") return "Reconhecido";
+  if (status === "closed") return "Encerrado";
+  if (status === "discarded" || status === "false_positive") return "Descartado";
+  return status || "Aberto";
+}
+
+function eventSeverity(event) {
+  const severity = String(event.severidade || event.severity || "").toLowerCase();
+  if (severity) return severity;
+  const text = `${event.tipo || ""} ${event.event_type || ""} ${event.new_state || ""}`.toLowerCase();
+  if (text.includes("offline") || text.includes("parada") || text.includes("stoppage")) return "alta";
+  if (text.includes("restricted") || text.includes("sem_operador")) return "média";
+  return "normal";
+}
+
+function eventStart(event) {
+  return event.inicio || event.started_at || event.criado_em || "—";
+}
+
+function eventEnd(event) {
+  return event.fim || event.ended_at || "—";
+}
+
+function eventDuration(event) {
+  return event.duracao ?? event.duration_seconds ?? "—";
 }
 
 function eventTitle(event) {
@@ -359,8 +602,12 @@ function eventCategory(event) {
   return "Operação";
 }
 
+function unitForEvent(event) {
+  return event.unidade_id || event.unit_id || "—";
+}
+
 function evidenceLink(event) {
-  return event.midia_path ? `<a class="cx-link" href="/eventos/${event.id}/evidence" target="_blank">Abrir</a>` : "—";
+  return event.midia_path || event.snapshot_path ? `<a class="cx-link" href="/eventos/${event.id}/evidence" target="_blank">Abrir</a>` : "—";
 }
 
 function rowMenu() {
@@ -369,13 +616,19 @@ function rowMenu() {
 
 function eventRow(event) {
   return [
+    eventStart(event),
     `<strong>${eventTitle(event)}</strong>`,
-    event.camera_id || "—",
     eventCategory(event),
-    event.inicio || event.criado_em || "—",
-    event.duracao ?? "—",
-    badge(event.status || "Registrado"),
+    event.unidade_id || event.unit_id || "—",
+    event.area_id || event.regiao_id || "—",
+    event.camera_id || "—",
+    event.machine_name || event.maquina || "—",
+    eventDuration(event),
+    badge(eventSeverity(event)),
+    badge(eventStatusLabel(event.status)),
     evidenceLink(event),
+    event.alert_sent || event.alerta_enviado ? "Enviado" : "—",
+    event.responsavel || event.owner || "—",
     rowMenu(),
   ];
 }
@@ -397,28 +650,137 @@ function evidenceCard(event) {
   return `
     <article class="cx-camera-tile">
       <div class="cx-camera-thumb"><span class="cx-nav-icon" data-icon="evidence"></span></div>
-      <div><strong>${eventTitle(event)}</strong><span>${event.inicio || "—"}</span></div>
-      ${badge(event.status || "Registrado")}
+      <div><strong>${eventTitle(event)}</strong><span>${eventStart(event)}</span></div>
+      ${badge(eventSeverity(event))}
       <p>Origem: ${event.camera_id || "—"}</p>
       ${evidenceLink(event)}
     </article>
   `;
 }
 
+function evidenceRow(event) {
+  return [
+    event.midia_path || event.snapshot_path ? "Disponível" : "—",
+    eventTitle(event),
+    eventStart(event),
+    event.unidade_id || "—",
+    event.area_id || event.regiao_id || "—",
+    event.camera_id || "—",
+    eventCategory(event),
+    badge(eventSeverity(event)),
+    eventDuration(event),
+    event.retention || "Política local",
+    badge(eventStatusLabel(event.status)),
+    evidenceLink(event),
+  ];
+}
+
+function eventTimelineSteps(event) {
+  return [
+    eventStart(event) !== "—" ? ["Situação iniciada", eventStart(event)] : null,
+    event.confirmed_at ? ["Condição confirmada", event.confirmed_at] : null,
+    event.id ? ["Evento criado", event.criado_em || eventStart(event)] : null,
+    event.midia_path || event.snapshot_path ? ["Evidência salva", "Disponível"] : null,
+    event.alert_sent || event.alerta_enviado ? ["Alerta enviado", "Registrado"] : null,
+    event.status === "acknowledged" ? ["Reconhecido", event.acknowledged_at || "—"] : null,
+    eventEnd(event) !== "—" ? ["Normalizado", eventEnd(event)] : null,
+    ["closed", "discarded"].includes(event.status) ? ["Encerrado", eventEnd(event)] : null,
+  ].filter(Boolean);
+}
+
+function renderTimelineList(steps) {
+  if (!steps.length) return "<p>Sem etapas registradas.</p>";
+  return `<ol class="cx-event-timeline">${steps.map(([label, value]) => `<li><strong>${label}</strong><span>${value}</span></li>`).join("")}</ol>`;
+}
+
 function eventDetail(event) {
   return `
     <h2>${eventTitle(event)}</h2>
-    <div class="cx-detail-frame">${event.midia_path ? `<img src="/eventos/${event.id}/evidence" alt="Frame da ocorrência" />` : "Sem frame disponível"}</div>
+    <div class="cx-detail-frame">${event.midia_path || event.snapshot_path ? `<img src="/eventos/${event.id}/evidence" alt="Frame da ocorrência" />` : "Sem snapshot disponível"}</div>
     <dl>
-      <div><dt>Horário</dt><dd>${event.inicio || event.criado_em || "—"}</dd></div>
-      <div><dt>Duração</dt><dd>${event.duracao ?? "—"}</dd></div>
+      <div><dt>Horário inicial</dt><dd>${eventStart(event)}</dd></div>
+      <div><dt>Horário final</dt><dd>${eventEnd(event)}</dd></div>
+      <div><dt>Duração</dt><dd>${eventDuration(event)}</dd></div>
+      <div><dt>Área</dt><dd>${event.area_id || event.regiao_id || "—"}</dd></div>
       <div><dt>Câmera</dt><dd>${event.camera_id || "—"}</dd></div>
+      <div><dt>Regra acionada</dt><dd>${event.regra_id || event.rule_id || "—"}</dd></div>
+      <div><dt>Severidade</dt><dd>${eventSeverity(event)}</dd></div>
+      <div><dt>Responsável</dt><dd>${event.responsavel || "—"}</dd></div>
+      <div><dt>Status</dt><dd>${eventStatusLabel(event.status)}</dd></div>
+      <div><dt>Entregas de alerta</dt><dd>${event.alert_sent || event.alerta_enviado ? "Registradas" : "—"}</dd></div>
+    </dl>
+    <h3>Timeline</h3>
+    ${renderTimelineList(eventTimelineSteps(event))}
+    <h3>Metadados</h3>
+    <pre>${JSON.stringify(event.metadados || event.metadata || {}, null, 2)}</pre>
+    <div class="cx-detail-actions">
+      <button type="button" ${event.id ? `data-event-detail-action="acknowledged" data-event-id="${event.id}"` : "disabled"}>Reconhecer</button>
+      <button type="button" disabled title="Encerramento manual será ativado quando o backend suportar esta ação.">Encerrar</button>
+      <button type="button" disabled title="Descarte manual será ativado quando o backend suportar esta ação.">Descartar falso positivo</button>
+    </div>
+  `;
+}
+
+function evidenceDetail(event) {
+  return `
+    <h2>Evidência · ${eventTitle(event)}</h2>
+    <div class="cx-detail-frame">${event.midia_path || event.snapshot_path ? `<img src="/eventos/${event.id}/evidence" alt="Evidência visual" />` : "Sem imagem disponível"}</div>
+    <dl>
+      <div><dt>Evento</dt><dd>${eventTitle(event)}</dd></div>
+      <div><dt>Horário</dt><dd>${eventStart(event)}</dd></div>
       <div><dt>Área</dt><dd>${event.area_id || "—"}</dd></div>
-      <div><dt>Contexto</dt><dd>${event.tipo || "Evento operacional"}</dd></div>
-      <div><dt>Alerta</dt><dd>${event.status || "Registrado"}</dd></div>
-      <div><dt>Evidência</dt><dd>${event.midia_path ? "Disponível" : "—"}</dd></div>
+      <div><dt>Câmera</dt><dd>${event.camera_id || "—"}</dd></div>
+      <div><dt>Retenção</dt><dd>${event.retention || "Política local"}</dd></div>
+      <div><dt>Link seguro</dt><dd>${event.midia_path || event.snapshot_path ? "Disponível pela API local" : "—"}</dd></div>
+    </dl>
+    <h3>Timeline</h3>
+    ${renderTimelineList(eventTimelineSteps(event))}
+    <h3>Metadados</h3>
+    <pre>${JSON.stringify(event.metadados || event.metadata || {}, null, 2)}</pre>
+  `;
+}
+
+function alertDeliveryDetail(delivery) {
+  return `
+    <h2>Entrega de alerta</h2>
+    <dl>
+      <div><dt>Evento</dt><dd>${delivery.evento_id || "Teste"}</dd></div>
+      <div><dt>Destinatário</dt><dd>${delivery.destinatario || delivery.recipient_id || "—"}</dd></div>
+      <div><dt>Canal</dt><dd>${delivery.channel || delivery.canal || "e-mail"}</dd></div>
+      <div><dt>Horário</dt><dd>${delivery.sent_at || delivery.last_attempt_at || delivery.criado_em || "—"}</dd></div>
+      <div><dt>Tentativas</dt><dd>${delivery.attempts || delivery.tentativas || 1}</dd></div>
+      <div><dt>Status</dt><dd>${alertStatusLabel(delivery.status)}</dd></div>
+      <div><dt>Erro</dt><dd>${delivery.erro || delivery.error || "—"}</dd></div>
     </dl>
   `;
+}
+
+function humanCondition(rule) {
+  const type = rule.condicao?.type || rule.tipo_evento;
+  const labels = {
+    presence_in_zone: "Presença em zona",
+    absence_in_zone: "Ausência em zona",
+    count_between: "Contagem mínima/máxima",
+    machine_state: "Estado da máquina",
+    camera_status: "Câmera indisponível",
+    no_motion_in_region: "Ausência de movimento",
+    active_without_operator: "Máquina ativa sem operador",
+    restricted_area_occupied: "Pessoa em área restrita",
+  };
+  return labels[type] || type || "Em desenvolvimento";
+}
+
+function reportLabel(key) {
+  const labels = {
+    eventos: "Eventos por período",
+    cameras: "Disponibilidade das câmeras",
+    tempo_maquina_ativa: "Tempo ativo",
+    tempo_maquina_parada: "Tempo parado",
+    quantidade_paradas: "Paradas",
+    alertas: "Alertas",
+    evidencias: "Evidências",
+  };
+  return labels[key] || key.replaceAll("_", " ");
 }
 
 function ruleDetail(rule) {
@@ -442,22 +804,35 @@ function ruleDetail(rule) {
 function visualRuleForm() {
   return `
     <h2>Configurar regra visual</h2>
+    <ol class="cx-rule-steps">
+      <li>Escolher câmera</li>
+      <li>Escolher área ou zona</li>
+      <li>Escolher condição</li>
+      <li>Definir duração mínima</li>
+      <li>Definir severidade</li>
+      <li>Configurar alertas</li>
+      <li>Revisar</li>
+      <li>Ativar</li>
+    </ol>
     <form id="visualRuleForm" class="form">
       <label>Nome da regra<input name="nome" required placeholder="Ex.: Máquina ativa sem operador" /></label>
       <label>Câmera<input name="camera_id" required placeholder="ID da câmera cadastrada" /></label>
+      <label>Área ou zona<input name="regiao_id" placeholder="Ex.: operador, doca_1, zona_segurança" /></label>
       <label>Tipo do evento<input name="tipo_evento" required value="active_without_operator" /></label>
       <label>Condição
         <select name="condition_type">
           <option value="all">Máquina ativa + ausência em zona</option>
           <option value="presence_in_zone">Presença em zona</option>
           <option value="absence_in_zone">Ausência em zona</option>
+          <option value="dwell_time">Permanência acima do limite</option>
           <option value="count_between">Contagem mínima e máxima</option>
           <option value="machine_state">Estado da máquina</option>
           <option value="camera_status">Status da câmera</option>
           <option value="no_motion_in_region">Ausência de movimento</option>
+          <option disabled>Circulação em área configurada — em desenvolvimento</option>
+          <option disabled>Proximidade — em desenvolvimento</option>
         </select>
       </label>
-      <label>Região ou zona<input name="regiao_id" placeholder="Ex.: operador, area_restrita_1" /></label>
       <label>Duração mínima em segundos<input name="tempo_minimo" type="number" min="0" step="1" value="120" /></label>
       <label>Severidade
         <select name="severidade">
@@ -470,6 +845,9 @@ function visualRuleForm() {
       <label>Cooldown em segundos<input name="cooldown_seconds" type="number" min="0" step="1" value="300" /></label>
       <label><input name="alerta_inicio" type="checkbox" checked /> Enviar alerta ao iniciar</label>
       <label><input name="alerta_normalizacao" type="checkbox" /> Enviar alerta ao normalizar</label>
+      <div class="cx-rule-human-summary">
+        Quando a condição configurada permanecer pelo tempo mínimo, a Campex cria um evento único, registra evidência quando disponível e avisa os responsáveis selecionados.
+      </div>
       <button type="submit">Salvar regra</button>
       <p id="visualRuleStatus" class="muted">A regra será salva no banco local e poderá ser testada no modo simulação.</p>
     </form>
@@ -489,6 +867,7 @@ function conditionFromForm(data) {
     };
   }
   if (type === "presence_in_zone") return { type, zone_id: zone, min_count: 1 };
+  if (type === "dwell_time") return { type: "presence_in_zone", zone_id: zone, min_count: 1 };
   if (type === "absence_in_zone") return { type, zone_id: zone, max_count: 0 };
   if (type === "count_between") return { type, field: "people_count", min: 1, max: 5 };
   if (type === "machine_state") return { type, state: "PARADA" };
@@ -504,12 +883,20 @@ function matchesTab(row) {
   if (currentTab === "sem sinal") return cameraStatusLabel(row.status).toLowerCase() === "sem sinal";
   if (currentTab === "em configuração") return cameraStatusLabel(row.status).toLowerCase() === "em configuração";
   if (currentTab === "pausada") return cameraStatusLabel(row.status).toLowerCase() === "pausada";
+  if (["aberto", "em análise", "reconhecido", "encerrado", "descartado"].includes(currentTab)) return eventStatusLabel(row.status).toLowerCase() === currentTab;
   if (currentTab === "paradas") return text.includes("stoppage") || text.includes("parada");
   if (currentTab === "pessoas") return text.includes("restricted") || text.includes("pessoa");
   if (currentTab === "máquinas") return text.includes("machine") || text.includes("máquina");
   if (currentTab === "com evidência") return Boolean(row.midia_path || row.snapshot_path);
+  if (currentTab === "regras de alerta") return row.workspace_kind === "regra";
+  if (currentTab === "destinatários") return row.workspace_kind === "destinatario";
+  if (currentTab === "entregas") return row.workspace_kind === "entrega";
+  if (currentTab === "falhas") return row.workspace_kind === "entrega" && String(row.status).toLowerCase() === "failed";
   if (currentTab === "pendentes") return text.includes("pending") || text.includes("failed");
   if (currentTab === "enviados") return text.includes("sent");
+  if (currentTab === "ativas") return row.ativo === true || row.ativo === 1;
+  if (currentTab === "inativas") return row.ativo === false || row.ativo === 0;
+  if (currentTab === "em desenvolvimento") return humanCondition(row) === "Em desenvolvimento";
   return true;
 }
 
@@ -681,7 +1068,7 @@ async function loadPage(path = window.location.pathname) {
       document.querySelector(".cx-main")?.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
-    const payload = await requestJson(config.endpoint);
+    const payload = config.load ? await config.load() : await requestJson(config.endpoint);
     let rows = config.transform ? config.transform(payload) : Array.isArray(payload) ? payload : payload.events || payload.deliveries || payload.recipients || payload.machines || [];
     rows = Array.isArray(rows) ? rows : [];
     rowsCache = config.filterRows ? config.filterRows(rows) : rows;
@@ -739,6 +1126,23 @@ document.body.addEventListener("click", async (event) => {
       testButton.textContent = "Enviado";
     } catch (error) {
       testButton.textContent = `Erro`;
+    }
+    return;
+  }
+  const eventDetailAction = event.target.closest("[data-event-detail-action]");
+  if (eventDetailAction) {
+    eventDetailAction.textContent = "Salvando...";
+    try {
+      await requestJson(`/eventos/${eventDetailAction.dataset.eventId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: eventDetailAction.dataset.eventDetailAction }),
+      });
+      eventDetailAction.textContent = "Atualizado";
+      await loadPage(window.location.pathname);
+      closeSidePanels();
+      closeDrawer();
+    } catch (error) {
+      eventDetailAction.textContent = "Erro";
     }
     return;
   }

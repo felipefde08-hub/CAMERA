@@ -22,6 +22,9 @@ from app.operations_history import (
 )
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 class OperationsDashboardTest(unittest.TestCase):
     def _db(self, temp_dir: str):
         db_path = Path(temp_dir) / "operations.sqlite3"
@@ -82,6 +85,42 @@ class OperationsDashboardTest(unittest.TestCase):
             events = list_operational_events(reopened)
 
         self.assertEqual(len([event for event in events if event["event_type"] == "camera_status"]), 1)
+
+    def test_live_view_session_does_not_become_persistent_camera_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, db_path = self._db(temp_dir)
+            connection.close()
+            with patch("app.operations_history.connect", lambda: connect(db_path)):
+                recorder = OperationsRecorder("live_abc123", "live_abc123")
+                recorder.update_status("online", None)
+            reopened = connect(db_path)
+            events = list_operational_events(reopened)
+
+        self.assertEqual(len(events), 1)
+        self.assertIsNone(events[0]["camera_id"])
+        self.assertEqual(events[0]["session_id"], "live_abc123")
+
+    def test_machine_not_configured_does_not_create_machine_or_camera_offline_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, db_path = self._db(temp_dir)
+            connection.close()
+            ops = {
+                "machine": None,
+                "machine_state": "NAO_CONFIGURADA",
+                "operator_present": False,
+                "people_count": 2,
+            }
+            with patch("app.operations_history.connect", lambda: connect(db_path)):
+                recorder = OperationsRecorder("s1", "cam1")
+                recorder.update_status("online", ops)
+            reopened = connect(db_path)
+            events = list_operational_events(reopened)
+            status = current_status(reopened, "cam1")
+
+        self.assertEqual([event["event_type"] for event in events], ["camera_status"])
+        self.assertEqual(events[0]["new_state"], "online")
+        self.assertEqual(status["machine_state"], "NAO_CONFIGURADA")
+        self.assertEqual(status["camera_status"], "online")
 
     def test_timeline_keeps_camera_availability_out_of_operational_states(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -156,6 +195,25 @@ class OperationsDashboardTest(unittest.TestCase):
         self.assertEqual(current.status_code, 200)
         self.assertEqual(summary.json()["tempo_maquina_ativa"], 3600.0)
         self.assertEqual(len(events.json()["events"]), 1)
+
+    def test_home_stage_rules_are_encoded_in_frontend(self) -> None:
+        script = (ROOT / "frontend" / "operations-dashboard.js").read_text()
+
+        self.assertIn('const stage = !cameras.length ? "empty" : hasHistory ? "active" : "partial"', script)
+        self.assertIn('setVisible(homeOnboarding, empty)', script)
+        self.assertIn('setVisible(homeNextAction, partial)', script)
+        self.assertIn('setVisible(homeSummarySection, active)', script)
+        self.assertIn('setVisible(homeLowerGrid, active)', script)
+        self.assertIn('function isOperationalHomeEvent(event)', script)
+        self.assertIn('type === "camera_status"', script)
+
+    def test_dashboard_does_not_default_to_named_authenticated_user(self) -> None:
+        html = (ROOT / "frontend" / "dashboard.html").read_text()
+
+        self.assertNotIn("<strong>Felipe</strong>", html)
+        self.assertNotIn("<span>Admin Campex</span>", html)
+        self.assertIn("<strong>Campex</strong>", html)
+        self.assertIn("<span>Piloto local</span>", html)
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=campex-home-state-20260728" />
   </head>
   <body class="campex-dashboard">
     <aside class="cx-sidebar">
@@ -21,10 +21,10 @@
         </a>
         <button class="cx-collapse" type="button" aria-label="Recolher sidebar">‹</button>
       </div>
-      <button class="cx-workspace-switcher" type="button" aria-label="Trocar workspace" title="FL Plásticos · Unidade principal">
-        <span class="cx-workspace-initials">FL</span>
+      <button class="cx-workspace-switcher" type="button" aria-label="Trocar workspace" title="Cliente piloto · Unidade principal">
+        <span class="cx-workspace-initials">CP</span>
         <span class="cx-workspace-copy">
-          <strong>FL Plásticos</strong>
+          <strong>Cliente piloto</strong>
           <small>Unidade principal</small>
         </span>
         <span class="cx-workspace-arrow">⌄</span>
@@ -52,9 +52,9 @@
         <a class="active" href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Configurações</a>
       </nav>
       <div class="cx-account">
-        <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
+        <a href="/help" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
         <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="status"></span>Sistema online</a>
-        <div class="cx-avatar">FE</div>
+        <div class="cx-avatar">C</div>
         <div>
           <strong>Configuração</strong>
           <span>Admin</span>
@@ -121,7 +121,7 @@
             <form id="clientForm" class="form">
               <label>
                 Nome do cliente
-                <input name="nome" required placeholder="Ex.: FL Plásticos" />
+                <input name="nome" required placeholder="Ex.: Cliente piloto" />
               </label>
               <label>
                 Documento opcional
@@ -194,7 +194,7 @@
               </label>
               <label>
                 Nome da máquina
-                <input name="nome" required placeholder="Ex.: Extrusora principal" />
+                <input name="nome" required placeholder="Ex.: Máquina principal" />
               </label>
               <button type="submit">Criar máquina padrão</button>
             </form>
@@ -206,7 +206,7 @@
         <form id="cameraForm" class="form">
           <label>
             Nome da câmera
-            <input name="nome" required placeholder="Ex.: Extrusora Principal" />
+            <input name="nome" required placeholder="Ex.: Máquina Principal" />
           </label>
           <label>
             Unidade
@@ -357,6 +357,10 @@
                 <option value="high" selected>Alta</option>
                 <option value="critical">Crítica</option>
               </select>
+            </label>
+            <label>
+              Tipos de evento
+              <input name="event_types" placeholder="Ex.: workstation_unattended, restricted_zone_occupied" />
             </label>
           </div>
           <div class="grid">

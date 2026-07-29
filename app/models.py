@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import os
 import uuid
 from typing import Any
 
 from app.security import decrypt_secret, encrypt_secret
 from edge_agent.camera_connector import safe_source_ref
+from edge_agent.sync_outbox import enqueue_sync_event, new_event_uuid, refresh_sync_event
 from shared.schemas import now_iso
 
 
@@ -268,22 +270,26 @@ def registrar_evento(
     operador_presente: bool | None = None,
     confianca: float | None = None,
     midia_path: str | None = None,
+    event_uuid: str | None = None,
 ) -> str:
     item_id = new_id("evt")
+    event_uuid = event_uuid or new_event_uuid()
+    inicio = inicio or now_iso()
     connection.execute(
         """
         INSERT INTO eventos (
-            id, cliente_id, unidade_id, camera_id, tipo, inicio, fim, duracao,
+            id, event_uuid, cliente_id, unidade_id, camera_id, tipo, inicio, fim, duracao,
             operador_presente, confianca, midia_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             item_id,
+            event_uuid,
             cliente_id,
             unidade_id,
             camera_id,
             tipo,
-            inicio or now_iso(),
+            inicio,
             fim,
             duracao,
             None if operador_presente is None else int(operador_presente),
@@ -291,8 +297,106 @@ def registrar_evento(
             midia_path,
         ),
     )
+    enqueue_sync_event(
+        connection,
+        event_uuid=event_uuid,
+        tenant_id=cliente_id,
+        edge_id=os.getenv("CAMPEX_EDGE_ID"),
+        payload={
+            "event_uuid": event_uuid,
+            "tenant_id": cliente_id,
+            "cliente_id": cliente_id,
+            "unidade_id": unidade_id,
+            "camera_id": camera_id,
+            "tipo": tipo,
+            "inicio": inicio,
+            "fim": fim,
+            "duracao": duracao,
+            "operador_presente": operador_presente,
+            "confianca": confianca,
+            "midia_path": midia_path,
+        },
+    )
     connection.commit()
     return item_id
+
+
+def _enqueue_evento_cloud(
+    connection: sqlite3.Connection,
+    *,
+    event_uuid: str,
+    cliente_id: str,
+    unidade_id: str,
+    camera_id: str,
+    tipo: str,
+    inicio: str,
+    fim: str | None = None,
+    duracao: float | None = None,
+    operador_presente: bool | None = None,
+    confianca: float | None = None,
+    midia_path: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    payload = {
+        "event_uuid": event_uuid,
+        "tenant_id": cliente_id,
+        "cliente_id": cliente_id,
+        "unidade_id": unidade_id,
+        "camera_id": camera_id,
+        "tipo": tipo,
+        "inicio": inicio,
+        "fim": fim,
+        "duracao": duracao,
+        "operador_presente": operador_presente,
+        "confianca": confianca,
+        "midia_path": midia_path,
+    }
+    if metadata:
+        payload["metadata"] = metadata
+    enqueue_sync_event(
+        connection,
+        event_uuid=event_uuid,
+        tenant_id=cliente_id,
+        edge_id=os.getenv("CAMPEX_EDGE_ID"),
+        payload=payload,
+    )
+
+
+def atualizar_outbox_evento(connection: sqlite3.Connection, evento_id: str) -> None:
+    row = connection.execute("SELECT * FROM eventos WHERE id = ?", (evento_id,)).fetchone()
+    if row is None or not row["event_uuid"]:
+        return
+    metadata: dict[str, Any] = {}
+    if "metadata_json" in row.keys() and row["metadata_json"]:
+        try:
+            metadata = json.loads(row["metadata_json"])
+        except json.JSONDecodeError:
+            metadata = {}
+    payload = {
+        "event_uuid": row["event_uuid"],
+        "tenant_id": row["cliente_id"],
+        "cliente_id": row["cliente_id"],
+        "unidade_id": row["unidade_id"],
+        "camera_id": row["camera_id"],
+        "tipo": row["tipo"],
+        "inicio": row["inicio"],
+        "fim": row["fim"],
+        "duracao": row["duracao"],
+        "operador_presente": None if row["operador_presente"] is None else bool(row["operador_presente"]),
+        "confianca": row["confianca"],
+        "midia_path": row["midia_path"],
+        "severidade": row["severidade"] if "severidade" in row.keys() else None,
+        "status": row["status"] if "status" in row.keys() else None,
+    }
+    if metadata:
+        payload["metadata"] = metadata
+    refresh_sync_event(
+        connection,
+        event_uuid=row["event_uuid"],
+        payload=payload,
+        tenant_id=row["cliente_id"],
+        edge_id=os.getenv("CAMPEX_EDGE_ID"),
+    )
 
 
 def evento_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -321,18 +425,20 @@ def criar_ocorrencia_area_restrita(
     evidence_error: str | None = None,
 ) -> str:
     evento_id = new_id("evt")
+    event_uuid = new_event_uuid()
     track_ids_json = json.dumps(sorted(set(track_ids)))
     connection.execute(
         """
         INSERT INTO eventos (
-            id, cliente_id, unidade_id, camera_id, area_id, regra_id, tipo,
+            id, event_uuid, cliente_id, unidade_id, camera_id, area_id, regra_id, tipo,
             severidade, status, inicio, quantidade_inicial, quantidade_atual,
             quantidade_maxima, track_ids_json, confianca, midia_path,
             ultimo_ocupado_em, evidence_error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             evento_id,
+            event_uuid,
             cliente_id,
             unidade_id,
             camera_id,
@@ -352,6 +458,93 @@ def criar_ocorrencia_area_restrita(
             evidence_error,
         ),
     )
+    _enqueue_evento_cloud(
+        connection,
+        event_uuid=event_uuid,
+        cliente_id=cliente_id,
+        unidade_id=unidade_id,
+        camera_id=camera_id,
+        tipo="restricted_area_occupied",
+        inicio=inicio,
+        operador_presente=True,
+        confianca=confianca,
+        midia_path=midia_path,
+        metadata={"area_id": area_id, "regra_id": regra_id, "track_ids": sorted(set(track_ids))},
+    )
+    atualizar_outbox_evento(connection, evento_id)
+    connection.commit()
+    return evento_id
+
+
+def criar_ocorrencia_zona(
+    connection: sqlite3.Connection,
+    *,
+    cliente_id: str,
+    unidade_id: str,
+    camera_id: str,
+    area_id: str,
+    regra_id: str | None,
+    tipo: str,
+    inicio: str,
+    quantidade_inicial: int,
+    quantidade_maxima: int,
+    track_ids: list[int],
+    confianca: float | None,
+    midia_path: str | None,
+    severidade: str = "medium",
+    metadata: dict[str, Any] | None = None,
+    evidence_error: str | None = None,
+) -> str:
+    evento_id = new_id("evt")
+    event_uuid = new_event_uuid()
+    track_ids_json = json.dumps(sorted(set(track_ids)))
+    metadata = {**(metadata or {}), "area_id": area_id, "regra_id": regra_id, "track_ids": sorted(set(track_ids))}
+    connection.execute(
+        """
+        INSERT INTO eventos (
+            id, event_uuid, cliente_id, unidade_id, camera_id, area_id, regra_id, tipo,
+            severidade, status, inicio, quantidade_inicial, quantidade_atual,
+            quantidade_maxima, track_ids_json, confianca, midia_path,
+            ultimo_ocupado_em, metadata_json, evidence_error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            evento_id,
+            event_uuid,
+            cliente_id,
+            unidade_id,
+            camera_id,
+            area_id,
+            regra_id,
+            tipo,
+            severidade,
+            "open",
+            inicio,
+            quantidade_inicial,
+            quantidade_inicial,
+            quantidade_maxima,
+            track_ids_json,
+            confianca,
+            midia_path,
+            inicio,
+            json.dumps(metadata),
+            evidence_error,
+        ),
+    )
+    _enqueue_evento_cloud(
+        connection,
+        event_uuid=event_uuid,
+        cliente_id=cliente_id,
+        unidade_id=unidade_id,
+        camera_id=camera_id,
+        tipo=tipo,
+        inicio=inicio,
+        operador_presente=quantidade_inicial > 0,
+        confianca=confianca,
+        midia_path=midia_path,
+        metadata=metadata,
+    )
+    atualizar_outbox_evento(connection, evento_id)
     connection.commit()
     return evento_id
 
@@ -385,6 +578,7 @@ def atualizar_ocorrencia_area(
             evento_id,
         ),
     )
+    atualizar_outbox_evento(connection, evento_id)
     connection.commit()
 
 
@@ -408,6 +602,7 @@ def fechar_ocorrencia_area(
         """,
         (fim, duracao, observacao, evento_id),
     )
+    atualizar_outbox_evento(connection, evento_id)
     connection.commit()
 
 
@@ -666,6 +861,8 @@ def area_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
     data["ativa"] = bool(data["ativa"])
     data["pontos"] = json.loads(data.pop("pontos_json"))
+    if "metadata_json" in data:
+        data["metadata"] = json.loads(data.pop("metadata_json") or "{}")
     return data
 
 
@@ -692,14 +889,55 @@ def criar_area_monitorada(
     pontos: list[dict[str, float]],
     tipo: str = "restricted_area",
     ativa: bool = True,
+    metadata: dict[str, Any] | None = None,
+    collaborator_name: str | None = None,
+    expected_start: str | None = None,
+    expected_end: str | None = None,
+    absence_tolerance_seconds: float | None = None,
+    dwell_limit_seconds: float | None = None,
+    expected_min_people: int | None = None,
+    machine_id: str | None = None,
 ) -> str:
     area_id = new_id("area")
+    camera = connection.execute(
+        """
+        SELECT c.unidade_id, COALESCE(c.cliente_id, u.cliente_id) AS cliente_id
+        FROM cameras c
+        LEFT JOIN unidades u ON u.id = c.unidade_id
+        WHERE c.id = ?
+        """,
+        (camera_id,),
+    ).fetchone()
+    cliente_id = camera["cliente_id"] if camera else None
+    unidade_id = camera["unidade_id"] if camera else None
     connection.execute(
         """
-        INSERT INTO monitored_areas (id, camera_id, nome, tipo, pontos_json, ativa)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO monitored_areas (
+            id, cliente_id, unidade_id, camera_id, machine_id, nome, tipo, pontos_json, metadata_json,
+            collaborator_name, expected_start, expected_end,
+            absence_tolerance_seconds, dwell_limit_seconds,
+            expected_min_people, ativa
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (area_id, camera_id, nome, tipo, json.dumps(pontos), 1 if ativa else 0),
+        (
+            area_id,
+            cliente_id,
+            unidade_id,
+            camera_id,
+            machine_id,
+            nome,
+            tipo,
+            json.dumps(pontos),
+            json.dumps(metadata or {}),
+            collaborator_name,
+            expected_start,
+            expected_end,
+            absence_tolerance_seconds,
+            dwell_limit_seconds,
+            expected_min_people,
+            1 if ativa else 0,
+        ),
     )
     connection.commit()
     return area_id
@@ -710,7 +948,16 @@ def atualizar_area_monitorada(
     area_id: str,
     nome: str | None = None,
     pontos: list[dict[str, float]] | None = None,
+    tipo: str | None = None,
     ativa: bool | None = None,
+    metadata: dict[str, Any] | None = None,
+    collaborator_name: str | None = None,
+    expected_start: str | None = None,
+    expected_end: str | None = None,
+    absence_tolerance_seconds: float | None = None,
+    dwell_limit_seconds: float | None = None,
+    expected_min_people: int | None = None,
+    machine_id: str | None = None,
 ) -> dict[str, Any] | None:
     existing = connection.execute("SELECT * FROM monitored_areas WHERE id = ?", (area_id,)).fetchone()
     if existing is None:
@@ -718,14 +965,42 @@ def atualizar_area_monitorada(
     current = area_public_dict(existing)
     next_nome = nome if nome is not None else current["nome"]
     next_pontos = pontos if pontos is not None else current["pontos"]
+    next_tipo = tipo if tipo is not None else current["tipo"]
     next_ativa = ativa if ativa is not None else current["ativa"]
+    next_metadata = metadata if metadata is not None else current.get("metadata", {})
     connection.execute(
         """
         UPDATE monitored_areas
-        SET nome = ?, pontos_json = ?, ativa = ?, atualizado_em = CURRENT_TIMESTAMP
+        SET nome = ?,
+            tipo = ?,
+            pontos_json = ?,
+            metadata_json = ?,
+            collaborator_name = COALESCE(?, collaborator_name),
+            expected_start = COALESCE(?, expected_start),
+            expected_end = COALESCE(?, expected_end),
+            absence_tolerance_seconds = COALESCE(?, absence_tolerance_seconds),
+            dwell_limit_seconds = COALESCE(?, dwell_limit_seconds),
+            expected_min_people = COALESCE(?, expected_min_people),
+            machine_id = COALESCE(?, machine_id),
+            ativa = ?,
+            atualizado_em = CURRENT_TIMESTAMP
         WHERE id = ?
         """,
-        (next_nome, json.dumps(next_pontos), 1 if next_ativa else 0, area_id),
+        (
+            next_nome,
+            next_tipo,
+            json.dumps(next_pontos),
+            json.dumps(next_metadata),
+            collaborator_name,
+            expected_start,
+            expected_end,
+            absence_tolerance_seconds,
+            dwell_limit_seconds,
+            expected_min_people,
+            machine_id,
+            1 if next_ativa else 0,
+            area_id,
+        ),
     )
     connection.commit()
     row = connection.execute("SELECT * FROM monitored_areas WHERE id = ?", (area_id,)).fetchone()
@@ -1038,6 +1313,12 @@ def machine_monitor_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, 
     data["operator_present"] = bool(data.get("operator_present"))
     data["machine_polygon"] = json.loads(data.pop("machine_polygon_json"))
     data["operator_polygon"] = json.loads(data.pop("operator_polygon_json"))
+    indicator = data.pop("indicator_polygon_json", None)
+    data["indicator_polygon"] = json.loads(indicator) if indicator else None
+    active_calibration = data.pop("active_calibration_json", None)
+    stopped_calibration = data.pop("stopped_calibration_json", None)
+    data["active_calibration"] = json.loads(active_calibration) if active_calibration else None
+    data["stopped_calibration"] = json.loads(stopped_calibration) if stopped_calibration else None
     return data
 
 
@@ -1055,6 +1336,15 @@ def criar_machine_monitor(
     recovery_seconds: float = 3.0,
     replay_pre_seconds: float = 60.0,
     replay_post_seconds: float = 30.0,
+    operator_absence_seconds: float = 30.0,
+    stopped_with_operator_seconds: float = 120.0,
+    microstop_window_seconds: float = 3600.0,
+    microstop_limit: int = 5,
+    loss_model: str | None = None,
+    loss_per_minute: float | None = None,
+    units_per_minute: float | None = None,
+    margin_per_unit: float | None = None,
+    indicator_polygon: list[dict[str, float]] | None = None,
 ) -> str:
     monitor_id = new_id("mach")
     connection.execute(
@@ -1062,8 +1352,11 @@ def criar_machine_monitor(
         INSERT INTO machine_monitors (
             id, client_id, unit_id, camera_id, nome, machine_polygon_json,
             operator_polygon_json, ativo, motion_sensitivity, stop_seconds,
-            recovery_seconds, replay_pre_seconds, replay_post_seconds
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            recovery_seconds, replay_pre_seconds, replay_post_seconds,
+            operator_absence_seconds, stopped_with_operator_seconds,
+            microstop_window_seconds, microstop_limit, loss_model,
+            loss_per_minute, units_per_minute, margin_per_unit, indicator_polygon_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             monitor_id,
@@ -1079,6 +1372,15 @@ def criar_machine_monitor(
             recovery_seconds,
             replay_pre_seconds,
             replay_post_seconds,
+            operator_absence_seconds,
+            stopped_with_operator_seconds,
+            microstop_window_seconds,
+            microstop_limit,
+            loss_model,
+            loss_per_minute,
+            units_per_minute,
+            margin_per_unit,
+            json.dumps(indicator_polygon) if indicator_polygon else None,
         ),
     )
     connection.commit()
@@ -1120,6 +1422,26 @@ def atualizar_machine_monitor(
     calibration_status: str | None = None,
     running_motion: float | None = None,
     stopped_motion: float | None = None,
+    active_baseline: float | None = None,
+    stopped_baseline: float | None = None,
+    active_noise: float | None = None,
+    stopped_noise: float | None = None,
+    operator_absence_seconds: float | None = None,
+    stopped_with_operator_seconds: float | None = None,
+    microstop_window_seconds: float | None = None,
+    microstop_limit: int | None = None,
+    loss_model: str | None = None,
+    loss_per_minute: float | None = None,
+    units_per_minute: float | None = None,
+    margin_per_unit: float | None = None,
+    indicator_polygon: list[dict[str, float]] | None = None,
+    indicator_on_baseline: float | None = None,
+    indicator_off_baseline: float | None = None,
+    active_calibration: dict[str, Any] | None = None,
+    stopped_calibration: dict[str, Any] | None = None,
+    separation_score: float | None = None,
+    calibration_result: str | None = None,
+    calibration_algorithm_version: str | None = None,
 ) -> dict[str, Any] | None:
     current = obter_machine_monitor(connection, monitor_id)
     if current is None:
@@ -1138,6 +1460,26 @@ def atualizar_machine_monitor(
             calibration_status = COALESCE(?, calibration_status),
             running_motion = COALESCE(?, running_motion),
             stopped_motion = COALESCE(?, stopped_motion),
+            active_baseline = COALESCE(?, active_baseline),
+            stopped_baseline = COALESCE(?, stopped_baseline),
+            active_noise = COALESCE(?, active_noise),
+            stopped_noise = COALESCE(?, stopped_noise),
+            operator_absence_seconds = ?,
+            stopped_with_operator_seconds = ?,
+            microstop_window_seconds = ?,
+            microstop_limit = ?,
+            loss_model = COALESCE(?, loss_model),
+            loss_per_minute = COALESCE(?, loss_per_minute),
+            units_per_minute = COALESCE(?, units_per_minute),
+            margin_per_unit = COALESCE(?, margin_per_unit),
+            indicator_polygon_json = COALESCE(?, indicator_polygon_json),
+            indicator_on_baseline = COALESCE(?, indicator_on_baseline),
+            indicator_off_baseline = COALESCE(?, indicator_off_baseline),
+            active_calibration_json = COALESCE(?, active_calibration_json),
+            stopped_calibration_json = COALESCE(?, stopped_calibration_json),
+            separation_score = COALESCE(?, separation_score),
+            calibration_result = COALESCE(?, calibration_result),
+            calibration_algorithm_version = COALESCE(?, calibration_algorithm_version),
             atualizado_em = CURRENT_TIMESTAMP
         WHERE id = ?
         """,
@@ -1153,11 +1495,70 @@ def atualizar_machine_monitor(
             calibration_status,
             running_motion,
             stopped_motion,
+            active_baseline,
+            stopped_baseline,
+            active_noise,
+            stopped_noise,
+            operator_absence_seconds if operator_absence_seconds is not None else current.get("operator_absence_seconds", 30.0),
+            stopped_with_operator_seconds if stopped_with_operator_seconds is not None else current.get("stopped_with_operator_seconds", 120.0),
+            microstop_window_seconds if microstop_window_seconds is not None else current.get("microstop_window_seconds", 3600.0),
+            microstop_limit if microstop_limit is not None else current.get("microstop_limit", 5),
+            loss_model,
+            loss_per_minute,
+            units_per_minute,
+            margin_per_unit,
+            json.dumps(indicator_polygon) if indicator_polygon is not None else None,
+            indicator_on_baseline,
+            indicator_off_baseline,
+            json.dumps(active_calibration, ensure_ascii=False) if active_calibration is not None else None,
+            json.dumps(stopped_calibration, ensure_ascii=False) if stopped_calibration is not None else None,
+            separation_score,
+            calibration_result,
+            calibration_algorithm_version,
             monitor_id,
         ),
     )
     connection.commit()
     return obter_machine_monitor(connection, monitor_id)
+
+
+def registrar_machine_calibration(
+    connection: sqlite3.Connection,
+    *,
+    machine_id: str,
+    camera_id: str,
+    phase: str,
+    samples: list[float],
+    stats: dict[str, Any],
+    algorithm_version: str,
+    region: list[dict[str, float]],
+    started_at: str,
+    finished_at: str,
+) -> str:
+    calibration_id = new_id("cal")
+    connection.execute(
+        """
+        INSERT INTO machine_calibrations (
+            id, machine_id, camera_id, phase, samples_json, stats_json,
+            baseline, algorithm_version, region_json, started_at, finished_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            calibration_id,
+            machine_id,
+            camera_id,
+            phase,
+            json.dumps(samples),
+            json.dumps(stats, ensure_ascii=False),
+            stats.get("mean"),
+            algorithm_version,
+            json.dumps(region),
+            started_at,
+            finished_at,
+        ),
+    )
+    connection.commit()
+    return calibration_id
 
 
 def excluir_machine_monitor(connection: sqlite3.Connection, monitor_id: str) -> bool:
@@ -1173,6 +1574,8 @@ def atualizar_machine_monitor_estado(
     motion: float | None,
     operator_present: bool,
     changed_at: str | None = None,
+    confidence: float | None = None,
+    reason: str | None = None,
 ) -> None:
     connection.execute(
         """
@@ -1180,11 +1583,14 @@ def atualizar_machine_monitor_estado(
         SET current_state = ?,
             current_motion = ?,
             operator_present = ?,
+            confidence = COALESCE(?, confidence),
+            state_reason = COALESCE(?, state_reason),
             last_state_change = COALESCE(?, last_state_change),
+            machine_state_since = COALESCE(?, machine_state_since),
             atualizado_em = CURRENT_TIMESTAMP
         WHERE id = ?
         """,
-        (state, motion, 1 if operator_present else 0, changed_at, monitor_id),
+        (state, motion, 1 if operator_present else 0, confidence, reason, changed_at, changed_at, monitor_id),
     )
     connection.commit()
 
@@ -1203,17 +1609,19 @@ def criar_evento_machine_stoppage(
     track_ids: list[int],
 ) -> str:
     evento_id = new_id("evt")
+    event_uuid = new_event_uuid()
     connection.execute(
         """
         INSERT INTO eventos (
-            id, cliente_id, unidade_id, camera_id, machine_monitor_id, tipo,
+            id, event_uuid, cliente_id, unidade_id, camera_id, machine_monitor_id, tipo,
             severidade, status, inicio, motion_level, operator_present_start,
             operador_presente, confianca, midia_path, track_ids_json,
             operator_present_seconds, operator_absent_seconds, max_people
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             evento_id,
+            event_uuid,
             cliente_id,
             unidade_id,
             camera_id,
@@ -1232,6 +1640,97 @@ def criar_evento_machine_stoppage(
             0.0,
             len(set(track_ids)),
         ),
+    )
+    _enqueue_evento_cloud(
+        connection,
+        event_uuid=event_uuid,
+        cliente_id=cliente_id,
+        unidade_id=unidade_id,
+        camera_id=camera_id,
+        tipo="machine_stoppage",
+        inicio=inicio,
+        operador_presente=operator_present_start,
+        confianca=confidence,
+        midia_path=midia_path,
+        metadata={
+            "machine_monitor_id": machine_monitor_id,
+            "motion_level": motion_level,
+            "track_ids": sorted(set(track_ids)),
+        },
+    )
+    connection.commit()
+    return evento_id
+
+
+def criar_evento_machine_operational(
+    connection: sqlite3.Connection,
+    *,
+    cliente_id: str,
+    unidade_id: str,
+    camera_id: str,
+    machine_monitor_id: str,
+    tipo: str,
+    inicio: str,
+    motion_level: float,
+    operator_present_start: bool,
+    confidence: float,
+    midia_path: str | None,
+    track_ids: list[int],
+    severidade: str = "medium",
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    evento_id = new_id("evt")
+    event_uuid = new_event_uuid()
+    metadata = metadata or {}
+    connection.execute(
+        """
+        INSERT INTO eventos (
+            id, event_uuid, cliente_id, unidade_id, camera_id, machine_monitor_id, tipo,
+            severidade, status, inicio, motion_level, operator_present_start,
+            operador_presente, confianca, midia_path, track_ids_json,
+            operator_present_seconds, operator_absent_seconds, max_people, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            evento_id,
+            event_uuid,
+            cliente_id,
+            unidade_id,
+            camera_id,
+            machine_monitor_id,
+            tipo,
+            severidade,
+            "open",
+            inicio,
+            motion_level,
+            1 if operator_present_start else 0,
+            1 if operator_present_start else 0,
+            confidence,
+            midia_path,
+            json.dumps(sorted(set(track_ids))),
+            0.0,
+            0.0,
+            len(set(track_ids)),
+            json.dumps(metadata, ensure_ascii=False),
+        ),
+    )
+    _enqueue_evento_cloud(
+        connection,
+        event_uuid=event_uuid,
+        cliente_id=cliente_id,
+        unidade_id=unidade_id,
+        camera_id=camera_id,
+        tipo=tipo,
+        inicio=inicio,
+        operador_presente=operator_present_start,
+        confianca=confidence,
+        midia_path=midia_path,
+        metadata={
+            **metadata,
+            "machine_monitor_id": machine_monitor_id,
+            "motion_level": motion_level,
+            "track_ids": sorted(set(track_ids)),
+        },
     )
     connection.commit()
     return evento_id
@@ -1273,6 +1772,7 @@ def fechar_evento_machine_stoppage(connection: sqlite3.Connection, evento_id: st
         """,
         (fim, duracao, evento_id),
     )
+    atualizar_outbox_evento(connection, evento_id)
     connection.commit()
 
 

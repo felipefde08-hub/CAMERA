@@ -93,6 +93,7 @@ def init_db(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS eventos (
             id TEXT PRIMARY KEY,
+            event_uuid TEXT,
             cliente_id TEXT NOT NULL,
             unidade_id TEXT NOT NULL,
             camera_id TEXT NOT NULL,
@@ -107,6 +108,21 @@ def init_db(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (cliente_id) REFERENCES clientes (id),
             FOREIGN KEY (unidade_id) REFERENCES unidades (id),
             FOREIGN KEY (camera_id) REFERENCES cameras (id)
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_outbox (
+            id TEXT PRIMARY KEY,
+            event_uuid TEXT NOT NULL UNIQUE,
+            edge_id TEXT,
+            tenant_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            next_attempt_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            synced_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS alertas (
@@ -132,10 +148,20 @@ def init_db(connection: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS monitored_areas (
             id TEXT PRIMARY KEY,
+            cliente_id TEXT,
+            unidade_id TEXT,
             camera_id TEXT NOT NULL,
+            machine_id TEXT,
             nome TEXT NOT NULL,
             tipo TEXT NOT NULL DEFAULT 'restricted_area',
             pontos_json TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            collaborator_name TEXT,
+            expected_start TEXT,
+            expected_end TEXT,
+            absence_tolerance_seconds REAL,
+            dwell_limit_seconds REAL,
+            expected_min_people INTEGER,
             ativa INTEGER NOT NULL DEFAULT 1,
             criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -240,6 +266,30 @@ def init_db(connection: sqlite3.Connection) -> None:
             calibration_status TEXT NOT NULL DEFAULT 'not_calibrated',
             running_motion REAL,
             stopped_motion REAL,
+            active_baseline REAL,
+            stopped_baseline REAL,
+            active_noise REAL,
+            stopped_noise REAL,
+            machine_state_official TEXT NOT NULL DEFAULT 'UNKNOWN',
+            confidence REAL NOT NULL DEFAULT 0,
+            state_reason TEXT,
+            machine_state_since TEXT,
+            operator_absence_seconds REAL NOT NULL DEFAULT 30.0,
+            stopped_with_operator_seconds REAL NOT NULL DEFAULT 120.0,
+            microstop_window_seconds REAL NOT NULL DEFAULT 3600.0,
+            microstop_limit INTEGER NOT NULL DEFAULT 5,
+            loss_model TEXT,
+            loss_per_minute REAL,
+            units_per_minute REAL,
+            margin_per_unit REAL,
+            indicator_polygon_json TEXT,
+            indicator_on_baseline REAL,
+            indicator_off_baseline REAL,
+            active_calibration_json TEXT,
+            stopped_calibration_json TEXT,
+            separation_score REAL,
+            calibration_result TEXT NOT NULL DEFAULT 'INVALID',
+            calibration_algorithm_version TEXT,
             current_state TEXT NOT NULL DEFAULT 'unavailable',
             current_motion REAL,
             operator_present INTEGER NOT NULL DEFAULT 0,
@@ -248,6 +298,23 @@ def init_db(connection: sqlite3.Connection) -> None:
             atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (client_id) REFERENCES clientes (id),
             FOREIGN KEY (unit_id) REFERENCES unidades (id),
+            FOREIGN KEY (camera_id) REFERENCES cameras (id)
+        );
+
+        CREATE TABLE IF NOT EXISTS machine_calibrations (
+            id TEXT PRIMARY KEY,
+            machine_id TEXT NOT NULL,
+            camera_id TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            samples_json TEXT NOT NULL,
+            stats_json TEXT NOT NULL,
+            baseline REAL,
+            algorithm_version TEXT NOT NULL,
+            region_json TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (machine_id) REFERENCES machine_monitors (id),
             FOREIGN KEY (camera_id) REFERENCES cameras (id)
         );
 
@@ -306,6 +373,16 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "cameras", "fps", "REAL")
     _ensure_column(connection, "cameras", "canal", "TEXT")
     _ensure_column(connection, "cameras", "ativa", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(connection, "monitored_areas", "cliente_id", "TEXT")
+    _ensure_column(connection, "monitored_areas", "unidade_id", "TEXT")
+    _ensure_column(connection, "monitored_areas", "machine_id", "TEXT")
+    _ensure_column(connection, "monitored_areas", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(connection, "monitored_areas", "collaborator_name", "TEXT")
+    _ensure_column(connection, "monitored_areas", "expected_start", "TEXT")
+    _ensure_column(connection, "monitored_areas", "expected_end", "TEXT")
+    _ensure_column(connection, "monitored_areas", "absence_tolerance_seconds", "REAL")
+    _ensure_column(connection, "monitored_areas", "dwell_limit_seconds", "REAL")
+    _ensure_column(connection, "monitored_areas", "expected_min_people", "INTEGER")
     _ensure_column(connection, "alert_recipients", "cliente_id", "TEXT")
     _ensure_column(connection, "alert_recipients", "event_types", "TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(connection, "alert_deliveries", "destinatario", "TEXT")
@@ -354,6 +431,31 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "regras", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(connection, "regras", "atualizado_em", "TEXT")
     _ensure_column(connection, "eventos", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(connection, "eventos", "event_uuid", "TEXT")
+    _ensure_column(connection, "machine_monitors", "active_baseline", "REAL")
+    _ensure_column(connection, "machine_monitors", "stopped_baseline", "REAL")
+    _ensure_column(connection, "machine_monitors", "active_noise", "REAL")
+    _ensure_column(connection, "machine_monitors", "stopped_noise", "REAL")
+    _ensure_column(connection, "machine_monitors", "machine_state_official", "TEXT NOT NULL DEFAULT 'UNKNOWN'")
+    _ensure_column(connection, "machine_monitors", "confidence", "REAL NOT NULL DEFAULT 0")
+    _ensure_column(connection, "machine_monitors", "state_reason", "TEXT")
+    _ensure_column(connection, "machine_monitors", "machine_state_since", "TEXT")
+    _ensure_column(connection, "machine_monitors", "operator_absence_seconds", "REAL NOT NULL DEFAULT 30.0")
+    _ensure_column(connection, "machine_monitors", "stopped_with_operator_seconds", "REAL NOT NULL DEFAULT 120.0")
+    _ensure_column(connection, "machine_monitors", "microstop_window_seconds", "REAL NOT NULL DEFAULT 3600.0")
+    _ensure_column(connection, "machine_monitors", "microstop_limit", "INTEGER NOT NULL DEFAULT 5")
+    _ensure_column(connection, "machine_monitors", "loss_model", "TEXT")
+    _ensure_column(connection, "machine_monitors", "loss_per_minute", "REAL")
+    _ensure_column(connection, "machine_monitors", "units_per_minute", "REAL")
+    _ensure_column(connection, "machine_monitors", "margin_per_unit", "REAL")
+    _ensure_column(connection, "machine_monitors", "indicator_polygon_json", "TEXT")
+    _ensure_column(connection, "machine_monitors", "indicator_on_baseline", "REAL")
+    _ensure_column(connection, "machine_monitors", "indicator_off_baseline", "REAL")
+    _ensure_column(connection, "machine_monitors", "active_calibration_json", "TEXT")
+    _ensure_column(connection, "machine_monitors", "stopped_calibration_json", "TEXT")
+    _ensure_column(connection, "machine_monitors", "separation_score", "REAL")
+    _ensure_column(connection, "machine_monitors", "calibration_result", "TEXT NOT NULL DEFAULT 'INVALID'")
+    _ensure_column(connection, "machine_monitors", "calibration_algorithm_version", "TEXT")
     connection.commit()
 
 

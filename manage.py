@@ -19,9 +19,11 @@ from app.models import (
 )
 from app.reports import save_daily_report
 from app.pilot import acceptance_checklist, create_backup, health_snapshot, prune_old_evidence, restore_backup
+from app.machine_replay import run_machine_replay
 from edge_agent.camera_connector import detect_source_type, safe_source_ref
 from edge_agent.camera_check import check_camera
 from edge_agent.service import EdgeSupervisor, edge_status
+from edge_agent.sync_outbox import flush_sync_outbox, pending_sync_count, run_sync_loop
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -106,11 +108,31 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("system-health")
     subparsers.add_parser("pilot-checklist")
+
+    sync_cloud = subparsers.add_parser("sync-cloud")
+    sync_cloud.add_argument("--cloud-url", default=os.getenv("CAMPEX_CLOUD_URL"))
+    sync_cloud.add_argument("--edge-id", default=os.getenv("CAMPEX_EDGE_ID"))
+    sync_cloud.add_argument("--edge-secret", default=os.getenv("CAMPEX_EDGE_SECRET"))
+    sync_cloud.add_argument("--loop", action="store_true")
+    sync_cloud.add_argument("--interval-seconds", type=float, default=10.0)
+
+    replay = subparsers.add_parser("machine-replay")
+    replay.add_argument("--video", required=True)
+    replay.add_argument("--machine-config", required=True)
+    replay.add_argument("--annotations", required=True)
+    replay.add_argument("--output", default="reports/machine_replay_report.json")
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.command == "sync-cloud" and args.loop:
+        if not args.cloud_url or not args.edge_id or not args.edge_secret:
+            raise SystemExit("Configure CAMPEX_CLOUD_URL, CAMPEX_EDGE_ID e CAMPEX_EDGE_SECRET.")
+        print(f"Sincronizando outbox com {args.cloud_url}. Pressione Ctrl+C para parar.")
+        run_sync_loop(args.db, args.cloud_url, args.edge_id, args.edge_secret, args.interval_seconds)
+        return 0
+
     with connect(args.db) as connection:
         init_db(connection)
         if args.command == "init-db":
@@ -230,6 +252,23 @@ def main() -> int:
             print(health_snapshot(Path(args.db)))
         elif args.command == "pilot-checklist":
             print(acceptance_checklist(Path(args.db)))
+        elif args.command == "sync-cloud":
+            if not args.cloud_url or not args.edge_id or not args.edge_secret:
+                raise SystemExit("Configure CAMPEX_CLOUD_URL, CAMPEX_EDGE_ID e CAMPEX_EDGE_SECRET.")
+            before = pending_sync_count(connection)
+            synced = flush_sync_outbox(connection, args.cloud_url, args.edge_id, args.edge_secret)
+            after = pending_sync_count(connection)
+            print(f"Pendentes antes: {before}")
+            print(f"Sincronizados agora: {synced}")
+            print(f"Pendentes depois: {after}")
+        elif args.command == "machine-replay":
+            report = run_machine_replay(args.video, args.machine_config, args.annotations, args.output)
+            metrics = report["metrics"]
+            print(f"Relatorio: {args.output}")
+            print(f"Tempo correto por estado: {metrics['tempo_correto_percentual']}%")
+            print(f"Transicoes anotadas: {metrics['transicoes_anotadas']}")
+            print(f"Transicoes perdidas: {metrics['transicoes_perdidas']}")
+            print(f"Confianca media: {metrics['confianca_media']}")
     return 0
 
 

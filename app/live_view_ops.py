@@ -28,7 +28,7 @@ class LiveViewOpsState:
     people_count: int = 0
     inference_fps: float = 0.0
     last_error: str | None = None
-    machine_state: str = "SEM SINAL"
+    machine_state: str = "NAO_CONFIGURADA"
     machine_motion: float = 0.0
     machine_threshold: float | None = None
     operator_present: bool = False
@@ -72,6 +72,22 @@ class LiveViewOpsEngine:
         self._smoothed_motion = 0.0
         return self.public_state()
 
+    def load_machine_config(self, monitor: dict[str, Any]) -> dict[str, Any]:
+        machine_points = [AreaPoint(float(p["x"]), float(p["y"])) for p in normalize_points(monitor.get("machine_polygon") or [])]
+        operator_points = [AreaPoint(float(p["x"]), float(p["y"])) for p in normalize_points(monitor.get("operator_polygon") or [])]
+        self.config = LiveViewMachineConfig(
+            nome=str(monitor.get("nome") or "Máquina"),
+            tipo=monitor.get("tipo"),
+            machine_polygon=machine_points,
+            operator_polygon=operator_points,
+            threshold=monitor.get("motion_threshold"),
+            calibrated=monitor.get("calibration_status") == "calibrated" or monitor.get("motion_threshold") is not None,
+        )
+        self.state.machine_threshold = self.config.threshold
+        self.state.calibration_status = "calibrada" if self.config.calibrated else "aguardando calibração"
+        self.state.machine_state = "CALIBRANDO" if not self.config.calibrated else self.state.machine_state
+        return self.public_state()
+
     def configure_operator_zone(self, operator_polygon: list[dict[str, float]]) -> dict[str, Any]:
         if self.config is None:
             raise ValueError("Configure a máquina antes da zona do operador.")
@@ -108,7 +124,7 @@ class LiveViewOpsEngine:
 
     def _update_machine(self, frame: np.ndarray) -> None:
         if self.config is None or not self.config.machine_polygon:
-            self.state.machine_state = "SEM SINAL"
+            self.state.machine_state = "NAO_CONFIGURADA"
             return
         motion = motion_inside_polygon(frame, self.config.machine_polygon, self._previous_gray)
         self._previous_gray = cv2.GaussianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (5, 5), 0)

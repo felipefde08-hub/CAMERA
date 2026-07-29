@@ -7,6 +7,7 @@ data/*.sqlite3-*
 data/*.db
 data/evidence/
 data/replays/
+data/operations_snapshots/
 logs/
 output/
 output_context/

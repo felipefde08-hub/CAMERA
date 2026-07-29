@@ -79,11 +79,15 @@ class IncidentStage5Test(unittest.TestCase):
                 manager.update(area, two, [Detection(10, 10, 20, 20, 0.7, track_id=1), Detection(30, 10, 40, 20, 0.95, track_id=2)], frame)
                 with test_connect() as connection:
                     events = listar_eventos_filtrados(connection, tipo="restricted_area_occupied")
+                    outbox = connection.execute("SELECT * FROM sync_outbox WHERE event_uuid = ?", (events[0]["event_uuid"],)).fetchone()
         self.assertEqual(len(events), 1)
+        self.assertTrue(events[0]["event_uuid"])
         self.assertEqual(events[0]["quantidade_maxima"], 2)
         self.assertEqual(set(events[0]["track_ids"]), {1, 2})
         self.assertEqual(events[0]["status"], "open")
         self.assertTrue(events[0]["midia_path"])
+        self.assertIsNotNone(outbox)
+        self.assertIn('"tipo": "restricted_area_occupied"', outbox["payload_json"])
         self.assertNotIn("rtsp://", str(events))
 
     def test_brief_exit_does_not_close_but_grace_exit_closes_and_cooldown_prevents_duplicate(self) -> None:
@@ -102,9 +106,12 @@ class IncidentStage5Test(unittest.TestCase):
                 manager.update(area, occupied, [Detection(10, 10, 20, 20, 0.9, track_id=1)], frame)
                 with test_connect() as connection:
                     events = listar_eventos_filtrados(connection, tipo="restricted_area_occupied")
+                    outbox = connection.execute("SELECT * FROM sync_outbox WHERE event_uuid = ?", (events[0]["event_uuid"],)).fetchone()
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["status"], "closed")
         self.assertIsNotNone(events[0]["fim"])
+        self.assertIn('"status": "closed"', outbox["payload_json"])
+        self.assertIn('"duracao":', outbox["payload_json"])
 
     def test_evidence_failure_does_not_prevent_incident(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

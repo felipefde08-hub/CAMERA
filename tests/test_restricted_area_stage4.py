@@ -171,7 +171,7 @@ class RestrictedAreaStage4Test(unittest.TestCase):
                 activated = client.post(f"/areas/{area_id}/activate")
                 deleted = client.delete(f"/areas/{area_id}")
 
-        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.status_code, 201)
         self.assertEqual(listed.status_code, 200)
         self.assertEqual(deactivated.status_code, 200)
         self.assertFalse(deactivated.json()["ativa"])

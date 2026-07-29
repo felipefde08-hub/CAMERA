@@ -12,7 +12,7 @@ import numpy as np
 from app.alerts import enqueue_event_alert
 from app.config import ROOT
 from app.database import init_db
-from app.models import obter_camera, obter_regra, registrar_evento, atualizar_evento
+from app.models import obter_camera, obter_regra, registrar_evento, atualizar_evento, atualizar_outbox_evento
 from shared.schemas import now_iso
 
 
@@ -441,6 +441,7 @@ def evaluate_rule(connection, rule_id: str, facts: dict[str, Any], frame: np.nda
                 """,
                 (active_event_id,),
             )
+            atualizar_outbox_evento(connection, active_event_id)
             action = "closed"
             event_id = active_event_id
             if rule.get("alerta_normalizacao"):

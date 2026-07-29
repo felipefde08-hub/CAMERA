@@ -105,10 +105,17 @@ class VisualRuleEngineTest(unittest.TestCase):
             with self.connection() as connection:
                 init_db(connection)
                 events = connection.execute("SELECT * FROM eventos WHERE regra_id = ?", (rule_id,)).fetchall()
+                outbox = connection.execute("SELECT * FROM sync_outbox WHERE event_uuid = ?", (events[0]["event_uuid"],)).fetchone()
                 deliveries = listar_alert_deliveries(connection)
             self.assertEqual(len(events), 1)
+            self.assertTrue(events[0]["event_uuid"])
             self.assertEqual(events[0]["status"], "closed")
             self.assertEqual(events[0]["duracao"], 60)
+            self.assertIsNotNone(outbox)
+            self.assertEqual(outbox["status"], "pending")
+            self.assertIn('"status": "closed"', outbox["payload_json"])
+            self.assertIn('"duracao": 60', outbox["payload_json"])
+            self.assertIn('"severidade": "medium"', outbox["payload_json"])
             self.assertEqual(len(deliveries), 1)
 
     def test_normalization_alert_registers_second_delivery_without_duplicate_start(self) -> None:

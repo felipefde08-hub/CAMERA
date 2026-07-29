@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import threading
 import time
 from collections import deque
@@ -19,6 +20,7 @@ from app.models import (
     atualizar_evento_machine_stoppage,
     atualizar_evento_replay,
     atualizar_machine_monitor_estado,
+    criar_evento_machine_operational,
     criar_evento_machine_stoppage,
     fechar_evento_machine_stoppage,
 )
@@ -51,14 +53,28 @@ class MachineMonitorConfig:
     recovery_seconds: float = 3.0
     replay_pre_seconds: float = 60.0
     replay_post_seconds: float = 30.0
+    active_baseline: float | None = None
+    stopped_baseline: float | None = None
+    active_noise: float | None = None
+    stopped_noise: float | None = None
+    operator_absence_seconds: float = 30.0
+    stopped_with_operator_seconds: float = 120.0
+    microstop_window_seconds: float = 3600.0
+    microstop_limit: int = 5
+    loss_model: str | None = None
+    loss_per_minute: float | None = None
+    units_per_minute: float | None = None
+    margin_per_unit: float | None = None
 
 
 @dataclass
 class MachineMonitorState:
-    state: str = "unavailable"
+    state: str = "UNKNOWN"
     motion: float = 0.0
     smoothed_motion: float = 0.0
     threshold: float = 25.0
+    confidence: float = 0.0
+    reason: str = "monitoramento ainda sem amostras suficientes"
     operator_present: bool = False
     operator_present_seconds: float = 0.0
     operator_absent_seconds: float = 0.0
@@ -66,10 +82,13 @@ class MachineMonitorState:
     track_ids: set[int] = field(default_factory=set)
     event_id: str | None = None
     event_started_at: str | None = None
+    active_events: dict[str, str] = field(default_factory=dict)
+    active_event_since: dict[str, float] = field(default_factory=dict)
     state_since: float = field(default_factory=time.monotonic)
-    suspected_since: float | None = None
-    recovered_since: float | None = None
+    candidate_state: str | None = None
+    candidate_since: float | None = None
     last_update: float = field(default_factory=time.monotonic)
+    stopped_transitions: deque[float] = field(default_factory=deque)
 
 
 def config_from_dict(payload: dict[str, Any]) -> MachineMonitorConfig:
@@ -88,6 +107,18 @@ def config_from_dict(payload: dict[str, Any]) -> MachineMonitorConfig:
         recovery_seconds=float(payload.get("recovery_seconds") or env_float("CAMPEX_MACHINE_RECOVERY_SECONDS", 3.0)),
         replay_pre_seconds=float(payload.get("replay_pre_seconds") or env_float("CAMPEX_REPLAY_PRE_SECONDS", 60.0)),
         replay_post_seconds=float(payload.get("replay_post_seconds") or env_float("CAMPEX_REPLAY_POST_SECONDS", 30.0)),
+        active_baseline=payload.get("active_baseline") or payload.get("running_motion"),
+        stopped_baseline=payload.get("stopped_baseline") or payload.get("stopped_motion"),
+        active_noise=payload.get("active_noise"),
+        stopped_noise=payload.get("stopped_noise"),
+        operator_absence_seconds=float(payload.get("operator_absence_seconds") or env_float("CAMPEX_OPERATOR_ABSENCE_SECONDS", 30.0)),
+        stopped_with_operator_seconds=float(payload.get("stopped_with_operator_seconds") or env_float("CAMPEX_STOPPED_WITH_OPERATOR_SECONDS", 120.0)),
+        microstop_window_seconds=float(payload.get("microstop_window_seconds") or env_float("CAMPEX_MICROSTOP_WINDOW_SECONDS", 3600.0)),
+        microstop_limit=int(payload.get("microstop_limit") or int(env_float("CAMPEX_MICROSTOP_LIMIT", 5))),
+        loss_model=payload.get("loss_model"),
+        loss_per_minute=payload.get("loss_per_minute"),
+        units_per_minute=payload.get("units_per_minute"),
+        margin_per_unit=payload.get("margin_per_unit"),
     )
 
 
@@ -137,6 +168,24 @@ class MachineMonitorEngine:
         self._post_frames: list[tuple[float, np.ndarray, str, bool]] | None = None
         self._event_frames: list[tuple[float, np.ndarray, str, bool]] = []
 
+    def calibrate_active(self, motions: list[float]) -> dict[str, float]:
+        baseline, noise = baseline_stats(motions)
+        self.config.active_baseline = baseline
+        self.config.active_noise = noise
+        self.config.motion_threshold = self._calculated_threshold()
+        self.state.threshold = float(self.config.motion_threshold or self.state.threshold)
+        self._persist_calibration("active")
+        return {"active_baseline": baseline, "active_noise": noise, "motion_threshold": self.state.threshold}
+
+    def calibrate_stopped(self, motions: list[float]) -> dict[str, float]:
+        baseline, noise = baseline_stats(motions)
+        self.config.stopped_baseline = baseline
+        self.config.stopped_noise = noise
+        self.config.motion_threshold = self._calculated_threshold()
+        self.state.threshold = float(self.config.motion_threshold or self.state.threshold)
+        self._persist_calibration("stopped")
+        return {"stopped_baseline": baseline, "stopped_noise": noise, "motion_threshold": self.state.threshold}
+
     def update(self, frame: np.ndarray, detections: list[Detection]) -> MachineMonitorState:
         now = time.monotonic()
         self.replay_buffer.add(frame, self.state.state, self.state.operator_present, self.config.replay_pre_seconds + self.config.replay_post_seconds + self.config.stop_seconds)
@@ -150,7 +199,7 @@ class MachineMonitorEngine:
         alpha = min(1.0, dt / max(0.1, self.smoothing_seconds))
         self.state.smoothed_motion = (alpha * motion) + ((1 - alpha) * self.state.smoothed_motion)
         self._update_operator(frame, detections, dt)
-        self._transition(now, frame)
+        self._classify_and_transition(now, frame)
         return self.state
 
     def _motion(self, frame: np.ndarray) -> float:
@@ -184,47 +233,94 @@ class MachineMonitorEngine:
             else:
                 self.state.operator_absent_seconds += dt
 
-    def _transition(self, now: float, frame: np.ndarray) -> None:
-        threshold = self.state.threshold
-        low = self.state.smoothed_motion < threshold
-        high = self.state.smoothed_motion >= threshold * 1.2
+    def _classify_and_transition(self, now: float, frame: np.ndarray) -> None:
+        target, confidence, reason = self._classify_state()
         previous = self.state.state
-        if self.state.state in {"unavailable", "running", "recovered"}:
-            if low:
-                self.state.suspected_since = self.state.suspected_since or now
-                self.state.state = "suspected_stop"
-                if now - self.state.suspected_since >= self.config.stop_seconds:
-                    self._open_event(now, frame)
-            else:
-                self.state.state = "running"
-                self.state.suspected_since = None
-        elif self.state.state == "suspected_stop":
-            if not low:
-                self.state.state = "running"
-                self.state.suspected_since = None
-            elif self.state.suspected_since and now - self.state.suspected_since >= self.config.stop_seconds:
-                self._open_event(now, frame)
-        elif self.state.state == "stopped":
-            self._update_event(now)
-            if high:
-                self.state.recovered_since = self.state.recovered_since or now
-                if now - self.state.recovered_since >= self.config.recovery_seconds:
-                    self._close_event(now)
-                    self.state.state = "recovered"
-                    self._schedule_replay()
-            else:
-                self.state.recovered_since = None
-        if previous != self.state.state:
-            self.state.state_since = now
-            self._persist_state(changed=True)
+        if target != self.state.state:
+            if self.state.candidate_state != target:
+                self.state.candidate_state = target
+                self.state.candidate_since = now
+            needed = self.config.stop_seconds if target == "STOPPED" else self.config.recovery_seconds
+            if self.state.candidate_since and now - self.state.candidate_since >= needed:
+                self._apply_state(target, now)
         else:
-            self._persist_state(changed=False)
+            self.state.candidate_state = None
+            self.state.candidate_since = None
+        self.state.confidence = confidence
+        self.state.reason = reason
+        self._evaluate_official_events(now, frame)
+        self._persist_state(changed=previous != self.state.state)
 
-    def _open_event(self, now: float, frame: np.ndarray) -> None:
-        if self.state.event_id:
+    def _classify_state(self) -> tuple[str, float, str]:
+        motion = self.state.smoothed_motion
+        active = self.config.active_baseline
+        stopped = self.config.stopped_baseline
+        if active is not None and stopped is not None and active > stopped:
+            threshold = self._calculated_threshold()
+            self.state.threshold = threshold
+            stop_boundary = threshold
+            active_boundary = threshold + max(self.config.active_noise or 0.0, self.config.stopped_noise or 0.0, 1.0) * 0.25
+            if motion <= stop_boundary:
+                confidence = normalized_distance(motion, stopped, active)
+                return "STOPPED", confidence, f"atividade visual abaixo do baseline por janela temporal; score={motion:.2f}, limite={stop_boundary:.2f}"
+            if motion >= active_boundary:
+                confidence = normalized_distance(motion, active, stopped)
+                return "ACTIVE", confidence, f"atividade visual proxima ao baseline ativo; score={motion:.2f}, limite={active_boundary:.2f}"
+            return self.state.state if self.state.state in {"ACTIVE", "STOPPED"} else "UNKNOWN", 0.55, "atividade visual em faixa de histerese"
+        threshold = float(self.config.motion_threshold or self.config.motion_sensitivity)
+        self.state.threshold = threshold
+        if motion >= threshold * 1.2:
+            return "ACTIVE", confidence_from_active_motion(motion, threshold), f"atividade visual acima do limite configurado; score={motion:.2f}"
+        if motion < threshold:
+            return "STOPPED", confidence_from_motion(motion, threshold), f"atividade visual abaixo do limite configurado; score={motion:.2f}"
+        return self.state.state if self.state.state in {"ACTIVE", "STOPPED"} else "UNKNOWN", 0.5, "atividade visual sem margem suficiente"
+
+    def _apply_state(self, target: str, now: float) -> None:
+        previous = self.state.state
+        self.state.state = target
+        self.state.state_since = now
+        self.state.candidate_state = None
+        self.state.candidate_since = None
+        if target == "STOPPED" and previous != "STOPPED":
+            self.state.stopped_transitions.append(now)
+        cutoff = now - max(1.0, self.config.microstop_window_seconds)
+        while self.state.stopped_transitions and self.state.stopped_transitions[0] < cutoff:
+            self.state.stopped_transitions.popleft()
+
+    def _evaluate_official_events(self, now: float, frame: np.ndarray) -> None:
+        if self.state.state == "STOPPED":
+            self._open_event(now, frame, "machine_stopped")
+        else:
+            self._close_event_type("machine_stopped", now)
+        if self.state.state == "ACTIVE" and not self.state.operator_present:
+            self._open_timed_event(now, frame, "machine_running_without_operator", self.config.operator_absence_seconds, "high")
+        else:
+            self._close_event_type("machine_running_without_operator", now)
+        if self.state.state == "STOPPED" and self.state.operator_present:
+            self._open_timed_event(now, frame, "machine_stopped_with_operator", self.config.stopped_with_operator_seconds, "medium")
+        else:
+            self._close_event_type("machine_stopped_with_operator", now)
+        if len(self.state.stopped_transitions) >= self.config.microstop_limit:
+            self._open_event(now, frame, "repeated_microstops", severity="medium", metadata={"microstops": len(self.state.stopped_transitions)})
+        else:
+            self._close_event_type("repeated_microstops", now)
+        for event_type in list(self.state.active_events):
+            self._update_event_type(event_type, now)
+
+    def _open_timed_event(self, now: float, frame: np.ndarray, event_type: str, minimum_seconds: float, severity: str) -> None:
+        since = self.state.active_event_since.get(event_type)
+        if since is None:
+            self.state.active_event_since[event_type] = now
             return
-        self.state.state = "stopped"
-        self.state.event_started_at = now_iso()
+        if now - since >= minimum_seconds:
+            self._open_event(now, frame, event_type, severity=severity)
+
+    def _open_event(self, now: float, frame: np.ndarray, event_type: str = "machine_stoppage", severity: str = "medium", metadata: dict[str, Any] | None = None) -> None:
+        canonical_type = "machine_stoppage" if event_type in {"machine_stopped", "machine_stoppage"} else event_type
+        if self.state.active_events.get(canonical_type):
+            return
+        if canonical_type == "machine_stoppage":
+            self.state.event_started_at = self.state.event_started_at or now_iso()
         self.state.operator_present_seconds = 0.0
         self.state.operator_absent_seconds = 0.0
         self.state.max_people = 1 if self.state.operator_present else 0
@@ -232,27 +328,53 @@ class MachineMonitorEngine:
         image_path, error = save_machine_evidence(frame, self.config, self.state)
         with connect() as connection:
             init_db(connection)
-            event_id = criar_evento_machine_stoppage(
-                connection,
-                cliente_id=self.config.client_id,
-                unidade_id=self.config.unit_id,
-                camera_id=self.config.camera_id,
-                machine_monitor_id=self.config.id,
-                inicio=self.state.event_started_at,
-                motion_level=self.state.smoothed_motion,
-                operator_present_start=self.state.operator_present,
-                confidence=confidence_from_motion(self.state.smoothed_motion, self.state.threshold),
-                midia_path=image_path,
-                track_ids=sorted(self.state.track_ids),
-            )
+            started_at = now_iso()
+            if canonical_type == "machine_stoppage":
+                event_id = criar_evento_machine_stoppage(
+                    connection,
+                    cliente_id=self.config.client_id,
+                    unidade_id=self.config.unit_id,
+                    camera_id=self.config.camera_id,
+                    machine_monitor_id=self.config.id,
+                    inicio=started_at,
+                    motion_level=self.state.smoothed_motion,
+                    operator_present_start=self.state.operator_present,
+                    confidence=self.state.confidence or confidence_from_motion(self.state.smoothed_motion, self.state.threshold),
+                    midia_path=image_path,
+                    track_ids=sorted(self.state.track_ids),
+                )
+            else:
+                event_id = criar_evento_machine_operational(
+                    connection,
+                    cliente_id=self.config.client_id,
+                    unidade_id=self.config.unit_id,
+                    camera_id=self.config.camera_id,
+                    machine_monitor_id=self.config.id,
+                    tipo=canonical_type,
+                    inicio=started_at,
+                    motion_level=self.state.smoothed_motion,
+                    operator_present_start=self.state.operator_present,
+                    confidence=self.state.confidence,
+                    midia_path=image_path,
+                    track_ids=sorted(self.state.track_ids),
+                    severidade=severity,
+                    metadata={**(metadata or {}), "estimated_loss": self.estimated_loss(0), "machine_state": self.state.state},
+                )
             if error:
                 atualizar_evento_replay(connection, event_id, replay_error=error)
-        self.state.event_id = event_id
+        self.state.active_events[canonical_type] = event_id
+        if canonical_type == "machine_stoppage":
+            self.state.event_id = event_id
         self._event_frames = self.replay_buffer.snapshot(self.config.replay_pre_seconds)
         enqueue_event_alert(event_id)
 
     def _update_event(self, now: float) -> None:
-        if not self.state.event_id or not self.state.event_started_at:
+        self._update_event_type("machine_stoppage", now)
+
+    def _update_event_type(self, event_type: str, now: float) -> None:
+        event_type = "machine_stoppage" if event_type in {"machine_stopped", "machine_stoppage"} else event_type
+        event_id = self.state.active_events.get(event_type)
+        if not event_id:
             return
         duration = max(0.0, now - self.state.state_since)
         if int(now) % 2 != 0:
@@ -261,7 +383,7 @@ class MachineMonitorEngine:
             init_db(connection)
             atualizar_evento_machine_stoppage(
                 connection,
-                self.state.event_id,
+                event_id,
                 duracao=duration,
                 motion_level=self.state.smoothed_motion,
                 operator_present_seconds=self.state.operator_present_seconds,
@@ -271,22 +393,39 @@ class MachineMonitorEngine:
             )
 
     def _close_event(self, now: float) -> None:
-        if not self.state.event_id:
+        self._close_event_type("machine_stoppage", now)
+
+    def _close_event_type(self, event_type: str, now: float) -> None:
+        event_type = "machine_stoppage" if event_type in {"machine_stopped", "machine_stoppage"} else event_type
+        event_id = self.state.active_events.get(event_type)
+        if not event_id:
+            self.state.active_event_since.pop(event_type, None)
             return
         duration = max(0.0, now - self.state.state_since)
         with connect() as connection:
             init_db(connection)
-            fechar_evento_machine_stoppage(connection, self.state.event_id, now_iso(), duration)
+            loss = self.estimated_loss(duration)
+            if loss is not None:
+                merge_event_metadata(connection, event_id, {"estimated_loss": loss, "impact_label": "Impacto operacional estimado"})
+            fechar_evento_machine_stoppage(connection, event_id, now_iso(), duration)
+        enqueue_event_alert(event_id, phase="normalization")
+        self.state.active_events.pop(event_type, None)
+        self.state.active_event_since.pop(event_type, None)
+        if event_type == "machine_stoppage":
+            self.state.event_id = None
+            self.state.event_started_at = None
+            self._schedule_replay(event_id)
 
-    def _schedule_replay(self) -> None:
-        event_id = self.state.event_id
+    def _schedule_replay(self, event_id: str | None = None) -> None:
+        event_id = event_id or self.state.event_id
         if not event_id:
             return
         frames = self._event_frames + self.replay_buffer.snapshot(self.config.replay_post_seconds)
+        if not frames:
+            self._event_frames = []
+            return
         config = self.config
         threading.Thread(target=write_replay, args=(event_id, config, frames), daemon=True).start()
-        self.state.event_id = None
-        self.state.event_started_at = None
         self._event_frames = []
 
     def _persist_state(self, changed: bool) -> None:
@@ -300,9 +439,45 @@ class MachineMonitorEngine:
                     self.state.smoothed_motion,
                     self.state.operator_present,
                     now_iso() if changed else None,
+                    confidence=self.state.confidence,
+                    reason=self.state.reason,
                 )
         except Exception:
             pass
+
+    def _calculated_threshold(self) -> float:
+        if self.config.active_baseline is not None and self.config.stopped_baseline is not None:
+            return calibrate_threshold(self.config.active_baseline, self.config.stopped_baseline)
+        return float(self.config.motion_threshold or self.config.motion_sensitivity)
+
+    def _persist_calibration(self, phase: str) -> None:
+        status = "active_calibrated" if phase == "active" and self.config.stopped_baseline is None else "calibrated" if self.config.active_baseline is not None and self.config.stopped_baseline is not None else "stopped_calibrated"
+        try:
+            from app.models import atualizar_machine_monitor
+            with connect() as connection:
+                init_db(connection)
+                atualizar_machine_monitor(
+                    connection,
+                    self.config.id,
+                    motion_threshold=self.config.motion_threshold,
+                    calibration_status=status,
+                    running_motion=self.config.active_baseline,
+                    stopped_motion=self.config.stopped_baseline,
+                    active_baseline=self.config.active_baseline,
+                    stopped_baseline=self.config.stopped_baseline,
+                    active_noise=self.config.active_noise,
+                    stopped_noise=self.config.stopped_noise,
+                )
+        except Exception:
+            pass
+
+    def estimated_loss(self, duration_seconds: float) -> float | None:
+        minutes = max(0.0, duration_seconds) / 60.0
+        if self.config.loss_model == "loss_per_minute" and self.config.loss_per_minute is not None:
+            return round(minutes * float(self.config.loss_per_minute), 2)
+        if self.config.loss_model == "units_per_minute" and self.config.units_per_minute is not None and self.config.margin_per_unit is not None:
+            return round(minutes * float(self.config.units_per_minute) * float(self.config.margin_per_unit), 2)
+        return None
 
 
 def polygon_mask(shape: tuple[int, int], polygon: list[AreaPoint]) -> np.ndarray:
@@ -317,6 +492,40 @@ def confidence_from_motion(motion: float, threshold: float) -> float:
     if threshold <= 0:
         return 0.5
     return round(min(0.99, max(0.5, 1.0 - (motion / max(threshold, 1e-9)) * 0.5)), 3)
+
+
+def confidence_from_active_motion(motion: float, threshold: float) -> float:
+    if threshold <= 0:
+        return 0.5
+    return round(min(0.99, max(0.5, (motion / threshold - 1.0) * 0.5 + 0.65)), 3)
+
+
+def normalized_distance(value: float, target: float, opposite: float) -> float:
+    span = max(abs(target - opposite), 1e-9)
+    distance = abs(value - opposite) / span
+    return round(min(0.99, max(0.5, distance)), 3)
+
+
+def baseline_stats(values: list[float]) -> tuple[float, float]:
+    if not values:
+        raise ValueError("Calibracao precisa de ao menos uma amostra de movimento.")
+    array = np.array([float(value) for value in values], dtype=float)
+    return round(float(np.mean(array)), 3), round(float(np.std(array)), 3)
+
+
+def merge_event_metadata(connection, event_id: str, values: dict[str, Any]) -> None:
+    row = connection.execute("SELECT metadata_json FROM eventos WHERE id = ?", (event_id,)).fetchone()
+    metadata: dict[str, Any] = {}
+    if row and row["metadata_json"]:
+        try:
+            metadata = json.loads(row["metadata_json"])
+        except Exception:
+            metadata = {}
+    metadata.update(values)
+    connection.execute(
+        "UPDATE eventos SET metadata_json = ?, atualizado_em = CURRENT_TIMESTAMP WHERE id = ?",
+        (json.dumps(metadata, ensure_ascii=False), event_id),
+    )
 
 
 def save_machine_evidence(frame: np.ndarray, config: MachineMonitorConfig, state: MachineMonitorState) -> tuple[str | None, str | None]:

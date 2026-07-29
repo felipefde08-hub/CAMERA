@@ -79,6 +79,7 @@ let liveAlerts = [];
 let knownClients = [];
 let knownUnits = [];
 let knownCameras = [];
+let knownRecipients = [];
 
 function formPayload(targetForm) {
   const data = new FormData(targetForm);
@@ -194,6 +195,11 @@ async function saveCamera(event) {
       body: JSON.stringify(cleanPayload(true)),
     });
     if (payload.teste) showResult(payload.teste);
+    if (lastRtspPayload) {
+      lastRtspPayload.camera_id = payload.id;
+      lastRtspPayload.nome = payload.camera?.nome || lastRtspPayload.nome;
+      sessionStorage.setItem("campex_live_view_source", JSON.stringify(lastRtspPayload));
+    }
     await loadCameras();
     form.reset();
     form.elements.porta_rtsp.value = 554;
@@ -218,6 +224,7 @@ function renderCameras(cameras) {
       <div>Última atualização: ${camera.ultimo_frame || camera.criado_em || "nunca"}</div>
       <div class="camera-actions">
         <button type="button" data-action="open" data-camera-id="${camera.id}" data-camera-name="${camera.nome}">Abrir câmera</button>
+        <button type="button" data-action="live-view" data-camera-id="${camera.id}" data-camera-name="${camera.nome}">Live View</button>
         <button type="button" data-action="stop" data-camera-id="${camera.id}">Parar</button>
       </div>
     </article>
@@ -663,6 +670,11 @@ function recipientPayload() {
     if (text) payload[key] = text;
   }
   payload.ativo = payload.ativo !== "false";
+  if (payload.event_types) {
+    payload.event_types = payload.event_types.split(",").map((item) => item.trim()).filter(Boolean);
+  } else {
+    payload.event_types = [];
+  }
   if (!payload.camera_id) delete payload.camera_id;
   if (!payload.area_id) delete payload.area_id;
   return payload;
@@ -670,6 +682,7 @@ function recipientPayload() {
 
 async function loadRecipients() {
   const recipients = await requestJson("/alert-recipients");
+  knownRecipients = recipients;
   if (!recipients.length) {
     recipientList.innerHTML = '<div class="muted">Nenhum responsável cadastrado.</div>';
     return;
@@ -682,8 +695,10 @@ async function loadRecipients() {
       <div>Câmera: ${recipient.camera_id || "todas"}</div>
       <div>Área: ${recipient.area_id || "todas"}</div>
       <div>Severidade mínima: ${recipient.severidade_minima}</div>
+      <div>Eventos: ${recipient.event_types?.length ? recipient.event_types.join(", ") : "todos"}</div>
       <div class="actions">
         <button type="button" data-recipient-action="test" data-recipient-id="${recipient.id}">Enviar alerta de teste</button>
+        <button type="button" data-recipient-action="edit" data-recipient-id="${recipient.id}">Editar</button>
         <button type="button" data-recipient-action="toggle" data-recipient-id="${recipient.id}" data-active="${recipient.ativo}">
           ${recipient.ativo ? "Desativar" : "Ativar"}
         </button>
@@ -917,6 +932,11 @@ cameraList.addEventListener("click", async (event) => {
       await stopCamera(cameraId);
       return;
     }
+    if (button.dataset.action === "live-view") {
+      sessionStorage.setItem("campex_live_view_source", JSON.stringify({ camera_id: cameraId, nome: cameraName }));
+      window.open(`/live-view?camera_id=${encodeURIComponent(cameraId)}&nome=${encodeURIComponent(cameraName)}`, "_blank");
+      return;
+    }
     await openCamera(cameraId, cameraName);
   } catch (error) {
     setViewerMessage(`Erro: ${error.message}`, "offline");
@@ -1059,6 +1079,27 @@ recipientList.addEventListener("click", async (event) => {
     await requestJson(`/alert-recipients/${recipientId}`, {
       method: "PATCH",
       body: JSON.stringify({ ativo: button.dataset.active !== "true" }),
+    });
+    await loadRecipients();
+    return;
+  }
+  if (button.dataset.recipientAction === "edit") {
+    const current = knownRecipients.find((item) => item.id === recipientId);
+    if (!current) return;
+    const nome = window.prompt("Nome", current.nome);
+    if (!nome) return;
+    const email = window.prompt("E-mail", current.email);
+    if (!email) return;
+    const severidade = window.prompt("Severidade mínima: low, medium, high ou critical", current.severidade_minima || "low");
+    const tipos = window.prompt("Tipos de evento separados por vírgula. Vazio = todos", current.event_types?.join(", ") || "");
+    await requestJson(`/alert-recipients/${recipientId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        nome,
+        email,
+        severidade_minima: severidade || current.severidade_minima,
+        event_types: String(tipos || "").split(",").map((item) => item.trim()).filter(Boolean),
+      }),
     });
     await loadRecipients();
     return;

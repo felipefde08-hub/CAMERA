@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import time
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
@@ -9,9 +12,11 @@ from fastapi.testclient import TestClient
 
 from app import api as api_module
 from app.api import api, live_streams
+from app.database import connect
 from app.live_stream import LiveStreamManager
 from app.person_detection import PersonAnalysisEngine
 from edge_agent.camera_connector import CameraSource
+from shared.schemas import now_iso
 
 
 class FakeCapture:
@@ -109,6 +114,86 @@ class LiveStreamStage2Test(unittest.TestCase):
         self.assertEqual(FakeConnector.opened, 1)
         self.assertNotIn("pass", str(status))
 
+    def test_two_cameras_run_independently_and_stop_only_one(self) -> None:
+        FakeConnector.opened = 0
+        manager = LiveStreamManager(connector_factory=lambda camera: FakeConnector(camera))
+        stream_a = manager.get_or_create("cam_a", "rtsp://user:pass@camera-a/stream")
+        stream_b = manager.get_or_create("cam_b", "rtsp://user:pass@camera-b/stream")
+        stream_a.start()
+        stream_b.start()
+        time.sleep(0.25)
+
+        status_a = stream_a.public_status()
+        status_b = stream_b.public_status()
+        stopped = manager.stop("cam_a")
+        remaining = manager.get("cam_b")
+        remaining_status = remaining.public_status() if remaining else {}
+        manager.stop_all()
+
+        self.assertTrue(stopped)
+        self.assertEqual(FakeConnector.opened, 2)
+        self.assertIsNot(stream_a, stream_b)
+        self.assertIn(status_a["status"], {"online", "reconectando", "offline"})
+        self.assertIn(status_b["status"], {"online", "reconectando", "offline"})
+        self.assertIsNotNone(remaining)
+        self.assertIn(remaining_status["status"], {"online", "reconectando", "offline"})
+        self.assertNotIn("pass", str(status_a) + str(status_b) + str(remaining_status))
+
+    def test_live_grid_page_is_served(self) -> None:
+        client = TestClient(api)
+        response = client.get("/live-grid")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers.get("content-type", ""))
+        self.assertIn("Duas câmeras simultâneas", response.text)
+
+    def test_live_streams_status_returns_resource_snapshot_without_credentials(self) -> None:
+        original_manager = api_module.live_streams
+        try:
+            api_module.live_streams = LiveStreamManager(connector_factory=lambda camera: FakeConnector(camera))
+            stream = api_module.live_streams.get_or_create("cam_resources", "rtsp://user:pass@camera/stream")
+            stream.start()
+            time.sleep(0.15)
+            client = TestClient(api)
+            response = client.get("/live-streams/status")
+        finally:
+            api_module.live_streams.stop_all()
+            api_module.live_streams = original_manager
+
+        self.assertEqual(response.status_code, 200)
+        self.assertGreaterEqual(response.json()["active_streams"], 1)
+        self.assertIn("cpu_percent", response.json())
+        self.assertNotIn("pass", response.text)
+
+    def test_file_video_mode_explicitly_overrides_camera_source_for_local_validation(self) -> None:
+        original_manager = api_module.live_streams
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_VIDEO_SOURCE_MODE": "file", "CAMPEX_VIDEO_FILE": str(Path(temp_dir) / "teste.mp4")}):
+                video_path = Path(temp_dir) / "teste.mp4"
+                video_path.write_bytes(b"fake")
+                db_path = Path(temp_dir) / "video-mode.sqlite3"
+                with connect(db_path) as connection:
+                    api_module.init_db(connection)
+                    cliente_id = api_module.criar_cliente(connection, "Cliente")
+                    unidade_id = api_module.criar_unidade(connection, cliente_id, "Unidade")
+                    camera_id = api_module.criar_camera(
+                        connection,
+                        unidade_id,
+                        "Camera",
+                        cliente_id=cliente_id,
+                        rtsp_host="192.168.15.2",
+                        rtsp_username="admin",
+                        rtsp_password="segredo",
+                    )
+                with patch("app.api.connect", lambda: connect(db_path)):
+                    camera, source = api_module.load_camera_source(camera_id)
+        finally:
+            api_module.live_streams = original_manager
+
+        self.assertEqual(camera["id"], camera_id)
+        self.assertEqual(source, str(video_path))
+        self.assertNotIn("segredo", source)
+
     def test_live_stream_reconnects_after_initial_failure(self) -> None:
         FailingThenWorkingConnector.attempts = 0
         manager = LiveStreamManager(connector_factory=lambda camera: FailingThenWorkingConnector(camera))
@@ -122,6 +207,21 @@ class LiveStreamStage2Test(unittest.TestCase):
         self.assertIn(status["status"], {"online", "reconectando", "offline"})
         self.assertNotIn("pass", str(status))
 
+    def test_recent_frame_overrides_transient_reconnecting_status(self) -> None:
+        manager = LiveStreamManager(connector_factory=lambda camera: FakeConnector(camera))
+        stream = manager.get_or_create("cam_recent", "rtsp://user:pass@camera/stream")
+        with stream._lock:
+            stream._last_jpeg = b"jpeg"
+            stream.status.status = "reconectando"
+            stream.status.last_frame_at = now_iso()
+            stream.status.error = "Stream parou de entregar frames."
+
+        status = stream.public_status()
+        manager.stop_all()
+
+        self.assertEqual(status["status"], "online")
+        self.assertIsNone(status["error"])
+
     def test_status_endpoint_does_not_return_credentials_for_missing_stream(self) -> None:
         client = TestClient(api)
         response = client.get("/cameras/cam_inexistente/status")
@@ -134,27 +234,46 @@ class LiveStreamStage2Test(unittest.TestCase):
         try:
             api_module.live_streams = LiveStreamManager(connector_factory=lambda camera: FakeConnector(camera))
             api_module.live_view_sessions.clear()
-            client = TestClient(api)
-            response = client.post(
-                "/live-view/start",
-                json={
-                    "nome": "Intelbras Teste",
-                    "host": "192.168.15.2",
-                    "porta_rtsp": 554,
-                    "usuario": "admin",
-                    "senha": "segredo",
-                    "caminho_rtsp": "/stream",
-                },
-            )
-            payload = response.json()
-            status = client.get(f"/live-view/{payload['session_id']}/status")
+            with tempfile.TemporaryDirectory() as temp_dir:
+                db_path = Path(temp_dir) / "live.sqlite3"
+                with patch("app.api.connect", lambda: connect(db_path)):
+                    client = TestClient(api)
+                    response = client.post(
+                        "/live-view/start",
+                        json={
+                            "nome": "Intelbras Teste",
+                            "host": "192.168.15.2",
+                            "porta_rtsp": 554,
+                            "usuario": "admin",
+                            "senha": "segredo",
+                            "caminho_rtsp": "/stream",
+                        },
+                    )
+                    second_response = client.post(
+                        "/live-view/start",
+                        json={
+                            "nome": "Intelbras Teste",
+                            "host": "192.168.15.2",
+                            "porta_rtsp": 554,
+                            "usuario": "admin",
+                            "senha": "segredo",
+                            "caminho_rtsp": "/stream",
+                        },
+                    )
+                    payload = response.json()
+                    status = client.get(f"/live-view/{payload['session_id']}/status")
+                with connect(db_path) as connection:
+                    api_module.init_db(connection)
+                    camera_count = connection.execute("SELECT COUNT(*) AS total FROM cameras").fetchone()["total"]
         finally:
             api_module.live_streams.stop_all()
             api_module.live_streams = original_manager
             api_module.live_view_sessions.clear()
             api_module.live_view_sessions.update(original_sessions)
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
         self.assertEqual(payload["nome"], "Intelbras Teste")
+        self.assertEqual(camera_count, 0)
         self.assertNotIn("segredo", response.text + status.text)
         self.assertIn(status.status_code, {200})
 
@@ -208,6 +327,134 @@ class LiveStreamStage2Test(unittest.TestCase):
         self.assertEqual(calibration.json()["calibration_status"], "calibrada")
         self.assertIn("ops", status.json())
         self.assertNotIn("segredo", combined)
+
+    def test_live_view_machine_config_persists_for_registered_camera(self) -> None:
+        original_manager = api_module.live_streams
+        original_sessions = dict(api_module.live_view_sessions)
+        try:
+            api_module.live_streams = LiveStreamManager(connector_factory=lambda camera: FakeConnector(camera))
+            api_module.live_view_sessions.clear()
+            with tempfile.TemporaryDirectory() as temp_dir:
+                db_path = Path(temp_dir) / "registered-live.sqlite3"
+                with connect(db_path) as connection:
+                    api_module.init_db(connection)
+                    cliente_id = api_module.criar_cliente(connection, "Cliente")
+                    unidade_id = api_module.criar_unidade(connection, cliente_id, "Unidade")
+                    camera_id = api_module.criar_camera(
+                        connection,
+                        unidade_id,
+                        "Camera registrada",
+                        cliente_id=cliente_id,
+                        rtsp_host="192.168.15.2",
+                        rtsp_port=554,
+                        rtsp_path="/stream",
+                        rtsp_username="admin",
+                        rtsp_password="segredo",
+                    )
+                with patch("app.api.connect", lambda: connect(db_path)):
+                    client = TestClient(api)
+                    started = client.post("/live-view/start", json={"camera_id": camera_id, "nome": "Camera registrada"})
+                    session_id = started.json()["session_id"]
+                    machine = client.post(
+                        f"/live-view/{session_id}/machine",
+                        json={
+                            "nome": "Máquina principal",
+                            "machine_polygon": [
+                                {"x": 0.1, "y": 0.1},
+                                {"x": 0.7, "y": 0.1},
+                                {"x": 0.7, "y": 0.7},
+                                {"x": 0.1, "y": 0.7},
+                            ],
+                        },
+                    )
+                    operator = client.post(
+                        f"/live-view/{session_id}/operator-zone",
+                        json={
+                            "operator_polygon": [
+                                {"x": 0.75, "y": 0.1},
+                                {"x": 0.95, "y": 0.1},
+                                {"x": 0.95, "y": 0.7},
+                                {"x": 0.75, "y": 0.7},
+                            ],
+                        },
+                    )
+                    calibration = client.post(f"/live-view/{session_id}/machine/calibrate-active")
+                    api_module.live_streams.stop_all()
+                    api_module.live_streams = LiveStreamManager(connector_factory=lambda camera: FakeConnector(camera))
+                    restarted = client.post("/live-view/start", json={"camera_id": camera_id, "nome": "Camera registrada"})
+                    reloaded_status = client.get(f"/live-view/{restarted.json()['session_id']}/status")
+                with connect(db_path) as connection:
+                    monitors = api_module.listar_machine_monitors_camera(connection, camera_id)
+        finally:
+            api_module.live_streams.stop_all()
+            api_module.live_streams = original_manager
+            api_module.live_view_sessions.clear()
+            api_module.live_view_sessions.update(original_sessions)
+
+        self.assertEqual(started.status_code, 200)
+        self.assertEqual(machine.status_code, 200)
+        self.assertEqual(operator.status_code, 200)
+        self.assertEqual(calibration.status_code, 200)
+        self.assertEqual(len(monitors), 1)
+        self.assertEqual(monitors[0]["nome"], "Máquina principal")
+        self.assertEqual(monitors[0]["calibration_status"], "calibrated")
+        self.assertEqual(reloaded_status.json()["ops"]["machine"]["nome"], "Máquina principal")
+        self.assertNotIn("segredo", started.text + reloaded_status.text)
+
+    def test_registered_live_view_uses_camera_id_stream_so_zones_are_loaded(self) -> None:
+        original_manager = api_module.live_streams
+        original_sessions = dict(api_module.live_view_sessions)
+        try:
+            api_module.live_streams = LiveStreamManager(connector_factory=lambda camera: FakeConnector(camera))
+            api_module.live_view_sessions.clear()
+            with tempfile.TemporaryDirectory() as temp_dir:
+                db_path = Path(temp_dir) / "registered-zone-live.sqlite3"
+                with connect(db_path) as connection:
+                    api_module.init_db(connection)
+                    cliente_id = api_module.criar_cliente(connection, "Cliente")
+                    unidade_id = api_module.criar_unidade(connection, cliente_id, "Unidade")
+                    camera_id = api_module.criar_camera(
+                        connection,
+                        unidade_id,
+                        "Camera registrada",
+                        cliente_id=cliente_id,
+                        rtsp_host="192.168.15.2",
+                        rtsp_port=554,
+                        rtsp_path="/stream",
+                        rtsp_username="admin",
+                        rtsp_password="segredo",
+                    )
+                    api_module.criar_area_monitorada(
+                        connection,
+                        camera_id,
+                        "Posto 1",
+                        [{"x": 0.1, "y": 0.1}, {"x": 0.7, "y": 0.1}, {"x": 0.7, "y": 0.7}],
+                        tipo="workstation",
+                        absence_tolerance_seconds=0,
+                    )
+                with patch("app.api.connect", lambda: connect(db_path)):
+                    client = TestClient(api)
+                    started = client.post("/live-view/start", json={"camera_id": camera_id})
+                    session_id = started.json()["session_id"]
+                    ai = client.post(f"/live-view/{session_id}/ai/start")
+                    time.sleep(0.3)
+                    status = client.get(f"/live-view/{session_id}/status")
+                    stopped = client.post(f"/live-view/{session_id}/stop")
+                    camera_status = client.get(f"/cameras/{camera_id}/status")
+        finally:
+            api_module.live_streams.stop_all()
+            api_module.live_streams = original_manager
+            api_module.live_view_sessions.clear()
+            api_module.live_view_sessions.update(original_sessions)
+
+        self.assertEqual(started.status_code, 200)
+        self.assertEqual(started.json()["stream_id"], camera_id)
+        self.assertEqual(ai.status_code, 200)
+        self.assertEqual(status.status_code, 200)
+        self.assertEqual(status.json()["camera_id"], camera_id)
+        self.assertEqual(stopped.json()["stopped"], False)
+        self.assertIn(camera_status.json()["status"], {"online", "reconectando", "offline"})
+        self.assertNotIn("segredo", started.text + status.text + camera_status.text)
 
     def test_live_view_stream_stays_online_when_ai_fails(self) -> None:
         manager = LiveStreamManager(connector_factory=lambda camera: FakeConnector(camera))

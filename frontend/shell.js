@@ -123,7 +123,8 @@ function setupGlobalButtons() {
 
     const workspaceSwitcher = event.target.closest(".cx-workspace-switcher");
     if (workspaceSwitcher) {
-      openPopover(workspaceSwitcher, "Workspace", ["FL Plásticos · Unidade principal", "Gerenciar unidades"]);
+      const currentWorkspace = workspaceSwitcher.getAttribute("title") || "Cliente piloto · Unidade principal";
+      openPopover(workspaceSwitcher, "Workspace", [currentWorkspace, "Gerenciar unidades"]);
       return;
     }
 
