@@ -15,7 +15,7 @@ from edge_agent.camera_connector import CameraSource, UniversalCameraConnector, 
 from app.person_detection import Detection, PersonAnalysisEngine
 from app.incidents import IncidentManager
 from app.people_zones import PeopleZonesEngine
-from app.machine_monitoring import MachineMonitorEngine, config_from_dict, draw_machine_overlay
+from app.machine_monitoring import MachineMonitorEngine, config_from_dict, draw_machine_overlay, machine_activity_score
 from app.models import atualizar_machine_monitor, listar_areas_ativas_camera, listar_machine_monitors_ativos_camera, registrar_machine_calibration
 from app.operations_history import OperationsRecorder
 from app.observation_engine import ObservationEngine
@@ -66,6 +66,12 @@ class LiveStreamStatus:
     machine_confidence: float | None = None
     machine_reason: str | None = None
     machine_seconds_in_state: float | None = None
+    machine_analysis_status: str | None = None
+    machine_analysis_error: str | None = None
+    machine_raw_activity_score: float | None = None
+    machine_frames_analyzed: int = 0
+    machine_roi_width: int = 0
+    machine_roi_height: int = 0
     zones: list[dict[str, object]] | None = None
     active_zone_events: list[dict[str, object]] | None = None
     observation: dict[str, object] | None = None
@@ -541,6 +547,15 @@ class LiveCameraStream:
             "machine_threshold": status.get("machine_threshold"),
             "machine_reason": status.get("machine_reason"),
             "machine_seconds_in_state": status.get("machine_seconds_in_state"),
+            "analysis_status": status.get("machine_analysis_status"),
+            "analysis_error": status.get("machine_analysis_error"),
+            "raw_activity_score": status.get("machine_raw_activity_score"),
+            "smoothed_activity_score": status.get("machine_motion"),
+            "frames_analyzed": status.get("machine_frames_analyzed"),
+            "roi": {
+                "width": status.get("machine_roi_width"),
+                "height": status.get("machine_roi_height"),
+            },
             "operator_present": bool(status.get("machine_operator_present")),
             "operator_people_count": 1 if status.get("machine_operator_present") else 0,
             "people_count": int(status.get("people_count") or 0),
@@ -581,6 +596,12 @@ class LiveCameraStream:
                     self.status.machine_monitor_id = engine.config.id
                     self.status.machine_confidence = state.confidence
                     self.status.machine_reason = state.reason
+                    self.status.machine_analysis_status = state.analysis_status
+                    self.status.machine_analysis_error = state.analysis_error
+                    self.status.machine_raw_activity_score = state.raw_activity_score
+                    self.status.machine_frames_analyzed = state.frames_analyzed
+                    self.status.machine_roi_width = state.roi_width
+                    self.status.machine_roi_height = state.roi_height
                     self.status.observation = observation
                     self.status.machine_seconds_in_state = observation.get("seconds_in_machine_state")
                     monitor_public = getattr(engine, "_monitor_public", {}) or {}
@@ -725,21 +746,8 @@ class LiveCameraStream:
 
 
 def calibration_activity_score(frame, polygon: list[dict[str, float]], previous_gray):
-    if frame is None or not polygon or len(polygon) < 3:
-        return None, previous_gray
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    mask = np.zeros(gray.shape, dtype=np.uint8)
-    height, width = gray.shape[:2]
-    pts = np.array([[int(max(0, min(1, float(point["x"]))) * width), int(max(0, min(1, float(point["y"]))) * height)] for point in polygon], dtype=np.int32)
-    cv2.fillPoly(mask, [pts], 255)
-    if previous_gray is None:
-        return None, gray
-    diff = cv2.absdiff(gray, previous_gray)
-    values = diff[mask > 0]
-    if values.size == 0:
-        return None, gray
-    return float(np.mean(values)), gray
+    score, current_gray, _diagnostics = machine_activity_score(frame, polygon, previous_gray)
+    return score, current_gray
 
 
 def calibration_stats(samples: list[float]) -> dict[str, object]:

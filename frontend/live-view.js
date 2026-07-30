@@ -12,6 +12,13 @@ const liveViewMachine = document.querySelector("#liveViewMachine");
 const liveViewMachineState = document.querySelector("#liveViewMachineState");
 const liveViewOperator = document.querySelector("#liveViewOperator");
 const liveViewMotion = document.querySelector("#liveViewMotion");
+const liveViewRawScore = document.querySelector("#liveViewRawScore");
+const liveViewFramesAnalyzed = document.querySelector("#liveViewFramesAnalyzed");
+const liveViewRoi = document.querySelector("#liveViewRoi");
+const liveViewAnalysisStatus = document.querySelector("#liveViewAnalysisStatus");
+const liveViewConfidence = document.querySelector("#liveViewConfidence");
+const liveViewStateTime = document.querySelector("#liveViewStateTime");
+const liveViewReason = document.querySelector("#liveViewReason");
 const liveViewRelation = document.querySelector("#liveViewRelation");
 const liveViewHint = document.querySelector("#liveViewHint");
 const liveAiStart = document.querySelector("#liveAiStart");
@@ -161,6 +168,13 @@ function renderStatus(payload) {
   liveViewMachineState.textContent = formatMachineState(ops.machine_state);
   liveViewOperator.textContent = ops.operator_present ? `Operador presente (${ops.operator_people_count})` : "Sem operador";
   liveViewMotion.textContent = `${ops.machine_motion ?? 0}${ops.machine_threshold ? ` / limite ${ops.machine_threshold.toFixed ? ops.machine_threshold.toFixed(2) : ops.machine_threshold}` : ""}`;
+  if (liveViewRawScore) liveViewRawScore.textContent = ops.raw_activity_score ?? "—";
+  if (liveViewFramesAnalyzed) liveViewFramesAnalyzed.textContent = ops.frames_analyzed ?? 0;
+  if (liveViewRoi) liveViewRoi.textContent = ops.roi?.width && ops.roi?.height ? `${ops.roi.width}x${ops.roi.height}` : "—";
+  if (liveViewAnalysisStatus) liveViewAnalysisStatus.textContent = ops.analysis_status || "WAITING_FOR_REGION";
+  if (liveViewConfidence) liveViewConfidence.textContent = Number(ops.visual_confidence || 0).toFixed(2);
+  if (liveViewStateTime) liveViewStateTime.textContent = `${Math.round(ops.machine_seconds_in_state || 0)}s`;
+  if (liveViewReason) liveViewReason.textContent = ops.machine_reason || ops.analysis_error || "Aguardando análise";
   const observation = payload.observation || {};
   liveViewRelation.textContent = observation.machine_state
     ? `${observation.machine_state} · conf. ${observation.machine_confidence} · operador ${observation.people_in_operator_zone} · restrita ${observation.people_in_restricted_zone}`

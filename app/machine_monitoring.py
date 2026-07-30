@@ -91,6 +91,12 @@ class MachineMonitorState:
     candidate_since: float | None = None
     last_update: float = field(default_factory=time.monotonic)
     stopped_transitions: deque[float] = field(default_factory=deque)
+    analysis_status: str = "WAITING_FOR_REGION"
+    analysis_error: str | None = None
+    frames_analyzed: int = 0
+    roi_width: int = 0
+    roi_height: int = 0
+    raw_activity_score: float | None = None
 
 
 def config_from_dict(payload: dict[str, Any]) -> MachineMonitorConfig:
@@ -192,12 +198,20 @@ class MachineMonitorEngine:
         now = time.monotonic()
         self.replay_buffer.add(frame, self.state.state, self.state.operator_present, self.config.replay_pre_seconds + self.config.replay_post_seconds + self.config.stop_seconds)
         if now - self._last_analysis < 1.0 / max(0.1, self.analysis_fps):
+            self.state.analysis_status = "FRAME_STALE"
             return self.state
         dt = max(0.001, now - self.state.last_update)
         self._last_analysis = now
         self.state.last_update = now
-        motion = self._motion(frame)
+        try:
+            motion = self._motion(frame)
+        except Exception as exc:
+            self.state.analysis_status = "ERROR"
+            self.state.analysis_error = mask_sensitive_error(exc)
+            self.state.reason = f"erro na análise visual: {self.state.analysis_error}"
+            return self.state
         self.state.motion = motion
+        self.state.raw_activity_score = round(float(motion), 3)
         alpha = min(1.0, dt / max(0.1, self.smoothing_seconds))
         self.state.smoothed_motion = (alpha * motion) + ((1 - alpha) * self.state.smoothed_motion)
         self._update_operator(frame, detections, dt)
@@ -205,16 +219,16 @@ class MachineMonitorEngine:
         return self.state
 
     def _motion(self, frame: np.ndarray) -> float:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        mask = polygon_mask(gray.shape, self.config.machine_polygon)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)
-        if self._previous_gray is None:
-            self._previous_gray = gray
+        score, previous_gray, diagnostics = machine_activity_score(frame, self.config.machine_polygon, self._previous_gray)
+        self._previous_gray = previous_gray
+        self.state.analysis_status = diagnostics["analysis_status"]
+        self.state.analysis_error = diagnostics.get("analysis_error")
+        self.state.roi_width = int(diagnostics.get("roi_width") or 0)
+        self.state.roi_height = int(diagnostics.get("roi_height") or 0)
+        if score is None:
             return 0.0
-        diff = cv2.absdiff(gray, self._previous_gray)
-        self._previous_gray = gray
-        values = diff[mask > 0]
-        return float(np.mean(values)) if values.size else 0.0
+        self.state.frames_analyzed += 1
+        return float(score)
 
     def _update_operator(self, frame: np.ndarray, detections: list[Detection], dt: float) -> None:
         height, width = frame.shape[:2]
@@ -499,6 +513,52 @@ def polygon_mask(shape: tuple[int, int], polygon: list[AreaPoint]) -> np.ndarray
     pts = np.array([[int(point.x * width), int(point.y * height)] for point in polygon], dtype=np.int32)
     cv2.fillPoly(mask, [pts], 255)
     return mask
+
+
+def machine_activity_score(
+    frame: np.ndarray,
+    polygon: list[AreaPoint] | list[dict[str, float]],
+    previous_gray: np.ndarray | None,
+) -> tuple[float | None, np.ndarray | None, dict[str, Any]]:
+    diagnostics: dict[str, Any] = {
+        "analysis_status": "WAITING_FOR_REGION",
+        "analysis_error": None,
+        "roi_width": 0,
+        "roi_height": 0,
+    }
+    if frame is None or not getattr(frame, "size", 0):
+        diagnostics["analysis_status"] = "ERROR"
+        diagnostics["analysis_error"] = "Frame inválido."
+        return None, previous_gray, diagnostics
+    if len(polygon) < 3:
+        return None, previous_gray, diagnostics
+    points = [
+        AreaPoint(float(point["x"]), float(point["y"]))
+        for point in normalize_points([{"x": p.x, "y": p.y} if isinstance(p, AreaPoint) else p for p in polygon])
+    ]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape[:2]
+    pixel_points = np.array([[int(point.x * width), int(point.y * height)] for point in points], dtype=np.int32)
+    _x, _y, roi_width, roi_height = cv2.boundingRect(pixel_points)
+    diagnostics["roi_width"] = int(roi_width)
+    diagnostics["roi_height"] = int(roi_height)
+    mask = polygon_mask(gray.shape, points)
+    if roi_width <= 1 or roi_height <= 1 or not np.any(mask > 0):
+        diagnostics["analysis_status"] = "INVALID_ROI"
+        diagnostics["analysis_error"] = "Região da máquina sem área útil."
+        return None, previous_gray, diagnostics
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    if previous_gray is None:
+        diagnostics["analysis_status"] = "WAITING_FOR_PREVIOUS_FRAME"
+        return None, gray, diagnostics
+    diff = cv2.absdiff(gray, previous_gray)
+    values = diff[mask > 0]
+    if not values.size:
+        diagnostics["analysis_status"] = "INVALID_ROI"
+        diagnostics["analysis_error"] = "Região da máquina não gerou pixels analisáveis."
+        return None, gray, diagnostics
+    diagnostics["analysis_status"] = "ANALYZING"
+    return float(np.mean(values)), gray, diagnostics
 
 
 def confidence_from_motion(motion: float, threshold: float) -> float:
