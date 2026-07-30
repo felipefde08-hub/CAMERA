@@ -24,9 +24,10 @@ class LiveViewOpsTest(unittest.TestCase):
         points = state["machine"]["machine_polygon"]
         self.assertEqual(points[0], {"x": 0.0, "y": 0.2})
         self.assertEqual(points[2], {"x": 0.8, "y": 1.0})
-        self.assertEqual(state["machine_state"], "CALIBRANDO")
+        self.assertEqual(state["machine_state"], "UNKNOWN")
+        self.assertEqual(state["calibration_status"], "use_assisted_calibration_endpoint")
 
-    def test_operator_presence_uses_person_foot_position(self) -> None:
+    def test_compatibility_engine_does_not_determine_operator_presence(self) -> None:
         engine = LiveViewOpsEngine()
         engine.set_ai(True)
         engine.configure_machine(
@@ -48,9 +49,9 @@ class LiveViewOpsTest(unittest.TestCase):
         engine.update(frame, [Detection(45, 20, 65, 95, 0.9, track_id=7)])
 
         state = engine.public_state()
-        self.assertTrue(state["operator_present"])
-        self.assertEqual(state["operator_people_count"], 1)
-        self.assertIn("operador presente", state["relation"])
+        self.assertFalse(state["operator_present"])
+        self.assertEqual(state["operator_people_count"], 0)
+        self.assertIn("MachineMonitorEngine", state["relation"])
 
     def test_unconfigured_machine_is_not_camera_without_signal(self) -> None:
         engine = LiveViewOpsEngine()
@@ -62,7 +63,7 @@ class LiveViewOpsTest(unittest.TestCase):
 
         self.assertEqual(state["machine_state"], "NAO_CONFIGURADA")
         self.assertEqual(state["people_count"], 1)
-        self.assertEqual(state["relation"], "Aguardando configuração")
+        self.assertEqual(state["relation"], "Aguardando configuração persistente")
 
     def test_machine_state_changes_after_calibration(self) -> None:
         engine = LiveViewOpsEngine()
@@ -76,11 +77,10 @@ class LiveViewOpsTest(unittest.TestCase):
             ],
         )
         engine.calibrate_active(current_motion=20.0)
-        engine._smoothed_motion = 25.0
-        engine._update_relation()
         state = engine.update(np.full((32, 32, 3), 255, dtype=np.uint8), [])
         self.assertEqual(state.shape, (32, 32, 3))
-        self.assertIn(engine.public_state()["machine_state"], {"ATIVA", "PARADA"})
+        self.assertEqual(engine.public_state()["machine_state"], "UNKNOWN")
+        self.assertEqual(engine.public_state()["calibration_status"], "use_assisted_calibration_endpoint")
 
     def test_overlay_draws_without_credentials_or_crash(self) -> None:
         engine = LiveViewOpsEngine()

@@ -39,11 +39,16 @@ class LiveViewOpsState:
 
 
 class LiveViewOpsEngine:
+    """Compatibility renderer for older imports.
+
+    Operational decisions moved to MachineMonitorEngine, ObservationEngine and
+    PeopleZonesEngine. This class intentionally keeps only lightweight display
+    state so legacy callers can draw overlays without creating a second runtime.
+    """
+
     def __init__(self) -> None:
         self.config: LiveViewMachineConfig | None = None
         self.state = LiveViewOpsState()
-        self._previous_gray: np.ndarray | None = None
-        self._smoothed_motion = 0.0
         self._last_inference_tick = time.monotonic()
         self._inference_frames = 0
 
@@ -66,10 +71,9 @@ class LiveViewOpsEngine:
         operator_source = operator_polygon or expanded_polygon(machine_polygon, margin=0.08)
         operator_points = [AreaPoint(float(p["x"]), float(p["y"])) for p in normalize_points(operator_source)]
         self.config = LiveViewMachineConfig(nome=nome, tipo=tipo, machine_polygon=machine_points, operator_polygon=operator_points)
-        self.state.machine_state = "CALIBRANDO"
-        self.state.calibration_status = "aguardando calibração"
-        self._previous_gray = None
-        self._smoothed_motion = 0.0
+        self.state.machine_state = "UNKNOWN"
+        self.state.relation = "Runtime oficial aguardando MachineMonitorEngine"
+        self.state.calibration_status = "use_assisted_calibration_endpoint"
         return self.public_state()
 
     def load_machine_config(self, monitor: dict[str, Any]) -> dict[str, Any]:
@@ -84,8 +88,9 @@ class LiveViewOpsEngine:
             calibrated=monitor.get("calibration_status") == "calibrated" or monitor.get("motion_threshold") is not None,
         )
         self.state.machine_threshold = self.config.threshold
-        self.state.calibration_status = "calibrada" if self.config.calibrated else "aguardando calibração"
-        self.state.machine_state = "CALIBRANDO" if not self.config.calibrated else self.state.machine_state
+        self.state.calibration_status = "use_assisted_calibration_endpoint"
+        self.state.machine_state = "UNKNOWN"
+        self.state.relation = "Runtime oficial aguardando MachineMonitorEngine"
         return self.public_state()
 
     def configure_operator_zone(self, operator_polygon: list[dict[str, float]]) -> dict[str, Any]:
@@ -96,19 +101,14 @@ class LiveViewOpsEngine:
 
     def clear(self) -> dict[str, Any]:
         self.config = None
-        self._previous_gray = None
-        self._smoothed_motion = 0.0
         self.state = LiveViewOpsState(ai_enabled=self.state.ai_enabled, ai_status=self.state.ai_status)
         return self.public_state()
 
     def calibrate_active(self, current_motion: float | None = None) -> dict[str, Any]:
         if self.config is None:
             raise ValueError("Configure uma máquina antes de calibrar.")
-        motion = self._smoothed_motion if current_motion is None else float(current_motion)
-        self.config.threshold = max(1.0, motion * 0.45)
-        self.config.calibrated = True
-        self.state.machine_threshold = self.config.threshold
-        self.state.calibration_status = "calibrada"
+        self.state.calibration_status = "use_assisted_calibration_endpoint"
+        self.state.relation = "Use o endpoint assistido de MachineMonitorEngine"
         return self.public_state()
 
     def update(self, frame: np.ndarray, detections: list[Detection]) -> np.ndarray:
@@ -117,53 +117,16 @@ class LiveViewOpsEngine:
             elapsed = max(0.001, time.monotonic() - self._last_inference_tick)
             self.state.inference_fps = round(self._inference_frames / elapsed, 2)
         self.state.people_count = len([detection for detection in detections if detection.class_name == "person"])
-        self._update_machine(frame)
-        self._update_operator(frame, detections)
-        self._update_relation()
-        return draw_live_view_overlay(frame, self.config, self.state, detections)
-
-    def _update_machine(self, frame: np.ndarray) -> None:
-        if self.config is None or not self.config.machine_polygon:
+        if self.config is None:
             self.state.machine_state = "NAO_CONFIGURADA"
-            return
-        motion = motion_inside_polygon(frame, self.config.machine_polygon, self._previous_gray)
-        self._previous_gray = cv2.GaussianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (5, 5), 0)
-        alpha = 0.25
-        self._smoothed_motion = (alpha * motion) + ((1 - alpha) * self._smoothed_motion)
-        self.state.machine_motion = round(self._smoothed_motion, 3)
-        threshold = self.config.threshold
-        self.state.machine_threshold = threshold
-        if not self.config.calibrated or threshold is None:
-            self.state.machine_state = "CALIBRANDO"
-            self.state.visual_confidence = 0.0
-            return
-        active = self._smoothed_motion >= threshold
-        self.state.machine_state = "ATIVA" if active else "PARADA"
-        distance = abs(self._smoothed_motion - threshold)
-        self.state.visual_confidence = round(min(0.95, 0.5 + distance / max(threshold, 1.0)), 2)
-
-    def _update_operator(self, frame: np.ndarray, detections: list[Detection]) -> None:
-        if self.config is None or not self.config.operator_polygon:
+            self.state.relation = "Aguardando configuração persistente"
+        else:
+            self.state.machine_state = "UNKNOWN"
             self.state.operator_present = False
             self.state.operator_people_count = 0
-            return
-        height, width = frame.shape[:2]
-        count = 0
-        for detection in detections:
-            if detection.class_name != "person":
-                continue
-            if point_in_polygon(foot_point_normalized(detection, width, height), self.config.operator_polygon):
-                count += 1
-        self.state.operator_people_count = count
-        self.state.operator_present = count > 0
-
-    def _update_relation(self) -> None:
-        if self.config is None:
-            self.state.relation = "Aguardando configuração"
-            return
-        machine = "Máquina ativa" if self.state.machine_state == "ATIVA" else "Máquina parada" if self.state.machine_state == "PARADA" else self.state.machine_state
-        operator = "operador presente" if self.state.operator_present else "sem operador"
-        self.state.relation = f"{machine} + {operator}"
+            self.state.visual_confidence = 0.0
+            self.state.relation = "Runtime oficial aguardando MachineMonitorEngine"
+        return draw_live_view_overlay(frame, self.config, self.state, detections)
 
     def public_state(self) -> dict[str, Any]:
         return {

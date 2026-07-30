@@ -159,6 +159,28 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
         self.assertIn("Impacto operacional estimado", events[0]["metadata_json"])
         self.assertEqual(outbox, 1)
 
+    def test_machine_stoppage_duration_uses_condition_start_not_new_state_start(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            frame = np.zeros((80, 120, 3), dtype=np.uint8)
+            stopped_started = 1000.0
+            opened_at = 1002.0
+            closed_at = 1012.5
+            with patch("app.machine_monitoring.connect", test_connect), patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.save_machine_evidence", return_value=(None, None)):
+                engine.state.state = "STOPPED"
+                engine.state.state_since = stopped_started
+                engine.state.confidence = 0.9
+                engine._open_event(opened_at, frame, "machine_stoppage")
+                engine.state.state = "ACTIVE"
+                engine.state.state_since = closed_at
+                engine._close_event_type("machine_stoppage", closed_at)
+            with test_connect() as connection:
+                event = connection.execute("SELECT duracao FROM eventos WHERE tipo = 'machine_stoppage'").fetchone()
+
+        self.assertIsNotNone(event)
+        self.assertAlmostEqual(event["duracao"], 12.5, delta=0.2)
+
     def test_active_without_operator_uses_single_open_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)

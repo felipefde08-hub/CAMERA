@@ -324,7 +324,8 @@ class LiveStreamStage2Test(unittest.TestCase):
         self.assertEqual(status.status_code, 200)
         self.assertTrue(ai.json()["ai_enabled"])
         self.assertEqual(machine.json()["machine"]["nome"], "Extrusora principal")
-        self.assertEqual(calibration.json()["calibration_status"], "calibrada")
+        self.assertEqual(calibration.json()["calibration_status"], "use_assisted_calibration_endpoint")
+        self.assertIn("/machine-monitors/{id}/calibration/active/start", calibration.json()["message"])
         self.assertIn("ops", status.json())
         self.assertNotIn("segredo", combined)
 
@@ -397,7 +398,8 @@ class LiveStreamStage2Test(unittest.TestCase):
         self.assertEqual(calibration.status_code, 200)
         self.assertEqual(len(monitors), 1)
         self.assertEqual(monitors[0]["nome"], "Máquina principal")
-        self.assertEqual(monitors[0]["calibration_status"], "calibrated")
+        self.assertEqual(monitors[0]["calibration_status"], "not_calibrated")
+        self.assertEqual(calibration.json()["calibration_status"], "use_assisted_calibration_endpoint")
         self.assertEqual(reloaded_status.json()["ops"]["machine"]["nome"], "Máquina principal")
         self.assertNotIn("segredo", started.text + reloaded_status.text)
 
