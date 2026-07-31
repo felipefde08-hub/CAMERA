@@ -99,6 +99,15 @@ function fillSelect(select, items, emptyLabel) {
   ].join("");
 }
 
+function focusLoginFromHash() {
+  if (window.location.hash !== "#login") return;
+  const loginSection = document.querySelector("#login");
+  const emailInput = loginForm?.querySelector("input[name='email']");
+  if (!loginSection || !emailInput) return;
+  loginSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  window.setTimeout(() => emailInput.focus({ preventScroll: true }), 250);
+}
+
 function cleanPayload(includeIdentity) {
   const data = new FormData(form);
   const payload = {};
@@ -1114,6 +1123,7 @@ deliveryList.addEventListener("click", async (event) => {
   await loadDeliveries();
 });
 window.addEventListener("resize", drawAreaCanvas);
+window.addEventListener("hashchange", focusLoginFromHash);
 checkApi();
 loadConfigData().catch(() => {});
 loadCameras().then(loadMachineConfigList).catch(() => renderCameras([]));
@@ -1124,3 +1134,4 @@ loadSystemHealth().catch(() => {});
 loadOperations().catch(() => {});
 connectRealtime();
 startDeliveryPolling();
+focusLoginFromHash();
