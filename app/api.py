@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from app.camera_rtsp import build_rtsp_url, test_rtsp_connection
 from app.alerts import enqueue_event_alert, resume_pending_deliveries, retry_delivery, send_test_alert, stream_events
+from app.analytics import aggregate_period, compute_summary, current_period_range, data_quality, generate_insights, parse_dt, timeline
 from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, get_request_user, require_role, require_user, tenant_filter, update_user_password, users_exist
 from app.config import ROOT
 from app.database import connect, init_db
@@ -56,6 +57,7 @@ from app.models import (
     reconhecer_ocorrencia,
     registrar_evento,
     atualizar_regra,
+    ultimo_edge_heartbeat,
 )
 from app.pilot import acceptance_checklist, health_snapshot
 from app.machine_monitoring import baseline_stats, calibrate_threshold
@@ -600,6 +602,68 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@api.get("/ready")
+def ready() -> dict[str, object]:
+    streams = live_streams.statuses()
+    with connect() as connection:
+        init_db(connection)
+        cameras_total = connection.execute("SELECT COUNT(*) AS total FROM cameras WHERE ativa = 1").fetchone()["total"]
+        monitors_ready = connection.execute(
+            "SELECT COUNT(*) AS total FROM machine_monitors WHERE ativo = 1 AND calibration_result = 'READY'"
+        ).fetchone()["total"]
+        outbox_pending = connection.execute(
+            "SELECT COUNT(*) AS total FROM sync_outbox WHERE status IN ('pending', 'failed')"
+        ).fetchone()["total"]
+    stream_online = any(stream.get("status") == "online" for stream in streams)
+    inference_ready = any(float(stream.get("analysis_fps") or 0) > 0 or int(stream.get("analysis_frames") or 0) > 0 for stream in streams)
+    database_ready = True
+    ready_state = database_ready and (cameras_total == 0 or stream_online) and (not streams or inference_ready)
+    return {
+        "status": "ready" if ready_state else "not_ready",
+        "database": "ready" if database_ready else "not_ready",
+        "cameras_registered": cameras_total,
+        "camera_stream": "ready" if stream_online else "not_ready",
+        "inference": "ready" if inference_ready else "not_ready",
+        "machine_monitors_ready": monitors_ready,
+        "workers": {
+            "live_streams": len(streams),
+            "outbox_pending": outbox_pending,
+        },
+    }
+
+
+@api.get("/edge/status")
+def get_edge_runtime_status(edge_id: Optional[str] = None) -> dict[str, object]:
+    disk = psutil.disk_usage(str(ROOT))
+    streams = live_streams.statuses()
+    with connect() as connection:
+        init_db(connection)
+        heartbeat = ultimo_edge_heartbeat(connection, edge_id)
+        outbox_pending = connection.execute(
+            "SELECT COUNT(*) AS total FROM sync_outbox WHERE status IN ('pending', 'failed')"
+        ).fetchone()["total"]
+        last_event = connection.execute("SELECT * FROM eventos ORDER BY criado_em DESC LIMIT 1").fetchone()
+        cameras = connection.execute("SELECT id, nome, status, ultimo_frame, fps, frames_processados, ultimo_erro FROM cameras ORDER BY nome").fetchall()
+    stream_by_camera = {stream["camera_id"]: stream for stream in streams}
+    return {
+        "edge_id": edge_id or os.getenv("CAMPEX_EDGE_ID"),
+        "heartbeat": heartbeat,
+        "cameras": [
+            {
+                **dict(camera),
+                "stream": stream_by_camera.get(camera["id"]),
+            }
+            for camera in cameras
+        ],
+        "last_event": dict(last_event) if last_event else None,
+        "outbox_pending": outbox_pending,
+        "disk": {
+            "free_bytes": disk.free,
+            "used_percent": disk.percent,
+        },
+    }
+
+
 @api.get("/favicon.ico", include_in_schema=False)
 def favicon() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "campex-logo-oficial.png", media_type="image/png")
@@ -949,6 +1013,7 @@ def live_view_official_ops(session: dict[str, object] | None, stream) -> dict[st
         "machine_seconds_in_state": status.get("machine_seconds_in_state"),
         "analysis_status": status.get("machine_analysis_status"),
         "analysis_error": status.get("machine_analysis_error"),
+        "inference_frames": status.get("analysis_frames"),
         "raw_activity_score": status.get("machine_raw_activity_score"),
         "smoothed_activity_score": status.get("machine_motion"),
         "frames_analyzed": status.get("machine_frames_analyzed"),
@@ -958,6 +1023,8 @@ def live_view_official_ops(session: dict[str, object] | None, stream) -> dict[st
         },
         "operator_present": status.get("machine_operator_present", False),
         "operator_people_count": 1 if status.get("machine_operator_present") else 0,
+        "zones": status.get("zones") or [],
+        "active_zone_events": status.get("active_zone_events") or [],
         "visual_confidence": status.get("machine_confidence") or observation.get("machine_confidence") or 0,
         "calibration_status": (status.get("calibration") or {}).get("calibration_result") or (monitor or {}).get("calibration_result") or "não calibrada",
         "baselines": {
@@ -1450,7 +1517,7 @@ def post_camera_area(camera_id: str, payload: AreaIn) -> dict[str, Any]:
             if event_type:
                 minimum_seconds = (
                     payload.absence_tolerance_seconds
-                    if zone_type == "workstation"
+                    if zone_type in {"workstation", "operator_zone"}
                     else payload.dwell_limit_seconds
                     if zone_type == "dwell_area"
                     else (payload.metadata or {}).get("minimum_seconds", 5)
@@ -2121,6 +2188,77 @@ def get_operations_current_status(
         init_db(connection)
         require_camera_access(connection, require_user(request, connection), camera_id)
         return current_status(connection, camera_id, machine_name)
+
+
+@api.get("/analytics/summary")
+def get_analytics_summary(
+    request: Request,
+    machine_id: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    aggregation: str = "hour",
+    camera_id: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
+        start_dt, end_dt = current_period_range(aggregation)
+        if start:
+            start_dt = parse_dt(start)
+        if end:
+            end_dt = parse_dt(end)
+        if machine_id:
+            return aggregate_period(connection, machine_id=machine_id, start=start_dt, end=end_dt, aggregation=aggregation, camera_id=camera_id)
+        return compute_summary(connection, machine_id=None, start=start_dt, end=end_dt, camera_id=camera_id)
+
+
+@api.get("/analytics/timeline")
+def get_analytics_timeline(
+    request: Request,
+    machine_id: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    camera_id: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
+        start_dt = parse_dt(start) if start else current_period_range("day")[0]
+        end_dt = parse_dt(end) if end else current_period_range("day")[1]
+        return timeline(connection, machine_id=machine_id, start=start_dt, end=end_dt, camera_id=camera_id)
+
+
+@api.get("/analytics/insights")
+def get_analytics_insights(
+    request: Request,
+    machine_id: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    camera_id: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
+        start_dt = parse_dt(start) if start else current_period_range("day")[0]
+        end_dt = parse_dt(end) if end else current_period_range("day")[1]
+        insights = generate_insights(connection, machine_id=machine_id, start=start_dt, end=end_dt, camera_id=camera_id)
+        return {"insights": insights}
+
+
+@api.get("/analytics/data-quality")
+def get_analytics_data_quality(
+    request: Request,
+    machine_id: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    camera_id: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
+        start_dt = parse_dt(start) if start else current_period_range("day")[0]
+        end_dt = parse_dt(end) if end else current_period_range("day")[1]
+        return data_quality(connection, machine_id=machine_id, start=start_dt, end=end_dt, camera_id=camera_id)
 
 
 @api.get("/operations")

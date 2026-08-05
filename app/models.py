@@ -817,6 +817,173 @@ def registrar_edge_metricas(
     connection.commit()
 
 
+def registrar_edge_heartbeat(
+    connection: sqlite3.Connection,
+    edge_id: str,
+    *,
+    heartbeat_at: str,
+    camera_online: bool,
+    last_frame_at: str | None,
+    capture_fps: float | None,
+    inference_fps: float | None,
+    frames_analyzed: int,
+    outbox_pending: int,
+    disk_free_bytes: int | None,
+    disk_used_percent: float | None,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO edge_heartbeats (
+            edge_id, heartbeat_at, camera_online, last_frame_at, capture_fps,
+            inference_fps, frames_analyzed, outbox_pending, disk_free_bytes,
+            disk_used_percent
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            edge_id,
+            heartbeat_at,
+            1 if camera_online else 0,
+            last_frame_at,
+            capture_fps,
+            inference_fps,
+            frames_analyzed,
+            outbox_pending,
+            disk_free_bytes,
+            disk_used_percent,
+        ),
+    )
+    connection.commit()
+
+
+def ultimo_edge_heartbeat(connection: sqlite3.Connection, edge_id: str | None = None) -> dict[str, Any] | None:
+    if edge_id:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM edge_heartbeats
+            WHERE edge_id = ?
+            ORDER BY heartbeat_at DESC, id DESC
+            LIMIT 1
+            """,
+            (edge_id,),
+        ).fetchone()
+    else:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM edge_heartbeats
+            ORDER BY heartbeat_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return row_to_dict(row) if row else None
+
+
+def registrar_operational_sample(
+    connection: sqlite3.Connection,
+    *,
+    sample_uuid: str,
+    tenant_id: str | None,
+    unit_id: str | None,
+    camera_id: str | None,
+    machine_id: str | None,
+    machine_state: str | None,
+    operator_present: bool | None,
+    activity_score: float | None,
+    confidence: float | None,
+    capture_fps: float | None,
+    inference_fps: float | None,
+    frames_analyzed: int,
+    camera_online: bool | None,
+    sample_at: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO operational_samples (
+            sample_uuid, tenant_id, unit_id, camera_id, machine_id, machine_state,
+            operator_present, activity_score, confidence, capture_fps, inference_fps,
+            frames_analyzed, camera_online, sample_at, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            sample_uuid,
+            tenant_id,
+            unit_id,
+            camera_id,
+            machine_id,
+            machine_state,
+            None if operator_present is None else int(operator_present),
+            activity_score,
+            confidence,
+            capture_fps,
+            inference_fps,
+            frames_analyzed,
+            None if camera_online is None else int(camera_online),
+            sample_at,
+            json.dumps(metadata or {}, ensure_ascii=False),
+        ),
+    )
+    if machine_id and machine_state:
+        connection.execute(
+            """
+            INSERT INTO machine_state_samples (
+                machine_id, camera_id, state, activity_score, confidence, sample_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (machine_id, camera_id, machine_state, activity_score, confidence, sample_at),
+        )
+    if operator_present is not None:
+        connection.execute(
+            """
+            INSERT INTO operator_presence_samples (
+                machine_id, camera_id, operator_present, people_count, confidence, sample_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (machine_id, camera_id, int(operator_present), int((metadata or {}).get("people_count") or 0), confidence, sample_at),
+        )
+    connection.commit()
+
+
+def registrar_evidence_index(
+    connection: sqlite3.Connection,
+    *,
+    evidence_id: str,
+    event_id: str | None,
+    event_uuid: str | None,
+    tenant_id: str | None,
+    unit_id: str | None,
+    camera_id: str | None,
+    machine_id: str | None,
+    path: str,
+    media_type: str = "image",
+    size_bytes: int | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    connection.execute(
+        """
+        INSERT OR IGNORE INTO evidences (
+            id, event_id, event_uuid, tenant_id, unit_id, camera_id, machine_id,
+            path, media_type, size_bytes, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            evidence_id,
+            event_id,
+            event_uuid,
+            tenant_id,
+            unit_id,
+            camera_id,
+            machine_id,
+            path,
+            media_type,
+            size_bytes,
+            json.dumps(metadata or {}, ensure_ascii=False),
+        ),
+    )
+    connection.commit()
+
+
 def ultima_metrica_edge(connection: sqlite3.Connection, edge_id: str) -> dict[str, Any] | None:
     row = connection.execute(
         """

@@ -336,6 +336,136 @@ def init_db(connection: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS operational_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sample_uuid TEXT UNIQUE,
+            tenant_id TEXT,
+            unit_id TEXT,
+            camera_id TEXT,
+            machine_id TEXT,
+            machine_state TEXT,
+            operator_present INTEGER,
+            activity_score REAL,
+            confidence REAL,
+            capture_fps REAL,
+            inference_fps REAL,
+            frames_analyzed INTEGER NOT NULL DEFAULT 0,
+            camera_online INTEGER,
+            sample_at TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS machine_state_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            machine_id TEXT NOT NULL,
+            camera_id TEXT,
+            state TEXT NOT NULL,
+            activity_score REAL,
+            confidence REAL,
+            sample_at TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS operator_presence_samples (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            machine_id TEXT,
+            camera_id TEXT,
+            operator_present INTEGER NOT NULL,
+            people_count INTEGER NOT NULL DEFAULT 0,
+            confidence REAL,
+            sample_at TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS evidences (
+            id TEXT PRIMARY KEY,
+            event_id TEXT,
+            event_uuid TEXT,
+            tenant_id TEXT,
+            unit_id TEXT,
+            camera_id TEXT,
+            machine_id TEXT,
+            path TEXT NOT NULL,
+            media_type TEXT NOT NULL DEFAULT 'image',
+            size_bytes INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            UNIQUE (event_id, path)
+        );
+
+        CREATE TABLE IF NOT EXISTS edge_heartbeats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            edge_id TEXT NOT NULL,
+            heartbeat_at TEXT NOT NULL,
+            camera_online INTEGER NOT NULL DEFAULT 0,
+            last_frame_at TEXT,
+            capture_fps REAL,
+            inference_fps REAL,
+            frames_analyzed INTEGER NOT NULL DEFAULT 0,
+            outbox_pending INTEGER NOT NULL DEFAULT 0,
+            disk_free_bytes INTEGER,
+            disk_used_percent REAL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS hourly_machine_metrics (
+            id TEXT PRIMARY KEY,
+            machine_id TEXT NOT NULL,
+            camera_id TEXT,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            incomplete INTEGER NOT NULL DEFAULT 0,
+            recalculated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (machine_id, period_start, period_end)
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_machine_metrics (
+            id TEXT PRIMARY KEY,
+            machine_id TEXT NOT NULL,
+            camera_id TEXT,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            incomplete INTEGER NOT NULL DEFAULT 0,
+            recalculated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (machine_id, period_start, period_end)
+        );
+
+        CREATE TABLE IF NOT EXISTS shift_machine_metrics (
+            id TEXT PRIMARY KEY,
+            machine_id TEXT NOT NULL,
+            camera_id TEXT,
+            shift_name TEXT NOT NULL,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            incomplete INTEGER NOT NULL DEFAULT 0,
+            recalculated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (machine_id, shift_name, period_start, period_end)
+        );
+
+        CREATE TABLE IF NOT EXISTS generated_insights (
+            id TEXT PRIMARY KEY,
+            machine_id TEXT,
+            camera_id TEXT,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            period_start TEXT NOT NULL,
+            period_end TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            related_event_ids_json TEXT NOT NULL DEFAULT '[]',
+            rule_id TEXT NOT NULL,
+            recommended_action TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (machine_id, period_start, period_end, rule_id)
+        );
+
         CREATE TABLE IF NOT EXISTS visual_rule_states (
             rule_id TEXT PRIMARY KEY,
             candidate_state INTEGER NOT NULL DEFAULT 0,
@@ -415,6 +545,12 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "eventos", "classified_by", "TEXT")
     _ensure_column(connection, "operational_events", "activity_score", "REAL")
     _ensure_column(connection, "operational_events", "snapshot_path", "TEXT")
+    _ensure_column(connection, "operational_events", "machine_id", "TEXT")
+    _ensure_column(connection, "operational_events", "tenant_id", "TEXT")
+    _ensure_column(connection, "operational_events", "unit_id", "TEXT")
+    _ensure_column(connection, "operational_events", "status", "TEXT NOT NULL DEFAULT 'closed'")
+    _ensure_column(connection, "operational_events", "severity", "TEXT")
+    _ensure_column(connection, "operational_events", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(connection, "regras", "nome", "TEXT")
     _ensure_column(connection, "regras", "cliente_id", "TEXT")
     _ensure_column(connection, "regras", "unidade_id", "TEXT")

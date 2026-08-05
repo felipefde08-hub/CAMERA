@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import http.cookiejar
+import json
 import logging
 import os
 import signal
+import shutil
+import sqlite3
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from app.database import connect, init_db
@@ -15,11 +22,14 @@ from app.models import (
     criar_regra,
     criar_unidade,
     listar,
+    listar_areas_camera,
+    listar_machine_monitors_camera,
     registrar_evento,
 )
 from app.reports import save_daily_report
 from app.pilot import acceptance_checklist, create_backup, health_snapshot, prune_old_evidence, restore_backup
 from app.machine_replay import run_machine_replay
+from app.edge_runtime import run_production_edge
 from edge_agent.camera_connector import detect_source_type, safe_source_ref
 from edge_agent.camera_check import check_camera
 from edge_agent.service import EdgeSupervisor, edge_status
@@ -93,6 +103,13 @@ def build_parser() -> argparse.ArgumentParser:
     run_edge.add_argument("--api-url", default=os.getenv("API_URL"))
     run_edge.add_argument("--heartbeat-seconds", type=float, default=10.0)
 
+    run_edge_production = subparsers.add_parser("run-edge-production")
+    run_edge_production.add_argument("--edge-id", default=os.getenv("CAMPEX_EDGE_ID"), required=False)
+    run_edge_production.add_argument("--host", default=os.getenv("API_HOST", "0.0.0.0"))
+    run_edge_production.add_argument("--port", type=int, default=int(os.getenv("API_PORT", "8000")))
+    run_edge_production.add_argument("--heartbeat-seconds", type=float, default=float(os.getenv("CAMPEX_HEARTBEAT_SECONDS", "10")))
+    run_edge_production.add_argument("--sync-seconds", type=float, default=float(os.getenv("CAMPEX_SYNC_SECONDS", "10")))
+
     status = subparsers.add_parser("edge-status")
     status.add_argument("--edge-id", required=True)
 
@@ -121,11 +138,254 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--machine-config", required=True)
     replay.add_argument("--annotations", required=True)
     replay.add_argument("--output", default="reports/machine_replay_report.json")
+
+    preflight = subparsers.add_parser("factory-preflight")
+    preflight.add_argument("--api-url", default=os.getenv("CAMPEX_API_URL", "http://127.0.0.1:8000"))
+    preflight.add_argument("--camera-id", default=os.getenv("CAMPEX_PREFLIGHT_CAMERA_ID"))
+    preflight.add_argument("--timeout", type=float, default=3.0)
+    preflight.add_argument("--min-free-gb", type=float, default=5.0)
     return parser
+
+
+def _http_json(
+    url: str,
+    timeout: float = 3.0,
+    opener: urllib.request.OpenerDirector | None = None,
+    method: str = "GET",
+    payload: dict | None = None,
+) -> tuple[int, dict | list | None, str | None]:
+    data = None
+    headers = {}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    client = opener or urllib.request
+    try:
+        with client.open(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            content_type = response.headers.get("content-type", "")
+            if "application/json" in content_type:
+                return response.status, json.loads(body), None
+            return response.status, None, body[:200]
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = None
+        return exc.code, payload, body[:200]
+    except Exception as exc:
+        return 0, None, str(exc)
+
+
+def _http_sse_connected(
+    url: str,
+    timeout: float = 3.0,
+    opener: urllib.request.OpenerDirector | None = None,
+) -> tuple[bool, str]:
+    request = urllib.request.Request(url, headers={"Accept": "text/event-stream"})
+    client = opener or urllib.request
+    try:
+        with client.open(request, timeout=timeout) as response:
+            chunk = response.readline().decode("utf-8", errors="replace").strip()
+            return response.status == 200 and bool(chunk), chunk or "conectado"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _print_check(status: str, label: str, detail: str) -> None:
+    print(f"{status:<10} {label} - {detail}")
+
+
+def _check_recent_frame(last_frame_at: object) -> bool:
+    if not last_frame_at:
+        return False
+    try:
+        from datetime import datetime, timezone
+
+        parsed = datetime.fromisoformat(str(last_frame_at).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() <= 15
+    except Exception:
+        return False
+
+
+def run_factory_preflight(db_path: Path, api_url: str, camera_id: str | None, timeout: float, min_free_gb: float) -> int:
+    api_url = api_url.rstrip("/")
+    cookie_jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar))
+    results: list[tuple[str, str, str]] = []
+
+    def add(status: str, label: str, detail: str) -> None:
+        results.append((status, label, detail))
+
+    health_code, health, health_error = _http_json(f"{api_url}/health", timeout, opener)
+    add("PASS" if health_code == 200 and isinstance(health, dict) and health.get("status") == "ok" else "FAIL", "API iniciada", f"{api_url}/health -> {health_code or health_error}")
+
+    preflight_email = os.getenv("CAMPEX_PREFLIGHT_EMAIL")
+    preflight_password = os.getenv("CAMPEX_PREFLIGHT_PASSWORD")
+    login_detail = ""
+    if preflight_email and preflight_password:
+        login_code, login_payload, login_error = _http_json(
+            f"{api_url}/auth/login",
+            timeout,
+            opener,
+            method="POST",
+            payload={"email": preflight_email, "senha": preflight_password},
+        )
+        if login_code == 200 and isinstance(login_payload, dict) and login_payload.get("user"):
+            login_detail = f"login realizado como {login_payload['user'].get('email')}"
+        else:
+            login_detail = f"login falhou: {login_code or login_error}"
+    elif preflight_email or preflight_password:
+        login_detail = "CAMPEX_PREFLIGHT_EMAIL ou CAMPEX_PREFLIGHT_PASSWORD ausente"
+    else:
+        login_detail = "credenciais CAMPEX_PREFLIGHT_EMAIL/CAMPEX_PREFLIGHT_PASSWORD não informadas"
+
+    auth_code, auth, auth_error = _http_json(f"{api_url}/auth/status", timeout, opener)
+    if auth_code == 200 and isinstance(auth, dict):
+        if auth.get("authenticated"):
+            add("PASS", "login funcionando", login_detail or "sessão autenticada detectada")
+        elif auth.get("bootstrap"):
+            add("WARNING", "login funcionando", "API de auth respondeu, mas ainda não há usuário criado")
+        elif preflight_email and preflight_password:
+            add("FAIL", "login funcionando", login_detail)
+        else:
+            add("NOT TESTED", "login funcionando", login_detail)
+    else:
+        add("FAIL", "login funcionando", f"/auth/status não respondeu corretamente: {auth_code or auth_error}")
+
+    try:
+        with connect(db_path) as connection:
+            init_db(connection)
+            connection.execute("SELECT 1").fetchone()
+            add("PASS", "banco acessível", str(db_path))
+            cameras = listar(connection, "cameras")
+            selected_camera = next((camera for camera in cameras if camera.get("id") == camera_id), None) if camera_id else (cameras[0] if cameras else None)
+            if selected_camera:
+                camera_id = str(selected_camera["id"])
+                add("PASS", "câmera cadastrada", f"{selected_camera.get('nome')} ({camera_id})")
+            else:
+                add("FAIL", "câmera cadastrada", "nenhuma câmera encontrada no SQLite")
+            areas = listar_areas_camera(connection, camera_id) if camera_id else []
+            operator_zones = [area for area in areas if area.get("tipo") in {"operator_zone", "workstation"} and area.get("ativa")]
+            machine_regions = [area for area in areas if area.get("tipo") == "machine_region" and area.get("ativa")]
+            monitors = listar_machine_monitors_camera(connection, camera_id) if camera_id else []
+            active_monitors = [monitor for monitor in monitors if monitor.get("ativo")]
+            valid_calibrations = [
+                monitor for monitor in active_monitors
+                if monitor.get("active_baseline") is not None
+                and monitor.get("stopped_baseline") is not None
+                and monitor.get("calibration_result") == "READY"
+            ]
+            recipients = connection.execute("SELECT COUNT(*) AS total FROM alert_recipients WHERE ativo = 1").fetchone()["total"]
+    except sqlite3.Error as exc:
+        add("FAIL", "banco acessível", str(exc))
+        selected_camera = None
+        areas = []
+        operator_zones = []
+        machine_regions = []
+        active_monitors = []
+        valid_calibrations = []
+        recipients = 0
+
+    stream_status = None
+    if camera_id:
+        code, payload, error = _http_json(f"{api_url}/cameras/{camera_id}/status", timeout, opener)
+        stream_status = payload if code == 200 and isinstance(payload, dict) else None
+        if stream_status and stream_status.get("status") == "online":
+            add("PASS", "câmera online", f"status online ({camera_id})")
+        elif stream_status:
+            add("FAIL", "câmera online", f"status {stream_status.get('status')}")
+        else:
+            add("FAIL", "câmera online", f"sem status via API: {code or error}")
+    else:
+        add("NOT TESTED", "câmera online", "sem camera_id para consultar")
+
+    if stream_status and _check_recent_frame(stream_status.get("last_frame_at")):
+        add("PASS", "stream recebendo frames", f"último frame: {stream_status.get('last_frame_at')}")
+    elif stream_status and stream_status.get("fps"):
+        add("WARNING", "stream recebendo frames", f"FPS informado {stream_status.get('fps')}, mas último frame recente não comprovado")
+    elif camera_id:
+        add("FAIL", "stream recebendo frames", "nenhum frame recente comprovado")
+    else:
+        add("NOT TESTED", "stream recebendo frames", "sem câmera alvo")
+
+    ai_status = stream_status.get("ai_status") if stream_status else None
+    if stream_status:
+        add("PASS" if ai_status == "ativa" else "FAIL", "IA realmente iniciada", f"ai_status={ai_status or 'indisponível'}")
+    else:
+        add("NOT TESTED", "IA realmente iniciada", "sem status de stream")
+
+    inference_fps = float((stream_status or {}).get("analysis_fps") or 0)
+    if stream_status:
+        add("PASS" if inference_fps > 0 else "FAIL", "FPS de inferência maior que zero", str(inference_fps))
+    else:
+        add("NOT TESTED", "FPS de inferência maior que zero", "sem status de stream")
+
+    frames_before = int((stream_status or {}).get("analysis_frames") or (stream_status or {}).get("machine_frames_analyzed") or 0)
+    time.sleep(min(2.0, max(0.5, timeout / 2)))
+    frames_after = frames_before
+    if camera_id:
+        code, payload, _error = _http_json(f"{api_url}/cameras/{camera_id}/status", timeout, opener)
+        if code == 200 and isinstance(payload, dict):
+            frames_after = int(payload.get("analysis_frames") or payload.get("machine_frames_analyzed") or 0)
+    if stream_status:
+        add("PASS" if frames_after > frames_before else "FAIL", "frames analisados aumentando", f"{frames_before} -> {frames_after}")
+    else:
+        add("NOT TESTED", "frames analisados aumentando", "sem status de stream")
+
+    add("PASS" if operator_zones else "FAIL", "zona do operador salva", f"{len(operator_zones)} zona(s)")
+    add("PASS" if machine_regions else "FAIL", "região da máquina salva", f"{len(machine_regions)} região(ões)")
+    add("PASS" if active_monitors else "FAIL", "monitor de máquina configurado", f"{len(active_monitors)} monitor(es) ativo(s)")
+    add("PASS" if valid_calibrations else "FAIL", "calibração ativa/parada válida", f"{len(valid_calibrations)} monitor(es) READY")
+
+    sse_ok, sse_detail = _http_sse_connected(f"{api_url}/events/stream", timeout, opener)
+    add("PASS" if sse_ok else "FAIL", "SSE de eventos conectado", sse_detail)
+
+    evidence_dir = Path("data/evidence")
+    try:
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        test_file = evidence_dir / ".preflight_write_test"
+        test_file.write_text("ok", encoding="utf-8")
+        test_file.unlink()
+        add("PASS", "pasta de evidências gravável", str(evidence_dir))
+    except Exception as exc:
+        add("FAIL", "pasta de evidências gravável", str(exc))
+
+    email_mode = os.getenv("CAMPEX_EMAIL_MODE", "").strip().lower()
+    if email_mode == "console":
+        add("PASS", "modo de alertas configurado", "CAMPEX_EMAIL_MODE=console")
+    elif email_mode == "smtp":
+        smtp_ready = all(os.getenv(name) for name in ["CAMPEX_SMTP_HOST", "CAMPEX_SMTP_USERNAME", "CAMPEX_SMTP_PASSWORD"])
+        add("PASS" if smtp_ready else "FAIL", "modo de alertas configurado", "SMTP configurado" if smtp_ready else "SMTP incompleto")
+    else:
+        add("WARNING" if recipients else "FAIL", "modo de alertas configurado", f"CAMPEX_EMAIL_MODE={email_mode or 'não definido'}; destinatários ativos={recipients}")
+
+    usage = shutil.disk_usage(Path.cwd())
+    free_gb = usage.free / (1024 ** 3)
+    add("PASS" if free_gb >= min_free_gb else "FAIL", "espaço em disco suficiente", f"{free_gb:.2f} GB livres")
+
+    print("Campex Factory Preflight")
+    print(f"API: {api_url}")
+    print(f"Banco: {db_path}")
+    print(f"Câmera alvo: {camera_id or 'não selecionada'}")
+    print("")
+    for status, label, detail in results:
+        _print_check(status, label, detail)
+    print("")
+    ready = all(status == "PASS" for status, _label, _detail in results)
+    print("PRONTO PARA TESTE DE CAMPO" if ready else "NÃO PRONTO PARA TESTE DE CAMPO")
+    return 0 if ready else 1
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.command == "factory-preflight":
+        return run_factory_preflight(Path(args.db), args.api_url, args.camera_id, args.timeout, args.min_free_gb)
+
     if args.command == "sync-cloud" and args.loop:
         if not args.cloud_url or not args.edge_id or not args.edge_secret:
             raise SystemExit("Configure CAMPEX_CLOUD_URL, CAMPEX_EDGE_ID e CAMPEX_EDGE_SECRET.")
@@ -220,6 +480,21 @@ def main() -> int:
             except KeyboardInterrupt:
                 print("\nEdge encerrado pelo usuario.")
                 supervisor.shutdown()
+        elif args.command == "run-edge-production":
+            if not args.edge_id:
+                raise SystemExit("Configure CAMPEX_EDGE_ID ou informe --edge-id.")
+            logging.basicConfig(
+                level=os.getenv("CAMPEX_LOG_LEVEL", "INFO"),
+                format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            )
+            run_production_edge(
+                edge_id=args.edge_id,
+                db_path=Path(args.db),
+                host=args.host,
+                port=args.port,
+                heartbeat_seconds=args.heartbeat_seconds,
+                sync_seconds=args.sync_seconds,
+            )
         elif args.command == "edge-status":
             status = edge_status(args.edge_id, Path(args.db))
             print(f"Edge: {args.edge_id}")
