@@ -144,7 +144,10 @@ def compute_summary(
         stopped = max(stopped, total * (len(stopped_samples) / max(len(samples), 1)))
         offline = max(offline, total * (len(offline_samples) / max(len(samples), 1)))
 
-    active_time = max(0.0, estimated_active if monitored_from_samples else total - stopped - offline)
+    reliable_coverage = 0.0
+    if monitored_from_samples and total > 0:
+        reliable_coverage = max(0.0, min(1.0, len(samples) * 10.0 / total))
+    active_time = max(0.0, estimated_active if monitored_from_samples else 0.0)
     alerts = connection.execute(
         """
         SELECT status, COUNT(*) AS total
@@ -162,6 +165,7 @@ def compute_summary(
         "start": iso(start),
         "end": iso(end),
         "total_monitored_seconds": round(total, 3),
+        "reliable_monitored_seconds": round(total * reliable_coverage, 3),
         "active_seconds": round(active_time, 3),
         "stopped_seconds": round(stopped, 3),
         "availability_percent": round((active_time / total) * 100, 2) if total else None,
@@ -179,6 +183,7 @@ def compute_summary(
             "failed": int(alert_counts.get("failed", 0)),
         },
         "offline_or_no_data_periods": no_data_periods,
+        "reliable_data_coverage_percent": round(reliable_coverage * 100, 2),
         "incomplete": bool(no_data_periods) or not samples,
         "sample_count": len(samples),
         "related_stop_event_ids": related_stop_ids,
@@ -238,9 +243,16 @@ def data_quality(connection, *, machine_id: str | None, start: datetime, end: da
 def generate_insights(connection, *, machine_id: str | None, start: datetime, end: datetime, camera_id: str | None = None) -> list[dict[str, Any]]:
     summary = compute_summary(connection, machine_id=machine_id, start=start, end=end, camera_id=camera_id)
     insights: list[dict[str, Any]] = []
+    created_at = now_iso()
+    data_quality_label = "partial" if summary.get("incomplete") else "reliable"
+    def insight_id(rule_id: str, period_start: str, period_end: str) -> str:
+        return f"ins_{hashlib.sha1(f'{machine_id}:{rule_id}:{period_start}:{period_end}'.encode('utf-8')).hexdigest()[:16]}"
+
     if summary["stopped_seconds"] >= 60:
         minutes = round(summary["stopped_seconds"] / 60, 1)
+        rule_id = "stopped_time_threshold_v1"
         insights.append({
+            "insight_id": insight_id(rule_id, summary["start"], summary["end"]),
             "title": f"A máquina acumulou {minutes} minutos parada no período.",
             "description": "A soma das paradas consolidadas ultrapassou um minuto no período analisado.",
             "severity": "warning" if minutes < 30 else "critical",
@@ -248,11 +260,16 @@ def generate_insights(connection, *, machine_id: str | None, start: datetime, en
             "period_end": summary["end"],
             "metrics": {"stopped_seconds": summary["stopped_seconds"], "stoppage_count": summary["stoppage_count"]},
             "related_event_ids": summary["related_stop_event_ids"],
-            "rule_id": "stopped_time_threshold_v1",
+            "rule_id": rule_id,
+            "rule_version": "v1",
+            "data_quality": data_quality_label,
             "recommended_action": "Revisar as maiores paradas e registrar causa operacional.",
+            "created_at": created_at,
         })
     if summary["running_without_operator_seconds"] >= 60:
+        rule_id = "running_without_operator_v1"
         insights.append({
+            "insight_id": insight_id(rule_id, summary["start"], summary["end"]),
             "title": "A máquina operou sem operador no período.",
             "description": "Eventos confirmados indicaram operação com ausência do operador na zona configurada.",
             "severity": "warning",
@@ -260,12 +277,17 @@ def generate_insights(connection, *, machine_id: str | None, start: datetime, en
             "period_end": summary["end"],
             "metrics": {"running_without_operator_seconds": summary["running_without_operator_seconds"]},
             "related_event_ids": [],
-            "rule_id": "running_without_operator_v1",
+            "rule_id": rule_id,
+            "rule_version": "v1",
+            "data_quality": data_quality_label,
             "recommended_action": "Verificar cobertura da zona do operador e rotina de acompanhamento.",
+            "created_at": created_at,
         })
     quality = data_quality(connection, machine_id=machine_id, start=start, end=end, camera_id=camera_id)
     if quality["periods"]:
+        rule_id = "data_quality_gap_v1"
         insights.append({
+            "insight_id": insight_id(rule_id, iso(start), iso(end)),
             "title": "Existem lacunas de dados no período.",
             "description": "Há trechos sem amostras, câmera offline ou inferência inativa; as métricas podem estar incompletas.",
             "severity": "info",
@@ -273,8 +295,11 @@ def generate_insights(connection, *, machine_id: str | None, start: datetime, en
             "period_end": iso(end),
             "metrics": {"periods": quality["periods"]},
             "related_event_ids": [],
-            "rule_id": "data_quality_gap_v1",
+            "rule_id": rule_id,
+            "rule_version": "v1",
+            "data_quality": "partial",
             "recommended_action": "Validar câmera, IA e rede antes de usar o período como referência gerencial.",
+            "created_at": created_at,
         })
     return insights
 

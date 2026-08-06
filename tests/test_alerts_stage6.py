@@ -24,6 +24,7 @@ from app.models import (
     listar_alert_deliveries,
 )
 from app.restricted_area import AreaPoint
+from manage import run_send_test_email
 
 
 class AlertsStage6Test(unittest.TestCase):
@@ -240,6 +241,30 @@ class AlertsStage6Test(unittest.TestCase):
                 with test_connect() as connection:
                     rows = listar_alert_deliveries(connection)
         self.assertEqual(rows, [])
+
+    def test_manage_send_test_email_uses_alert_pipeline_without_operational_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console"}):
+            db_path = Path(temp_dir) / "email.sqlite3"
+            with patch("builtins.print"):
+                exit_code = run_send_test_email(db_path, "destino@example.com", "Destino", timeout=2.0)
+            with connect(db_path) as connection:
+                deliveries = connection.execute("SELECT * FROM alert_deliveries").fetchall()
+                events = connection.execute("SELECT COUNT(*) AS total FROM eventos").fetchone()["total"]
+                recipients = connection.execute("SELECT * FROM alert_recipients WHERE email = ?", ("destino@example.com",)).fetchall()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(events, 0)
+        self.assertEqual(len(recipients), 1)
+        self.assertEqual(len(deliveries), 1)
+        self.assertIsNone(deliveries[0]["evento_id"])
+        self.assertEqual(deliveries[0]["status"], "sent")
+        self.assertEqual(deliveries[0]["is_test"], 1)
+
+    def test_smtp_error_scrubs_configured_credentials(self) -> None:
+        with patch.dict(os.environ, {"CAMPEX_SMTP_USERNAME": "user@example.com", "CAMPEX_SMTP_PASSWORD": "super-secret"}):
+            message = alerts.safe_error(RuntimeError("falha user@example.com super-secret"))
+        self.assertNotIn("user@example.com", message)
+        self.assertNotIn("super-secret", message)
 
 
 if __name__ == "__main__":

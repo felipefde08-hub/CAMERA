@@ -9,6 +9,15 @@ Este projeto recebe um vídeo gravado, webcam ou RTSP e mede:
 - CSV dos eventos;
 - resumo JSON.
 
+## Gestão da Campex
+
+A direção, as decisões e a execução atual da Campex são registradas em:
+
+- [Documento Mestre](docs/CAMPEX_MASTER.md)
+- [Semana Atual](docs/SEMANA_ATUAL.md)
+
+O código e os testes continuam sendo a fonte oficial sobre o estado técnico do produto.
+
 ## 1. Instalar no Mac
 
 Abra o Terminal dentro desta pasta:

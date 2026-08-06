@@ -106,7 +106,10 @@ class PeopleZonesV1Test(unittest.TestCase):
                     deliveries = listar_alert_deliveries(connection)
                 inside = [Detection(30, 10, 50, 70, 0.9, track_id=1)]
                 engine.update(areas, inside, frame)
+                engine.update(areas, inside, frame)
+                engine.update(areas, inside, frame)
                 time.sleep(2.1)
+                engine.update(areas, inside, frame)
                 engine.update(areas, inside, frame)
                 with test_connect() as connection:
                     closed = listar_eventos_filtrados(connection, tipo="workstation_unattended")
@@ -197,6 +200,132 @@ class PeopleZonesV1Test(unittest.TestCase):
         self.assertEqual(len(rules), 1)
         self.assertEqual(rules[0]["tipo_evento"], "workstation_unattended")
         self.assertEqual(rules[0]["regiao_id"], created.json()["id"])
+        self.assertEqual(rules[0]["tempo_minimo"], 10)
+
+    def test_operator_zone_uses_absence_tolerance_for_unattended_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, camera_id = self.make_context(temp_dir)
+            with patch("app.api.connect", test_connect):
+                client = TestClient(api)
+                created = client.post(
+                    f"/cameras/{camera_id}/areas",
+                    json={
+                        "nome": "Zona do operador",
+                        "tipo": "operator_zone",
+                        "ativa": True,
+                        "absence_tolerance_seconds": 5,
+                        "pontos": [
+                            {"x": 0.2, "y": 0.2},
+                            {"x": 0.8, "y": 0.2},
+                            {"x": 0.8, "y": 0.8},
+                        ],
+                    },
+                )
+            with test_connect() as connection:
+                rules = listar_regras(connection, camera_id=camera_id)
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json()["tipo"], "operator_zone")
+        self.assertEqual(created.json()["absence_tolerance_seconds"], 5)
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0]["tipo_evento"], "workstation_unattended")
+        self.assertEqual(rules[0]["tempo_minimo"], 5)
+
+    def test_work_area_api_creates_unattended_rule_with_twenty_seconds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, camera_id = self.make_context(temp_dir)
+            with patch("app.api.connect", test_connect):
+                client = TestClient(api)
+                created = client.post(
+                    f"/cameras/{camera_id}/areas",
+                    json={
+                        "nome": "Área de corte A6",
+                        "tipo": "work_area",
+                        "ativa": True,
+                        "absence_tolerance_seconds": 20,
+                        "pontos": [
+                            {"x": 0.2, "y": 0.2},
+                            {"x": 0.8, "y": 0.2},
+                            {"x": 0.8, "y": 0.8},
+                        ],
+                    },
+                )
+                listed = client.get(f"/cameras/{camera_id}/areas")
+            with test_connect() as connection:
+                rules = listar_regras(connection, camera_id=camera_id)
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json()["nome"], "Área de corte A6")
+        self.assertEqual(created.json()["tipo"], "work_area")
+        self.assertEqual(created.json()["absence_tolerance_seconds"], 20)
+        self.assertEqual(listed.json()[0]["id"], created.json()["id"])
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0]["tipo_evento"], "workstation_unattended")
+        self.assertEqual(rules[0]["tempo_minimo"], 20)
+        self.assertEqual(rules[0]["condicao"]["type"], "absence_in_zone")
+
+    def test_work_area_presence_absence_generates_one_event_evidence_outbox_and_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_ZONE_EXIT_GRACE_SECONDS": "0"}):
+            test_connect, camera_id = self.make_context(temp_dir)
+            evidence_root = Path(temp_dir) / "evidence"
+            frame = np.zeros((100, 100, 3), dtype=np.uint8)
+            inside = [Detection(30, 10, 50, 70, 0.92, track_id=5)]
+            with test_connect() as connection:
+                area_id = criar_area_monitorada(
+                    connection,
+                    camera_id,
+                    "Área de corte A6",
+                    [{"x": 0.2, "y": 0.2}, {"x": 0.8, "y": 0.2}, {"x": 0.8, "y": 0.8}, {"x": 0.2, "y": 0.8}],
+                    tipo="work_area",
+                    absence_tolerance_seconds=0.2,
+                )
+                areas = listar_areas_camera(connection, camera_id)
+            engine = PeopleZonesEngine(camera_id, evidence_root=evidence_root)
+            with patch("app.people_zones.connect", test_connect), patch("app.alerts.connect", test_connect), patch("builtins.print"):
+                engine.update(areas, inside, frame)
+                with test_connect() as connection:
+                    self.assertEqual(listar_eventos_filtrados(connection, tipo="workstation_unattended"), [])
+                engine.update(areas, [], frame)
+                time.sleep(0.05)
+                engine.update(areas, [], frame)
+                with test_connect() as connection:
+                    self.assertEqual(listar_eventos_filtrados(connection, tipo="workstation_unattended"), [])
+                time.sleep(0.22)
+                engine.update(areas, [], frame)
+                engine.update(areas, [], frame)
+                engine.update(areas, inside, frame)
+                engine.update(areas, inside, frame)
+                with test_connect() as connection:
+                    events = listar_eventos_filtrados(connection, tipo="workstation_unattended")
+                    outbox_rows = connection.execute("SELECT * FROM sync_outbox WHERE event_uuid = ?", (events[0]["event_uuid"],)).fetchall()
+                    deliveries = listar_alert_deliveries(connection)
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["area_id"], area_id)
+        self.assertEqual(events[0]["camera_id"], camera_id)
+        self.assertEqual(events[0]["status"], "closed")
+        self.assertIsNotNone(events[0]["fim"])
+        self.assertGreater(float(events[0]["duracao"] or 0), 0)
+        self.assertTrue(events[0]["midia_path"])
+        self.assertEqual(len(outbox_rows), 1)
+        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(deliveries[0]["status"], "sent")
+
+    def test_work_area_without_runtime_updates_does_not_create_empty_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, camera_id = self.make_context(temp_dir)
+            with test_connect() as connection:
+                criar_area_monitorada(
+                    connection,
+                    camera_id,
+                    "Área offline",
+                    [{"x": 0.2, "y": 0.2}, {"x": 0.8, "y": 0.2}, {"x": 0.8, "y": 0.8}],
+                    tipo="work_area",
+                    absence_tolerance_seconds=0,
+                )
+                events = listar_eventos_filtrados(connection, tipo="workstation_unattended")
+
+        self.assertEqual(events, [])
 
     def test_browser_zone_contract_post_201_sqlite_get_and_restart(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

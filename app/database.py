@@ -466,6 +466,19 @@ def init_db(connection: sqlite3.Connection) -> None:
             UNIQUE (machine_id, period_start, period_end, rule_id)
         );
 
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id TEXT PRIMARY KEY,
+            actor_user_id TEXT,
+            actor_email TEXT,
+            actor_role TEXT,
+            action TEXT NOT NULL,
+            entity_type TEXT,
+            entity_id TEXT,
+            tenant_id TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE TABLE IF NOT EXISTS visual_rule_states (
             rule_id TEXT PRIMARY KEY,
             candidate_state INTEGER NOT NULL DEFAULT 0,

@@ -223,6 +223,7 @@ button[type="button"] {
 .viewer-stage img {
   display: none;
   width: 100%;
+  height: 100%;
   max-height: 520px;
   object-fit: contain;
 }
@@ -237,6 +238,8 @@ button[type="button"] {
 
 #liveViewCanvas {
   position: absolute;
+  left: 0;
+  top: 0;
   width: 100%;
   height: 100%;
   pointer-events: none;
@@ -295,12 +298,17 @@ button[type="button"] {
   display: none;
 }
 
+.viewer-stage.online #liveViewMessage {
+  display: none;
+}
+
 .live-view-page {
   min-height: calc(100vh - 48px);
 }
 
 .live-view-stage {
   min-height: 68vh;
+  isolation: isolate;
 }
 
 .live-view-stage img {
@@ -4033,5 +4041,234 @@ label {
 @media (max-width: 980px) {
   .cx-live-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+.live-critical-alert {
+  display: grid;
+  gap: 7px;
+  margin: 12px 0;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(220, 38, 38, 0.35);
+  background: #fef2f2;
+  color: #7f1d1d;
+}
+
+.live-critical-alert[hidden] {
+  display: none;
+}
+
+.live-critical-alert strong {
+  font-size: 15px;
+  color: #991b1b;
+}
+
+.live-critical-alert a,
+.live-alert-item a {
+  color: #2454f4;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.live-realtime-panel {
+  margin-top: 14px;
+}
+
+.live-realtime-alerts {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.live-alert-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid #e3e6eb;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #111318;
+  font-size: 13px;
+}
+
+.live-alert-item.danger {
+  border-color: rgba(220, 38, 38, 0.28);
+  background: #fff7f7;
+}
+
+.live-toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 1000;
+  display: grid;
+  gap: 4px;
+  max-width: 340px;
+  padding: 14px 16px;
+  border: 1px solid rgba(220, 38, 38, 0.28);
+  border-radius: 14px;
+  background: #991b1b;
+  color: #ffffff;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+}
+
+.live-toast[hidden] {
+  display: none;
+}
+
+.live-toast strong {
+  font-size: 14px;
+}
+
+.live-toast span {
+  font-size: 13px;
+  opacity: 0.9;
+}
+
+.campex-dashboard .live-shell {
+  padding: 24px 26px 36px;
+}
+
+.campex-dashboard .live-shell .cx-topbar {
+  min-height: 64px;
+  align-items: center;
+  padding-bottom: 14px;
+}
+
+.campex-dashboard .live-shell .cx-header h1 {
+  font-size: 28px;
+}
+
+.campex-dashboard .live-shell .cx-header-tools {
+  align-items: center;
+}
+
+.campex-dashboard .live-shell .cx-live-workspace {
+  grid-template-columns: 220px minmax(560px, 1fr) 330px;
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.campex-dashboard .live-shell .cx-live-rail,
+.campex-dashboard .live-shell .cx-live-context {
+  min-height: calc(100vh - 118px);
+  border-color: #e6e9ef;
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.campex-dashboard .live-shell .cx-camera-row {
+  border: 1px solid #dfe5f5;
+  background: #f7f9ff;
+}
+
+.campex-dashboard .live-shell .cx-camera-row.active {
+  border-color: #c8d7ff;
+  background: #eef4ff;
+}
+
+.campex-dashboard .live-shell .viewer-header {
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.campex-dashboard .live-shell .viewer-header h1 {
+  margin-bottom: 4px;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.campex-dashboard .live-shell .live-view-stage {
+  min-height: min(72vh, 760px);
+  background: #070b12;
+}
+
+.campex-dashboard .live-shell .live-view-stage img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.campex-dashboard .live-shell .cx-context-list {
+  margin-bottom: 12px;
+}
+
+.campex-dashboard .live-shell .cx-context-list div {
+  padding: 11px 0;
+}
+
+.campex-dashboard .live-shell .cx-context-list dd {
+  max-width: 178px;
+}
+
+.live-current-event {
+  display: grid;
+  gap: 5px;
+  margin: 10px 0;
+  padding: 11px 12px;
+  border-radius: 11px;
+  background: #f7f8fa;
+  color: #111318;
+}
+
+.live-current-event strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.live-current-event span {
+  color: #697180;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.monitor-config-card {
+  margin-top: 12px;
+  border-color: #dbe4ff;
+  background: #f8fbff;
+}
+
+.monitor-config-card.is-configured {
+  border-color: #d6eadf;
+  background: #f7fcf9;
+}
+
+.monitor-config-card p {
+  margin: 0 0 8px;
+  color: #697180;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.technical-details {
+  margin-top: 12px;
+  border-top: 1px solid #e3e6eb;
+  padding-top: 10px;
+}
+
+.technical-details summary {
+  cursor: pointer;
+  color: #2454f4;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.technical-details .cx-context-list {
+  margin-top: 8px;
+}
+
+.technical-details .cx-context-list div {
+  padding: 8px 0;
+}
+
+@media (max-width: 1180px) {
+  .campex-dashboard .live-shell .cx-live-workspace {
+    grid-template-columns: 190px minmax(420px, 1fr);
+  }
+
+  .campex-dashboard .live-shell .cx-live-context {
+    grid-column: 1 / -1;
+    min-height: auto;
   }
 }

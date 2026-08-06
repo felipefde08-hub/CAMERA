@@ -20,6 +20,40 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row)
 
 
+def registrar_audit_log(
+    connection: sqlite3.Connection,
+    *,
+    action: str,
+    actor: dict[str, Any] | None = None,
+    entity_type: str | None = None,
+    entity_id: str | None = None,
+    tenant_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> str:
+    audit_id = new_id("aud")
+    connection.execute(
+        """
+        INSERT INTO audit_log (
+            id, actor_user_id, actor_email, actor_role, action, entity_type,
+            entity_id, tenant_id, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            audit_id,
+            actor.get("id") if actor else None,
+            actor.get("email") if actor else None,
+            actor.get("role") if actor else None,
+            action,
+            entity_type,
+            entity_id,
+            tenant_id or (actor.get("cliente_id") if actor else None),
+            json.dumps(metadata or {}, ensure_ascii=False),
+        ),
+    )
+    connection.commit()
+    return audit_id
+
+
 def criar_cliente(connection: sqlite3.Connection, nome: str, status: str = "ativo", documento: str | None = None) -> str:
     item_id = new_id("cli")
     connection.execute(

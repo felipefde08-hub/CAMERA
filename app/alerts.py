@@ -42,6 +42,10 @@ def env_int(name: str, default: int) -> int:
 
 def safe_error(exc: Exception) -> str:
     text = str(exc) or exc.__class__.__name__
+    for secret_name in ("CAMPEX_SMTP_PASSWORD", "CAMPEX_SMTP_USERNAME"):
+        secret = os.getenv(secret_name)
+        if secret:
+            text = text.replace(secret, "[oculto]")
     for marker in ("rtsp://", "rtsps://"):
         if marker in text.lower():
             return "Falha segura no envio. Detalhe sensivel ocultado."
@@ -89,8 +93,14 @@ def event_alert_payload(event: dict[str, Any], phase: str = "start") -> dict[str
     title = event.get("tipo") or "Evento operacional"
     if event.get("tipo") == "restricted_area_occupied":
         title = "Pessoa em área restrita"
+    elif event.get("tipo") == "workstation_unattended":
+        title = "Operador fora da zona"
     elif event.get("tipo") == "active_without_operator":
         title = "Máquina ativa sem operador"
+    elif event.get("tipo") == "machine_running_without_operator":
+        title = "Máquina ativa sem operador"
+    elif event.get("tipo") == "machine_stopped_with_operator":
+        title = "Máquina parada com operador"
     elif event.get("tipo") == "machine_stoppage":
         title = "Parada de máquina"
     elif event.get("tipo") == "camera_offline":
@@ -248,9 +258,10 @@ def build_email_message(recipient: dict[str, Any], event: dict[str, Any] | None,
     sender = os.getenv("CAMPEX_EMAIL_FROM", "campex@localhost")
     app_url = os.getenv("CAMPEX_APP_URL", "http://127.0.0.1:8000")
     event_id = event["id"] if event else "teste"
-    subject = "[Campex] Alerta de teste" if is_test else "[Campex] Pessoa em area restrita"
+    event_title = event_alert_payload(event)["titulo"] if event else "Alerta de teste da Campex"
+    subject = "[Campex] Alerta de teste" if is_test else f"[Campex] {event_title}"
     lines = [
-        "Pessoa em area restrita" if not is_test else "Alerta de teste da Campex",
+        event_title,
         f"Destinatario: {recipient['nome']}",
         f"Evento: {event_id}",
     ]
@@ -260,6 +271,9 @@ def build_email_message(recipient: dict[str, Any], event: dict[str, Any] | None,
                 f"Camera: {event.get('camera_id')}",
                 f"Area: {event.get('area_id')}",
                 f"Unidade: {event.get('unidade_id')}",
+                f"Tipo: {event.get('tipo')}",
+                f"Severidade: {event.get('severidade')}",
+                f"Status: {event.get('status')}",
                 f"Horario: {event.get('inicio')}",
                 f"Duracao: {event.get('duracao') if event.get('duracao') is not None else 'em andamento'}",
                 f"Pessoas: {event.get('quantidade_maxima') or event.get('quantidade_inicial') or 0}",

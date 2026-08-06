@@ -17,10 +17,13 @@ from app.machine_monitoring import MachineMonitorEngine, ReplayBuffer, calibrate
 from app.models import (
     classificar_evento,
     criar_camera,
+    criar_area_monitorada,
     criar_cliente,
     criar_machine_monitor,
     criar_unidade,
+    listar_areas_camera,
     listar_eventos_filtrados,
+    listar_machine_monitors_camera,
     obter_machine_monitor,
     obter_evento,
 )
@@ -160,8 +163,81 @@ class OperationsV1Test(unittest.TestCase):
                 patched = client.patch(f"/machine-monitors/{monitor_id}", json={"motion_threshold": 5.0})
                 operations = client.get("/operations")
             self.assertEqual(monitors.status_code, 200)
-            self.assertEqual(patched.status_code, 200)
-            self.assertEqual(len(operations.json()["machines"]), 1)
+        self.assertEqual(patched.status_code, 200)
+        self.assertEqual(len(operations.json()["machines"]), 1)
+
+    def test_machine_monitor_configuration_is_persisted_and_updated_without_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "config.sqlite3"
+
+            def test_connect(_db_path: object = None):
+                return connect(db_path)
+
+            with test_connect() as connection:
+                init_db(connection)
+                cliente_id = criar_cliente(connection, "Cliente")
+                unidade_id = criar_unidade(connection, cliente_id, "Unidade")
+                camera_id = criar_camera(connection, unidade_id, "A6", cliente_id=cliente_id)
+                create_user(connection, "gestor@example.com", "senha", "admin_cliente", cliente_id)
+                machine_region_id = criar_area_monitorada(
+                    connection,
+                    camera_id,
+                    "Regiao da maquina",
+                    [{"x": 0.1, "y": 0.1}, {"x": 0.7, "y": 0.1}, {"x": 0.7, "y": 0.7}],
+                    tipo="machine_region",
+                )
+                operator_zone_id = criar_area_monitorada(
+                    connection,
+                    camera_id,
+                    "Zona do operador",
+                    [{"x": 0.2, "y": 0.2}, {"x": 0.4, "y": 0.2}, {"x": 0.4, "y": 0.6}],
+                    tipo="operator_zone",
+                    absence_tolerance_seconds=20,
+                )
+
+            payload = {
+                "nome": "Extrusora A6",
+                "machine_polygon": [{"x": 0.1, "y": 0.1}, {"x": 0.7, "y": 0.1}, {"x": 0.7, "y": 0.7}],
+                "operator_polygon": [{"x": 0.2, "y": 0.2}, {"x": 0.4, "y": 0.2}, {"x": 0.4, "y": 0.6}],
+                "stop_seconds": 10,
+                "operator_absence_seconds": 20,
+                "stopped_with_operator_seconds": 5,
+                "ativo": True,
+            }
+            updated_payload = {
+                **payload,
+                "nome": "Extrusora A6 revisada",
+                "stop_seconds": 12,
+                "operator_absence_seconds": 25,
+                "stopped_with_operator_seconds": 7,
+            }
+
+            with patch("app.api.connect", test_connect):
+                client = TestClient(api)
+                client.post("/auth/login", json={"email": "gestor@example.com", "senha": "senha"})
+                created = client.post(f"/cameras/{camera_id}/machine-monitors", json=payload)
+                updated = client.post(f"/cameras/{camera_id}/machine-monitors", json=updated_payload)
+                monitors = client.get(f"/cameras/{camera_id}/machine-monitors")
+
+            self.assertEqual(created.status_code, 200)
+            self.assertEqual(updated.status_code, 200)
+            self.assertEqual(created.json()["id"], updated.json()["id"])
+            self.assertEqual(monitors.status_code, 200)
+            self.assertEqual(len(monitors.json()), 1)
+            self.assertEqual(monitors.json()[0]["nome"], "Extrusora A6 revisada")
+            self.assertEqual(monitors.json()[0]["stop_seconds"], 12)
+            self.assertEqual(monitors.json()[0]["operator_absence_seconds"], 25)
+            self.assertEqual(monitors.json()[0]["stopped_with_operator_seconds"], 7)
+
+            with test_connect() as connection:
+                stored_monitors = listar_machine_monitors_camera(connection, camera_id)
+                stored_areas = {area["id"]: area for area in listar_areas_camera(connection, camera_id)}
+
+            self.assertEqual(len(stored_monitors), 1)
+            self.assertEqual(stored_areas[machine_region_id]["machine_id"], updated.json()["id"])
+            self.assertEqual(stored_areas[operator_zone_id]["machine_id"], updated.json()["id"])
+            self.assertEqual(stored_areas[machine_region_id]["pontos"][0], {"x": 0.1, "y": 0.1})
+            self.assertEqual(stored_areas[operator_zone_id]["pontos"][2], {"x": 0.4, "y": 0.6})
 
     def test_calibration_threshold(self) -> None:
         self.assertEqual(calibrate_threshold(20, 4), 12)

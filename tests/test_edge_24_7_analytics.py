@@ -12,6 +12,8 @@ from app.analytics import aggregate_period, compute_summary, data_quality, gener
 from app.api import api
 from app.database import connect, init_db
 from app.models import (
+    atualizar_camera_operacao,
+    atualizar_machine_monitor,
     criar_camera,
     criar_cliente,
     criar_machine_monitor,
@@ -21,6 +23,55 @@ from app.models import (
     registrar_operational_sample,
 )
 from shared.schemas import now_iso
+
+
+class FakeStream:
+    def __init__(self, camera_id: str, source: str) -> None:
+        self.camera_id = camera_id
+        self.source = source
+        self.started = False
+        self.start_count = 0
+        self.analysis_enabled = False
+
+    def start(self) -> None:
+        self.started = True
+        self.start_count += 1
+
+    def set_analysis(self, enabled: bool):
+        self.analysis_enabled = enabled
+        return self.public_status()
+
+    def public_status(self) -> dict[str, object]:
+        return {
+            "camera_id": self.camera_id,
+            "status": "online" if self.started else "offline",
+            "last_frame_at": now_iso() if self.started else None,
+            "analysis_fps": 3.0 if self.analysis_enabled else 0.0,
+            "analysis_frames": 4 if self.analysis_enabled else 0,
+            "last_analysis_at": now_iso() if self.analysis_enabled else None,
+            "machine_monitor_id": "mach_loaded" if self.analysis_enabled else None,
+        }
+
+
+class FakeLiveStreams:
+    def __init__(self, fail_camera_id: str | None = None) -> None:
+        self.fail_camera_id = fail_camera_id
+        self.streams: dict[str, FakeStream] = {}
+
+    def get_or_create(self, camera_id: str, source: str) -> FakeStream:
+        if camera_id == self.fail_camera_id:
+            raise RuntimeError("camera inválida")
+        stream = self.streams.get(camera_id)
+        if stream is None:
+            stream = FakeStream(camera_id, source)
+            self.streams[camera_id] = stream
+        return stream
+
+    def statuses(self) -> list[dict[str, object]]:
+        return [stream.public_status() for stream in self.streams.values()]
+
+    def stop_all(self) -> None:
+        self.streams.clear()
 
 
 class Edge24x7AnalyticsTest(unittest.TestCase):
@@ -137,6 +188,110 @@ class Edge24x7AnalyticsTest(unittest.TestCase):
         self.assertEqual(summary["running_without_operator_seconds"], 180)
         self.assertTrue(quality["periods"])
         self.assertTrue(any(item["rule_id"] == "running_without_operator_v1" for item in insights))
+
+    def test_production_bootstrap_starts_active_configured_camera_and_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, db_path, _cliente_id, _unidade_id, camera_id, _machine_id = self.make_db(temp_dir)
+            connection.execute("UPDATE cameras SET config_ref = ? WHERE id = ?", ("teste_maquina.mp4", camera_id))
+            connection.commit()
+            fake_streams = FakeLiveStreams()
+
+            def patched_connect(_path=None):
+                return connect(db_path)
+
+            with patch.object(api_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
+                result = api_module.bootstrap_production_streams()
+
+        self.assertEqual(len(result["started"]), 1)
+        self.assertTrue(fake_streams.streams[camera_id].started)
+        self.assertTrue(fake_streams.streams[camera_id].analysis_enabled)
+
+    def test_invalid_camera_does_not_abort_production_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, db_path, cliente_id, unidade_id, camera_id, _machine_id = self.make_db(temp_dir)
+            bad_camera_id = criar_camera(connection, unidade_id, "Camera Ruim", cliente_id=cliente_id, config_ref="bad.mp4")
+            connection.execute("UPDATE cameras SET config_ref = ? WHERE id = ?", ("teste_maquina.mp4", camera_id))
+            connection.commit()
+            fake_streams = FakeLiveStreams(fail_camera_id=bad_camera_id)
+
+            def patched_connect(_path=None):
+                return connect(db_path)
+
+            with patch.object(api_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
+                result = api_module.bootstrap_production_streams()
+
+        self.assertEqual(len(result["started"]), 1)
+        self.assertEqual(len(result["failed"]), 1)
+        self.assertIn(camera_id, fake_streams.streams)
+
+    def test_production_bootstrap_restarts_existing_stream_after_failure_cycle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, db_path, _cliente_id, _unidade_id, camera_id, _machine_id = self.make_db(temp_dir)
+            connection.execute("UPDATE cameras SET config_ref = ? WHERE id = ?", ("teste_maquina.mp4", camera_id))
+            connection.commit()
+            fake_streams = FakeLiveStreams()
+
+            def patched_connect(_path=None):
+                return connect(db_path)
+
+            with patch.object(api_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
+                api_module.bootstrap_production_streams()
+                fake_streams.streams[camera_id].started = False
+                api_module.bootstrap_production_streams()
+
+        self.assertEqual(len(fake_streams.streams), 1)
+        self.assertEqual(fake_streams.streams[camera_id].start_count, 2)
+        self.assertTrue(fake_streams.streams[camera_id].analysis_enabled)
+
+    def test_ready_ignores_old_database_online_status_without_runtime_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, db_path, _cliente_id, _unidade_id, camera_id, _machine_id = self.make_db(temp_dir)
+            atualizar_camera_operacao(connection, camera_id, "online", ultimo_frame="2026-08-05T10:00:00+00:00")
+
+            def patched_connect(_path=None):
+                return connect(db_path)
+
+            with patch.object(api_module, "connect", patched_connect), patch.object(api_module, "live_streams", FakeLiveStreams()):
+                response = TestClient(api).get("/ready")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "not_ready")
+        self.assertEqual(response.json()["camera_stream"], "not_ready")
+
+    def test_ready_requires_recent_frame_inference_and_loaded_monitor(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, db_path, _cliente_id, _unidade_id, camera_id, machine_id = self.make_db(temp_dir)
+            atualizar_machine_monitor(
+                connection,
+                machine_id,
+                active_baseline=20,
+                stopped_baseline=2,
+                calibration_result="READY",
+            )
+            fake_streams = FakeLiveStreams()
+            stream = fake_streams.get_or_create(camera_id, "teste_maquina.mp4")
+            stream.start()
+            stream.set_analysis(True)
+            original_public_status = stream.public_status
+
+            def public_status_with_monitor():
+                data = original_public_status()
+                data["machine_monitor_id"] = machine_id
+                return data
+
+            stream.public_status = public_status_with_monitor
+
+            def patched_connect(_path=None):
+                return connect(db_path)
+
+            with patch.object(api_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
+                response = TestClient(api).get("/ready")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ready")
+        self.assertEqual(response.json()["camera_stream"], "ready")
+        self.assertEqual(response.json()["inference"], "ready")
+        self.assertEqual(response.json()["machine_monitor_loaded"], "ready")
 
 
 if __name__ == "__main__":

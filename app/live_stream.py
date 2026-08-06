@@ -44,6 +44,7 @@ class LiveStreamStatus:
     ai_status: str = "inativa"
     ai_model: str | None = None
     analysis_fps: float | None = None
+    analysis_frames: int = 0
     people_count: int = 0
     last_analysis_at: str | None = None
     analysis_error: str | None = None
@@ -234,6 +235,7 @@ class LiveCameraStream:
                     self.status.ai_status = "ativa"
                     self.status.ai_model = engine.model_name
                     self.status.analysis_fps = round(self._analysis_frames / elapsed, 2)
+                    self.status.analysis_frames = self._analysis_frames
                     self.status.people_count = len([d for d in detections if d.class_name == "person"])
                     self.status.last_analysis_at = now_iso()
                     self.status.analysis_error = None
@@ -386,6 +388,7 @@ class LiveCameraStream:
                     calibration_result=separation["result"],
                     calibration_algorithm_version=algorithm,
                 )
+                self._machine_engines.pop(monitor_id, None)
         except Exception as exc:
             with self._calibration_lock:
                 self._calibration = {**session, "status": "failed", "error": str(exc), "samples_count": len(samples), "finished_at": finished}
@@ -481,6 +484,7 @@ class LiveCameraStream:
                     self.status.ai_status = "ativa"
                     self.status.ai_model = engine.model_name
                     self.status.analysis_fps = round(self._analysis_frames / elapsed, 2)
+                    self.status.analysis_frames = self._analysis_frames
                     self.status.people_count = len([d for d in detections if d.class_name == "person"])
                     self.status.last_analysis_at = now_iso()
                     self.status.analysis_error = None

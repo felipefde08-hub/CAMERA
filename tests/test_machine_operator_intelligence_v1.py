@@ -12,6 +12,7 @@ from app.database import connect, init_db
 from app.live_stream import LiveCameraStream, calibration_separation, calibration_stats
 from app.machine_monitoring import MachineMonitorConfig, MachineMonitorEngine, baseline_stats
 from app.models import criar_area_monitorada, criar_camera, criar_cliente, criar_machine_monitor, criar_unidade, obter_machine_monitor
+from app.models import criar_alert_recipient, listar_alert_deliveries
 from app.machine_replay import evaluate_state_samples
 from app.observation_engine import ObservationEngine
 from app.restricted_area import AreaPoint
@@ -40,6 +41,7 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
                 stop_seconds=0.1,
                 recovery_seconds=0.1,
                 operator_absence_seconds=0.1,
+                stopped_with_operator_seconds=0.1,
                 loss_model="loss_per_minute",
                 loss_per_minute=120.0,
             )
@@ -57,6 +59,7 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
             stop_seconds=0.1,
             recovery_seconds=0.1,
             operator_absence_seconds=0.1,
+            stopped_with_operator_seconds=0.1,
             active_baseline=30.0,
             stopped_baseline=2.0,
             active_noise=1.0,
@@ -65,6 +68,16 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
             loss_per_minute=120.0,
         )
         return MachineMonitorEngine(config)
+
+    def wait_for_deliveries(self, test_connect, expected: int = 1):
+        for _ in range(30):
+            with test_connect() as connection:
+                rows = listar_alert_deliveries(connection)
+            if len(rows) >= expected and all(row["status"] != "pending" for row in rows):
+                return rows
+            time.sleep(0.05)
+        with test_connect() as connection:
+            return listar_alert_deliveries(connection)
 
     def test_baseline_stats_are_measurable(self) -> None:
         baseline, noise = baseline_stats([10, 12, 14])
@@ -201,6 +214,87 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], "closed")
+
+    def test_active_with_operator_is_normal_without_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            frame = np.zeros((80, 120, 3), dtype=np.uint8)
+            now = time.monotonic()
+            with patch("app.machine_monitoring.connect", test_connect), patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.save_machine_evidence", return_value=(None, None)):
+                engine.state.state = "ACTIVE"
+                engine.state.state_since = now - 10.0
+                engine.state.operator_present = True
+                engine._evaluate_official_events(now, frame)
+                engine._evaluate_official_events(now + 6.0, frame)
+            with test_connect() as connection:
+                events = connection.execute("SELECT COUNT(*) AS total FROM eventos").fetchone()["total"]
+                outbox = connection.execute("SELECT COUNT(*) AS total FROM sync_outbox").fetchone()["total"]
+
+        self.assertEqual(events, 0)
+        self.assertEqual(outbox, 0)
+
+    def test_running_without_operator_event_evidence_outbox_and_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console"}):
+            test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            frame = np.zeros((80, 120, 3), dtype=np.uint8)
+            now = time.monotonic()
+            with patch("app.machine_monitoring.connect", test_connect), patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.save_machine_evidence", return_value=("data/evidence/running_without_operator.jpg", None)), patch("builtins.print"):
+                with test_connect() as connection:
+                    criar_alert_recipient(connection, "Operacao", "operacao@example.com", camera_id=camera_id, cliente_id=cliente_id, event_types=["machine_running_without_operator"])
+                engine.state.state = "ACTIVE"
+                engine.state.state_since = now - 20.0
+                engine.state.operator_present = False
+                engine._evaluate_official_events(now, frame)
+                engine._evaluate_official_events(now + 0.2, frame)
+                engine.state.operator_present = True
+                engine._evaluate_official_events(now + 1.0, frame)
+                deliveries = self.wait_for_deliveries(test_connect)
+            with test_connect() as connection:
+                events = connection.execute("SELECT tipo, status, duracao, midia_path, operator_present_start FROM eventos WHERE tipo = 'machine_running_without_operator'").fetchall()
+                outbox = connection.execute("SELECT COUNT(*) AS total FROM sync_outbox").fetchone()["total"]
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["tipo"], "machine_running_without_operator")
+        self.assertEqual(events[0]["status"], "closed")
+        self.assertGreaterEqual(events[0]["duracao"], 0.1)
+        self.assertEqual(events[0]["midia_path"], "data/evidence/running_without_operator.jpg")
+        self.assertEqual(events[0]["operator_present_start"], 0)
+        self.assertGreaterEqual(outbox, 1)
+        self.assertGreaterEqual(len(deliveries), 1)
+        self.assertTrue(all(delivery["status"] == "sent" for delivery in deliveries))
+
+    def test_stopped_with_operator_event_evidence_outbox_and_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console"}):
+            test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            frame = np.zeros((80, 120, 3), dtype=np.uint8)
+            now = time.monotonic()
+            with patch("app.machine_monitoring.connect", test_connect), patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.save_machine_evidence", return_value=("data/evidence/stopped_with_operator.jpg", None)), patch("builtins.print"):
+                with test_connect() as connection:
+                    criar_alert_recipient(connection, "Manutencao", "manutencao@example.com", camera_id=camera_id, cliente_id=cliente_id, event_types=["machine_stopped_with_operator"])
+                engine.state.state = "STOPPED"
+                engine.state.state_since = now - 20.0
+                engine.state.operator_present = True
+                engine._evaluate_official_events(now, frame)
+                engine._evaluate_official_events(now + 0.2, frame)
+                engine.state.state = "ACTIVE"
+                engine._evaluate_official_events(now + 1.0, frame)
+                deliveries = self.wait_for_deliveries(test_connect)
+            with test_connect() as connection:
+                events = connection.execute("SELECT tipo, status, duracao, midia_path, operator_present_start FROM eventos WHERE tipo = 'machine_stopped_with_operator'").fetchall()
+                outbox = connection.execute("SELECT COUNT(*) AS total FROM sync_outbox").fetchone()["total"]
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["tipo"], "machine_stopped_with_operator")
+        self.assertEqual(events[0]["status"], "closed")
+        self.assertGreaterEqual(events[0]["duracao"], 0.1)
+        self.assertEqual(events[0]["midia_path"], "data/evidence/stopped_with_operator.jpg")
+        self.assertEqual(events[0]["operator_present_start"], 1)
+        self.assertGreaterEqual(outbox, 1)
+        self.assertGreaterEqual(len(deliveries), 1)
+        self.assertTrue(all(delivery["status"] == "sent" for delivery in deliveries))
 
     def test_replay_metrics_compare_annotations_and_detected_states(self) -> None:
         metrics = evaluate_state_samples(

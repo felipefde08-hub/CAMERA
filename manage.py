@@ -14,9 +14,11 @@ import urllib.request
 from pathlib import Path
 
 from app.database import connect, init_db
+import app.alerts as alerts_module
 from app.auth import create_user, update_user_password
 from app.models import (
     criar_camera,
+    criar_alert_recipient,
     criar_cliente,
     criar_dispositivo,
     criar_regra,
@@ -24,6 +26,7 @@ from app.models import (
     listar,
     listar_areas_camera,
     listar_machine_monitors_camera,
+    obter_alert_delivery,
     registrar_evento,
 )
 from app.reports import save_daily_report
@@ -144,6 +147,11 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--camera-id", default=os.getenv("CAMPEX_PREFLIGHT_CAMERA_ID"))
     preflight.add_argument("--timeout", type=float, default=3.0)
     preflight.add_argument("--min-free-gb", type=float, default=5.0)
+
+    test_email = subparsers.add_parser("send-test-email")
+    test_email.add_argument("--to", required=True)
+    test_email.add_argument("--nome", default="Teste Campex")
+    test_email.add_argument("--timeout", type=float, default=20.0)
     return parser
 
 
@@ -381,10 +389,73 @@ def run_factory_preflight(db_path: Path, api_url: str, camera_id: str | None, ti
     return 0 if ready else 1
 
 
+def _mask_email(email: str) -> str:
+    local, _, domain = email.partition("@")
+    if not domain:
+        return email
+    safe_local = f"{local[:1]}***" if local else "***"
+    return f"{safe_local}@{domain}"
+
+
+def run_send_test_email(db_path: Path, email: str, nome: str, timeout: float) -> int:
+    email = email.strip().lower()
+    if "@" not in email or email.startswith("@") or email.endswith("@"):
+        print("E-mail invalido.")
+        return 2
+
+    def command_connect(_db_path: object = None):
+        return connect(db_path)
+
+    original_alerts_connect = alerts_module.connect
+    try:
+        alerts_module.connect = command_connect
+        with command_connect() as connection:
+            init_db(connection)
+            row = connection.execute("SELECT id FROM alert_recipients WHERE lower(email) = lower(?) LIMIT 1", (email,)).fetchone()
+            if row:
+                recipient_id = str(row["id"])
+            else:
+                recipient_id = criar_alert_recipient(connection, nome, email, ativo=False, event_types=[])
+
+        delivery_id = alerts_module.send_test_alert(recipient_id)
+        if not delivery_id:
+            print("Nao foi possivel criar entrega de teste.")
+            return 1
+
+        deadline = time.time() + timeout
+        delivery = None
+        while time.time() < deadline:
+            with command_connect() as connection:
+                delivery = obter_alert_delivery(connection, delivery_id)
+            if delivery and delivery["status"] != "pending":
+                break
+            time.sleep(0.2)
+
+        with command_connect() as connection:
+            delivery = obter_alert_delivery(connection, delivery_id)
+        status = delivery["status"] if delivery else "unknown"
+        print(f"delivery_id: {delivery_id}")
+        print(f"destinatario: {_mask_email(email)}")
+        print(f"modo: {os.getenv('CAMPEX_EMAIL_MODE', 'console').lower()}")
+        print(f"status: {status}")
+        if delivery and delivery.get("erro"):
+            print(f"erro: {delivery['erro']}")
+        if status == "sent":
+            return 0
+        if status == "pending":
+            print("Entrega ainda pendente. Consulte alert_deliveries para acompanhar.")
+            return 1
+        return 1
+    finally:
+        alerts_module.connect = original_alerts_connect
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "factory-preflight":
         return run_factory_preflight(Path(args.db), args.api_url, args.camera_id, args.timeout, args.min_free_gb)
+    if args.command == "send-test-email":
+        return run_send_test_email(Path(args.db), args.to, args.nome, args.timeout)
 
     if args.command == "sync-cloud" and args.loop:
         if not args.cloud_url or not args.edge_id or not args.edge_secret:

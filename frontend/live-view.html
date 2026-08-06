@@ -31,9 +31,8 @@
       </button>
       <nav class="cx-nav cx-nav-grouped" aria-label="Navegação principal">
         <small>OPERAÇÃO</small>
-        <a href="/dashboard"><span class="cx-nav-icon" data-icon="home"></span>Home</a>
         <a href="/overview"><span class="cx-nav-icon" data-icon="overview"></span>Visão geral</a>
-        <a class="active" href="/cameras"><span class="cx-nav-icon" data-icon="camera"></span>Câmeras</a>
+        <a class="active" href="/live-view"><span class="cx-nav-icon" data-icon="camera"></span>Live View</a>
         <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Eventos</a>
         <hr />
         <small>MONITORAMENTO</small>
@@ -44,13 +43,18 @@
         <small>INTELIGÊNCIA</small>
         <a href="/reports"><span class="cx-nav-icon" data-icon="reports"></span>Relatórios</a>
         <a href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Insights</a>
-        <a href="/history"><span class="cx-nav-icon" data-icon="history"></span>Histórico</a>
         <hr />
-        <small>PLATAFORMA</small>
-        <a href="/integrations"><span class="cx-nav-icon" data-icon="integrations"></span>Integrações</a>
-        <a href="/users"><span class="cx-nav-icon" data-icon="users"></span>Usuários</a>
+        <small>CONFIGURAÇÕES</small>
+        <a href="/settings/cameras"><span class="cx-nav-icon" data-icon="camera"></span>Câmeras</a>
         <a href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Configurações</a>
       </nav>
+      <div class="cx-route-registry" hidden aria-hidden="true">
+        <a href="/dashboard">Home</a>
+        <a href="/cameras">Câmeras operacionais</a>
+        <a href="/history">Histórico</a>
+        <a href="/integrations">Integrações</a>
+        <a href="/users">Usuários</a>
+      </div>
       <div class="cx-account">
         <a href="/help" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
         <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="status"></span>Sistema online</a>
@@ -64,13 +68,11 @@
     <main class="cx-main app-content live-shell">
       <header class="cx-header cx-topbar">
         <div>
-          <p>Campex Operations</p>
           <h1>Live View</h1>
+          <p>Monitoramento operacional em tempo real</p>
         </div>
         <div class="cx-header-tools">
-          <input class="cx-top-search" placeholder="Busca" />
           <span id="liveViewStatus" class="badge offline">Conectando</span>
-          <small>Visualização em tempo real</small>
           <button class="cx-icon-button" type="button" aria-label="Ajuda"><span class="cx-nav-icon" data-icon="help"></span></button>
           <button class="cx-icon-button" type="button" aria-label="Notificações"><span class="cx-nav-icon" data-icon="alert"></span></button>
           <div class="cx-top-avatar">FE</div>
@@ -82,14 +84,14 @@
           <div class="cx-panel-head">
             <div>
               <h2>Câmeras</h2>
-              <p>Fonte aberta para monitoramento.</p>
+              <p>Pontos em acompanhamento.</p>
             </div>
           </div>
           <input class="cx-search" placeholder="Buscar câmera" />
           <div class="cx-camera-row active">
             <strong id="liveRailName">Live View</strong>
-            <span>Fonte RTSP protegida</span>
-            <i>Ativa nesta sessão</i>
+            <span id="liveRailStatus">Câmera conectando · IA aguardando</span>
+            <i id="liveRailAlert">Sem alerta ativo</i>
           </div>
         </aside>
 
@@ -97,18 +99,13 @@
           <div class="viewer-header">
             <div>
               <h1 id="liveViewName">Live View</h1>
-              <p class="muted">Stream ao vivo com overlays operacionais.</p>
+              <p id="liveStreamSummary" class="muted">Câmera conectando | IA aguardando | Último frame indisponível</p>
             </div>
           </div>
           <div id="liveViewStage" class="viewer-stage live-view-stage">
             <div id="liveViewMessage">Abrindo transmissão...</div>
             <img id="liveViewImage" alt="Transmissão ao vivo" />
             <canvas id="liveViewCanvas"></canvas>
-          </div>
-          <div class="viewer-meta">
-            <span>Resolução: <strong id="liveViewResolution">indisponível</strong></span>
-            <span>FPS: <strong id="liveViewFps">indisponível</strong></span>
-            <span>FPS inferência: <strong id="liveViewInferenceFps">0</strong></span>
           </div>
           <div id="liveViewHint" class="muted">
             Abra a câmera, ative a IA, desenhe a região da máquina e depois calibre com a máquina ativa.
@@ -119,10 +116,10 @@
             <label>
               Tipo
               <select id="zoneTypeInput">
+                <option value="work_area">Área de trabalho</option>
                 <option value="machine_region">machine_region</option>
                 <option value="operator_zone">operator_zone</option>
                 <option value="restricted_zone">restricted_zone</option>
-                <option value="work_area">work_area</option>
                 <option value="workstation">workstation</option>
                 <option value="restricted_area">restricted_area</option>
                 <option value="dwell_area">dwell_area</option>
@@ -130,11 +127,11 @@
             </label>
             <label>
               Nome
-              <input id="zoneNameInput" placeholder="Ex.: Posto de Corte 1" />
+              <input id="zoneNameInput" placeholder="Área de corte A6" />
             </label>
             <label>
               Tolerância/tempo (s)
-              <input id="zoneSecondsInput" type="number" min="0" step="1" placeholder="30" />
+              <input id="zoneSecondsInput" type="number" min="0" step="1" value="20" placeholder="20" />
             </label>
             <button type="button" id="undoDrawPoint">Desfazer ponto</button>
             <button type="button" id="cancelDraw">Cancelar</button>
@@ -146,25 +143,34 @@
         <aside class="cx-live-context">
           <div>
             <h2>Contexto operacional</h2>
-            <p>Status calculado a partir do vídeo.</p>
+            <p>Leitura rápida da situação atual.</p>
           </div>
           <dl class="cx-context-list">
-            <div><dt>Pessoas detectadas</dt><dd id="liveViewPeople">0</dd></div>
-            <div><dt>Máquina</dt><dd id="liveViewMachine">sem configuração</dd></div>
-            <div><dt>Estado estimado</dt><dd id="liveViewMachineState">SEM SINAL</dd></div>
-            <div><dt>Operador</dt><dd id="liveViewOperator">Sem operador</dd></div>
-            <div><dt>Atividade visual</dt><dd id="liveViewMotion">0</dd></div>
-            <div><dt>Raw score</dt><dd id="liveViewRawScore">—</dd></div>
-            <div><dt>Frames analisados</dt><dd id="liveViewFramesAnalyzed">0</dd></div>
-            <div><dt>ROI</dt><dd id="liveViewRoi">—</dd></div>
-            <div><dt>Análise</dt><dd id="liveViewAnalysisStatus">WAITING_FOR_REGION</dd></div>
-            <div><dt>Confiança</dt><dd id="liveViewConfidence">0.00</dd></div>
+            <div><dt>Máquina</dt><dd id="liveViewMachine">Não configurada</dd></div>
+            <div><dt>Estado</dt><dd id="liveViewMachineState">Dados indisponíveis</dd></div>
+            <div><dt>Operador</dt><dd id="liveViewOperator">Dados indisponíveis</dd></div>
+            <div><dt>Situação atual</dt><dd id="liveViewSituation">Aguardando configuração</dd></div>
             <div><dt>Tempo no estado</dt><dd id="liveViewStateTime">0s</dd></div>
-            <div><dt>Motivo</dt><dd id="liveViewReason">Aguardando análise</dd></div>
-            <div><dt>Relação</dt><dd id="liveViewRelation">Aguardando configuração</dd></div>
+            <div><dt>Pessoas detectadas</dt><dd id="liveViewPeople">0</dd></div>
           </dl>
-          <section class="zone-card">
-            <strong>Monitoramento da máquina</strong>
+          <section class="live-current-event">
+            <strong>Evento atual</strong>
+            <span id="liveCurrentEvent">Nenhum evento operacional aberto.</span>
+          </section>
+          <section class="live-current-event">
+            <strong>Último alerta</strong>
+            <span id="liveLastAlert">Nenhum alerta entregue nesta sessão.</span>
+          </section>
+          <section id="liveCriticalAlert" class="live-critical-alert" hidden>
+            <strong>Operador fora da zona</strong>
+            <span id="liveCriticalCamera">Câmera: —</span>
+            <span id="liveCriticalTime">Horário: —</span>
+            <span id="liveCriticalDuration">Tempo de ausência: 0s</span>
+            <a id="liveCriticalEvidence" href="#" target="_blank" rel="noreferrer" hidden>Ver evidência</a>
+          </section>
+          <section id="monitorConfigCard" class="zone-card monitor-config-card">
+            <strong id="monitorConfigTitle">Configure esta câmera</strong>
+            <p id="monitorConfigText">Defina a região da máquina e a área do operador para iniciar o monitoramento operacional.</p>
             <label>
               Máquina
               <select id="machineSelect"></select>
@@ -173,8 +179,20 @@
               Nome da máquina
               <input id="machineNameInput" placeholder="Ex.: Extrusora principal" />
             </label>
+            <label>
+              Máquina parada após (s)
+              <input id="machineStopSecondsInput" type="number" min="1" step="1" value="10" />
+            </label>
+            <label>
+              Operador ausente após (s)
+              <input id="operatorAbsenceSecondsInput" type="number" min="1" step="1" value="5" />
+            </label>
+            <label>
+              Parada com operador após (s)
+              <input id="stoppedWithOperatorSecondsInput" type="number" min="1" step="1" value="5" />
+            </label>
             <div class="actions">
-              <button type="button" id="createMachineMonitor">Cadastrar máquina</button>
+              <button type="button" id="createMachineMonitor">Configurar monitoramento</button>
               <button type="button" id="refreshMachines">Atualizar</button>
             </div>
             <span id="machineRegionStatus">machine_region: não verificada</span>
@@ -189,6 +207,22 @@
               <button type="button" id="startMonitoring">Iniciar monitoramento</button>
             </div>
           </section>
+          <details class="technical-details">
+            <summary>Detalhes técnicos</summary>
+            <dl class="cx-context-list">
+              <div><dt>Resolução</dt><dd id="liveViewResolution">indisponível</dd></div>
+              <div><dt>FPS captura</dt><dd id="liveViewFps">indisponível</dd></div>
+              <div><dt>FPS inferência</dt><dd id="liveViewInferenceFps">0</dd></div>
+              <div><dt>Atividade visual</dt><dd id="liveViewMotion">0</dd></div>
+              <div><dt>Raw score</dt><dd id="liveViewRawScore">—</dd></div>
+              <div><dt>Frames analisados</dt><dd id="liveViewFramesAnalyzed">0</dd></div>
+              <div><dt>ROI</dt><dd id="liveViewRoi">—</dd></div>
+              <div><dt>Análise</dt><dd id="liveViewAnalysisStatus">Aguardando configuração da máquina</dd></div>
+              <div><dt>Confiança</dt><dd id="liveViewConfidence">0.00</dd></div>
+              <div><dt>Motivo interno</dt><dd id="liveViewReason">Aguardando análise</dd></div>
+              <div><dt>Relação</dt><dd id="liveViewRelation">Aguardando configuração</dd></div>
+            </dl>
+          </details>
           <div class="actions viewer-actions cx-action-stack">
             <button type="button" id="liveAiStart">Ativar IA</button>
             <button type="button" id="liveAiStop">Desativar IA</button>
@@ -197,8 +231,23 @@
             <a class="button-link" href="/live-grid">Abrir grade multi-câmera</a>
             <a class="button-link" href="/dashboard" target="_blank" rel="noreferrer">Abrir dashboard</a>
           </div>
+          <section class="zone-card live-realtime-panel">
+            <div class="cx-panel-head">
+              <div>
+                <strong>Alertas em tempo real</strong>
+                <span>Eventos operacionais confirmados.</span>
+              </div>
+            </div>
+            <div id="liveRealtimeAlerts" class="live-realtime-alerts">
+              <div class="muted">Aguardando eventos reais.</div>
+            </div>
+          </section>
         </aside>
       </section>
+      <div id="liveToast" class="live-toast" hidden>
+        <strong id="liveToastTitle">Evento operacional</strong>
+        <span id="liveToastText">Novo alerta recebido.</span>
+      </div>
     </main>
     <script src="/static/shell.js"></script>
     <script src="/static/live-view.js"></script>

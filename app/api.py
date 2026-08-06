@@ -7,6 +7,7 @@ import os
 import psutil
 from pathlib import Path
 import logging
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
@@ -56,6 +57,7 @@ from app.models import (
     obter_regra,
     reconhecer_ocorrencia,
     registrar_evento,
+    registrar_audit_log,
     atualizar_regra,
     ultimo_edge_heartbeat,
 )
@@ -80,6 +82,22 @@ live_view_sessions: dict[str, dict[str, Any]] = {}
 
 if FRONTEND_DIR.exists():
     api.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+
+
+def _link_machine_monitor_areas(connection, camera_id: str, monitor_id: str) -> dict[str, str | None]:
+    linked: dict[str, str | None] = {"machine_region_id": None, "operator_zone_id": None}
+    areas = listar_areas_camera(connection, camera_id)
+    for area in areas:
+        if not area.get("ativa"):
+            continue
+        area_type = area.get("tipo")
+        if area_type == "machine_region" and linked["machine_region_id"] is None:
+            atualizar_area_monitorada(connection, area["id"], machine_id=monitor_id)
+            linked["machine_region_id"] = area["id"]
+        if area_type in {"operator_zone", "workstation"} and linked["operator_zone_id"] is None:
+            atualizar_area_monitorada(connection, area["id"], machine_id=monitor_id)
+            linked["operator_zone_id"] = area["id"]
+    return linked
 
 
 class ClienteIn(BaseModel):
@@ -602,6 +620,18 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _recent_iso(value: object, max_age_seconds: float = 15.0) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() <= max_age_seconds
+    except Exception:
+        return False
+
+
 @api.get("/ready")
 def ready() -> dict[str, object]:
     streams = live_streams.statuses()
@@ -614,10 +644,15 @@ def ready() -> dict[str, object]:
         outbox_pending = connection.execute(
             "SELECT COUNT(*) AS total FROM sync_outbox WHERE status IN ('pending', 'failed')"
         ).fetchone()["total"]
-    stream_online = any(stream.get("status") == "online" for stream in streams)
-    inference_ready = any(float(stream.get("analysis_fps") or 0) > 0 or int(stream.get("analysis_frames") or 0) > 0 for stream in streams)
+    stream_online = any(stream.get("status") == "online" and _recent_iso(stream.get("last_frame_at")) for stream in streams)
+    inference_ready = any(
+        (float(stream.get("analysis_fps") or 0) > 0 or int(stream.get("analysis_frames") or 0) > 0)
+        and _recent_iso(stream.get("last_analysis_at"))
+        for stream in streams
+    )
+    monitor_loaded = any(stream.get("machine_monitor_id") for stream in streams)
     database_ready = True
-    ready_state = database_ready and (cameras_total == 0 or stream_online) and (not streams or inference_ready)
+    ready_state = database_ready and cameras_total > 0 and stream_online and inference_ready and monitors_ready > 0 and monitor_loaded
     return {
         "status": "ready" if ready_state else "not_ready",
         "database": "ready" if database_ready else "not_ready",
@@ -625,6 +660,7 @@ def ready() -> dict[str, object]:
         "camera_stream": "ready" if stream_online else "not_ready",
         "inference": "ready" if inference_ready else "not_ready",
         "machine_monitors_ready": monitors_ready,
+        "machine_monitor_loaded": "ready" if monitor_loaded else "not_ready",
         "workers": {
             "live_streams": len(streams),
             "outbox_pending": outbox_pending,
@@ -677,6 +713,7 @@ def post_login(payload: LoginIn, response: Response) -> dict[str, object]:
         if user is None:
             raise HTTPException(status_code=401, detail="E-mail ou senha invalidos.")
         token = create_session(connection, user["id"])
+        registrar_audit_log(connection, action="auth.login", actor=user, entity_type="user", entity_id=user["id"], tenant_id=user.get("cliente_id"))
     response.set_cookie("campex_session", token, httponly=True, samesite="lax")
     return {"user": user}
 
@@ -872,6 +909,15 @@ def post_camera_rtsp(payload: CameraRtspIn, request: Request) -> dict[str, objec
                 resolucao=str(test_result.get("resolucao")) if test_result.get("resolucao") else None,
                 fps=float(test_result["fps"]) if test_result.get("fps") is not None else None,
             )
+        registrar_audit_log(
+            connection,
+            action="config.camera.create_rtsp",
+            actor=user,
+            entity_type="camera",
+            entity_id=camera_id,
+            tenant_id=cliente_id,
+            metadata={"source_type": "rtsp", "connection_tested": bool(test_result)},
+        )
         camera = obter_camera(connection, camera_id)
     return {"id": camera_id, "camera": camera, "teste": test_result}
 
@@ -1234,12 +1280,48 @@ def load_camera_source(camera_id: str) -> tuple[dict[str, Any], str]:
     return camera, str(source)
 
 
-@api.post("/cameras/{camera_id}/start")
-def post_camera_start(camera_id: str) -> dict[str, object]:
+def start_camera_runtime(camera_id: str, enable_analysis: bool = True) -> dict[str, object]:
     _camera, source = load_camera_source(camera_id)
     stream = live_streams.get_or_create(camera_id, source)
     stream.start()
+    if enable_analysis:
+        stream.set_analysis(True)
     return stream.public_status()
+
+
+def bootstrap_production_streams() -> dict[str, object]:
+    started: list[dict[str, object]] = []
+    failed: list[dict[str, object]] = []
+    with connect() as connection:
+        init_db(connection)
+        rows = connection.execute(
+            """
+            SELECT id, nome
+            FROM cameras
+            WHERE ativa = 1
+              AND (
+                config_ref IS NOT NULL
+                OR rtsp_host IS NOT NULL
+                OR secure_ref IS NOT NULL
+              )
+            ORDER BY nome
+            """
+        ).fetchall()
+    for row in rows:
+        camera_id = str(row["id"])
+        try:
+            status_payload = start_camera_runtime(camera_id, enable_analysis=True)
+            started.append({"camera_id": camera_id, "nome": row["nome"], "status": status_payload.get("status")})
+            logger.info("Bootstrap Edge: câmera %s iniciada (%s).", row["nome"], camera_id)
+        except Exception as exc:
+            failed.append({"camera_id": camera_id, "nome": row["nome"], "error": str(exc)})
+            logger.error("Bootstrap Edge: falha ao iniciar câmera %s (%s): %s", row["nome"], camera_id, exc)
+    return {"started": started, "failed": failed}
+
+
+@api.post("/cameras/{camera_id}/start")
+def post_camera_start(camera_id: str) -> dict[str, object]:
+    return start_camera_runtime(camera_id, enable_analysis=False)
 
 
 @api.post("/cameras/{camera_id}/stop")
@@ -1439,10 +1521,9 @@ def post_dev_test_event(payload: DevTestEventIn) -> dict[str, object]:
 
 @api.post("/cameras/{camera_id}/analysis/start")
 def post_camera_analysis_start(camera_id: str) -> dict[str, object]:
-    _camera, source = load_camera_source(camera_id)
-    stream = live_streams.get_or_create(camera_id, source)
-    stream.start()
-    return stream.set_analysis(True)
+    start_camera_runtime(camera_id, enable_analysis=True)
+    stream = live_streams.get(camera_id)
+    return stream.public_status() if stream else {"camera_id": camera_id, "status": "offline"}
 
 
 @api.post("/cameras/{camera_id}/analysis/stop")
@@ -1510,14 +1591,14 @@ def post_camera_area(camera_id: str, payload: AreaIn) -> dict[str, Any]:
                 "restricted_zone": "restricted_zone_occupied",
                 "workstation": "workstation_unattended",
                 "operator_zone": "workstation_unattended",
+                "work_area": "workstation_unattended",
                 "dwell_area": "excessive_zone_dwell",
-                "work_area": "excessive_zone_dwell",
             }
             event_type = event_by_type.get(zone_type)
             if event_type:
                 minimum_seconds = (
                     payload.absence_tolerance_seconds
-                    if zone_type in {"workstation", "operator_zone"}
+                    if zone_type in {"workstation", "operator_zone", "work_area"}
                     else payload.dwell_limit_seconds
                     if zone_type == "dwell_area"
                     else (payload.metadata or {}).get("minimum_seconds", 5)
@@ -1636,31 +1717,73 @@ def post_machine_monitor(camera_id: str, payload: MachineMonitorIn, request: Req
             raise HTTPException(status_code=403, detail="Camera de outro cliente.")
         client_id = str(camera.get("cliente_id") or tenant_filter(user) or "")
         unit_id = str(camera.get("unidade_id"))
-        monitor_id = criar_machine_monitor(
+        existing_monitors = listar_machine_monitors_camera(connection, camera_id)
+        existing = next((item for item in existing_monitors if item.get("ativo")), None) or (existing_monitors[0] if existing_monitors else None)
+        indicator_points = normalize_points([point.model_dump() for point in payload.indicator_polygon]) if payload.indicator_polygon else None
+        if existing:
+            monitor_id = existing["id"]
+            atualizar_machine_monitor(
+                connection,
+                monitor_id,
+                nome=payload.nome,
+                machine_polygon=machine_points,
+                operator_polygon=operator_points,
+                ativo=payload.ativo,
+                motion_sensitivity=payload.motion_sensitivity,
+                stop_seconds=payload.stop_seconds,
+                recovery_seconds=payload.recovery_seconds,
+                operator_absence_seconds=payload.operator_absence_seconds,
+                stopped_with_operator_seconds=payload.stopped_with_operator_seconds,
+                microstop_window_seconds=payload.microstop_window_seconds,
+                microstop_limit=payload.microstop_limit,
+                loss_model=payload.loss_model,
+                loss_per_minute=payload.loss_per_minute,
+                units_per_minute=payload.units_per_minute,
+                margin_per_unit=payload.margin_per_unit,
+                indicator_polygon=indicator_points,
+            )
+            audit_action = "config.machine_monitor.update"
+        else:
+            monitor_id = criar_machine_monitor(
+                connection,
+                client_id,
+                unit_id,
+                camera_id,
+                payload.nome,
+                machine_points,
+                operator_points,
+                payload.ativo,
+                payload.motion_sensitivity,
+                payload.stop_seconds,
+                payload.recovery_seconds,
+                payload.replay_pre_seconds,
+                payload.replay_post_seconds,
+                payload.operator_absence_seconds,
+                payload.stopped_with_operator_seconds,
+                payload.microstop_window_seconds,
+                payload.microstop_limit,
+                payload.loss_model,
+                payload.loss_per_minute,
+                payload.units_per_minute,
+                payload.margin_per_unit,
+                indicator_points,
+            )
+            audit_action = "config.machine_monitor.create"
+        linked_areas = _link_machine_monitor_areas(connection, camera_id, monitor_id)
+        registrar_audit_log(
             connection,
-            client_id,
-            unit_id,
-            camera_id,
-            payload.nome,
-            machine_points,
-            operator_points,
-            payload.ativo,
-            payload.motion_sensitivity,
-            payload.stop_seconds,
-            payload.recovery_seconds,
-            payload.replay_pre_seconds,
-            payload.replay_post_seconds,
-            payload.operator_absence_seconds,
-            payload.stopped_with_operator_seconds,
-            payload.microstop_window_seconds,
-            payload.microstop_limit,
-            payload.loss_model,
-            payload.loss_per_minute,
-            payload.units_per_minute,
-            payload.margin_per_unit,
-            normalize_points([point.model_dump() for point in payload.indicator_polygon]) if payload.indicator_polygon else None,
+            action=audit_action,
+            actor=user,
+            entity_type="machine_monitor",
+            entity_id=monitor_id,
+            tenant_id=client_id,
+            metadata={"camera_id": camera_id, **linked_areas},
         )
-        return obter_machine_monitor(connection, monitor_id)
+        result = obter_machine_monitor(connection, monitor_id)
+        if result is None:
+            raise HTTPException(status_code=500, detail="Monitor nao foi persistido.")
+        result.update(linked_areas)
+        return result
 
 
 @api.patch("/machine-monitors/{monitor_id}")
@@ -1696,6 +1819,18 @@ def patch_machine_monitor(monitor_id: str, payload: MachineMonitorPatchIn, reque
             margin_per_unit=payload.margin_per_unit,
             indicator_polygon=normalize_points([point.model_dump() for point in payload.indicator_polygon]) if payload.indicator_polygon else None,
         )
+        linked_areas = _link_machine_monitor_areas(connection, monitor.get("camera_id"), monitor_id)
+        registrar_audit_log(
+            connection,
+            action="config.machine_monitor.update",
+            actor=user,
+            entity_type="machine_monitor",
+            entity_id=monitor_id,
+            tenant_id=monitor.get("client_id"),
+            metadata={"camera_id": monitor.get("camera_id"), **linked_areas},
+        )
+    if updated is not None:
+        updated.update(linked_areas)
     return updated
 
 
@@ -1709,7 +1844,18 @@ def delete_machine_monitor(monitor_id: str, request: Request) -> dict[str, objec
             raise HTTPException(status_code=404, detail="Monitor nao encontrado.")
         if tenant_filter(user) and monitor.get("client_id") != tenant_filter(user):
             raise HTTPException(status_code=403, detail="Monitor de outro cliente.")
-        return {"id": monitor_id, "deleted": excluir_machine_monitor(connection, monitor_id)}
+        deleted = excluir_machine_monitor(connection, monitor_id)
+        if deleted:
+            registrar_audit_log(
+                connection,
+                action="config.machine_monitor.delete",
+                actor=user,
+                entity_type="machine_monitor",
+                entity_id=monitor_id,
+                tenant_id=monitor.get("client_id"),
+                metadata={"camera_id": monitor.get("camera_id")},
+            )
+        return {"id": monitor_id, "deleted": deleted}
 
 
 @api.post("/machine-monitors/{monitor_id}/activate")
@@ -2340,6 +2486,15 @@ def post_alert_recipient(payload: AlertRecipientIn, request: Request) -> dict[st
             cliente_id,
             payload.event_types,
         )
+        registrar_audit_log(
+            connection,
+            action="config.alert_recipient.create",
+            actor=user,
+            entity_type="alert_recipient",
+            entity_id=recipient_id,
+            tenant_id=cliente_id,
+            metadata={"camera_id": payload.camera_id, "area_id": payload.area_id},
+        )
         return next(recipient for recipient in listar_alert_recipients(connection) if recipient["id"] == recipient_id)
 
 
@@ -2363,6 +2518,15 @@ def patch_alert_recipient(recipient_id: str, payload: AlertRecipientPatchIn, req
             severidade_minima=payload.severidade_minima,
             event_types=payload.event_types,
         )
+        registrar_audit_log(
+            connection,
+            action="config.alert_recipient.update",
+            actor=user,
+            entity_type="alert_recipient",
+            entity_id=recipient_id,
+            tenant_id=existing.get("cliente_id"),
+            metadata={"camera_id": payload.camera_id, "area_id": payload.area_id},
+        )
     if recipient is None:
         raise HTTPException(status_code=404, detail="Responsavel nao encontrado.")
     return recipient
@@ -2378,6 +2542,15 @@ def delete_alert_recipient(recipient_id: str, request: Request) -> dict[str, obj
             raise HTTPException(status_code=404, detail="Responsavel nao encontrado.")
         require_same_tenant(user, existing.get("cliente_id"))
         deleted = excluir_alert_recipient(connection, recipient_id)
+        if deleted:
+            registrar_audit_log(
+                connection,
+                action="config.alert_recipient.delete",
+                actor=user,
+                entity_type="alert_recipient",
+                entity_id=recipient_id,
+                tenant_id=existing.get("cliente_id"),
+            )
     if not deleted:
         raise HTTPException(status_code=404, detail="Responsavel nao encontrado.")
     return {"id": recipient_id, "deleted": True}
