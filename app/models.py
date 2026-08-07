@@ -108,6 +108,9 @@ def criar_camera(
     rtsp_password: str | None = None,
     canal: str | None = None,
     ativa: bool = True,
+    area_context_id: str | None = None,
+    process_id: str | None = None,
+    asset_id: str | None = None,
 ) -> str:
     item_id = new_id("cam")
     encrypted_password = encrypt_secret(rtsp_password)
@@ -140,6 +143,17 @@ def criar_camera(
             canal,
             1 if ativa else 0,
         ),
+    )
+    connection.execute(
+        """
+        UPDATE cameras
+        SET site_id = COALESCE(site_id, unidade_id),
+            area_context_id = ?,
+            process_id = ?,
+            asset_id = ?
+        WHERE id = ?
+        """,
+        (area_context_id, process_id, asset_id, item_id),
     )
     connection.commit()
     return item_id
@@ -331,27 +345,11 @@ def registrar_evento(
             midia_path,
         ),
     )
-    enqueue_sync_event(
-        connection,
-        event_uuid=event_uuid,
-        tenant_id=cliente_id,
-        edge_id=os.getenv("CAMPEX_EDGE_ID"),
-        payload={
-            "event_uuid": event_uuid,
-            "tenant_id": cliente_id,
-            "cliente_id": cliente_id,
-            "unidade_id": unidade_id,
-            "camera_id": camera_id,
-            "tipo": tipo,
-            "inicio": inicio,
-            "fim": fim,
-            "duracao": duracao,
-            "operador_presente": operador_presente,
-            "confianca": confianca,
-            "midia_path": midia_path,
-        },
-    )
     connection.commit()
+    from app.operational_context import apply_context_to_event
+
+    apply_context_to_event(connection, item_id, camera_id=camera_id)
+    atualizar_outbox_evento(connection, item_id)
     return item_id
 
 
@@ -421,6 +419,10 @@ def atualizar_outbox_evento(connection: sqlite3.Connection, evento_id: str) -> N
         "midia_path": row["midia_path"],
         "severidade": row["severidade"] if "severidade" in row.keys() else None,
         "status": row["status"] if "status" in row.keys() else None,
+        "site_id": row["site_id"] if "site_id" in row.keys() else row["unidade_id"],
+        "area_context_id": row["area_context_id"] if "area_context_id" in row.keys() else None,
+        "process_id": row["process_id"] if "process_id" in row.keys() else None,
+        "asset_id": row["asset_id"] if "asset_id" in row.keys() else row["machine_monitor_id"] if "machine_monitor_id" in row.keys() else None,
     }
     if metadata:
         payload["metadata"] = metadata
@@ -492,6 +494,9 @@ def criar_ocorrencia_area_restrita(
             evidence_error,
         ),
     )
+    from app.operational_context import apply_context_to_event
+
+    apply_context_to_event(connection, evento_id, camera_id=camera_id, area_id=area_id)
     _enqueue_evento_cloud(
         connection,
         event_uuid=event_uuid,
@@ -565,6 +570,9 @@ def criar_ocorrencia_zona(
             evidence_error,
         ),
     )
+    from app.operational_context import apply_context_to_event
+
+    apply_context_to_event(connection, evento_id, camera_id=camera_id, area_id=area_id)
     _enqueue_evento_cloud(
         connection,
         event_uuid=event_uuid,
@@ -676,6 +684,10 @@ def listar_eventos_filtrados(
     tipo: str | None = None,
     data_inicio: str | None = None,
     data_fim: str | None = None,
+    site_id: str | None = None,
+    area_context_id: str | None = None,
+    process_id: str | None = None,
+    asset_id: str | None = None,
 ) -> list[dict[str, Any]]:
     clauses: list[str] = []
     values: list[Any] = []
@@ -684,6 +696,10 @@ def listar_eventos_filtrados(
         "area_id": area_id,
         "status": status,
         "tipo": tipo,
+        "site_id": site_id,
+        "area_context_id": area_context_id,
+        "process_id": process_id,
+        "asset_id": asset_id,
     }
     for column, value in filters.items():
         if value:
@@ -932,18 +948,32 @@ def registrar_operational_sample(
     sample_at: str,
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    from app.operational_context import resolve_context
+
+    context = resolve_context(
+        connection,
+        camera_id=camera_id,
+        machine_monitor_id=machine_id,
+        fallback_cliente_id=tenant_id,
+        fallback_unidade_id=unit_id,
+    )
     connection.execute(
         """
         INSERT OR IGNORE INTO operational_samples (
-            sample_uuid, tenant_id, unit_id, camera_id, machine_id, machine_state,
+            sample_uuid, tenant_id, site_id, unit_id, area_context_id, process_id,
+            asset_id, camera_id, machine_id, machine_state,
             operator_present, activity_score, confidence, capture_fps, inference_fps,
             frames_analyzed, camera_online, sample_at, metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             sample_uuid,
-            tenant_id,
-            unit_id,
+            context.get("cliente_id") or tenant_id,
+            context.get("site_id") or unit_id,
+            context.get("unidade_id") or unit_id,
+            context.get("area_context_id"),
+            context.get("process_id"),
+            context.get("asset_id") or machine_id,
             camera_id,
             machine_id,
             machine_state,
@@ -1098,6 +1128,9 @@ def criar_area_monitorada(
     dwell_limit_seconds: float | None = None,
     expected_min_people: int | None = None,
     machine_id: str | None = None,
+    area_context_id: str | None = None,
+    process_id: str | None = None,
+    asset_id: str | None = None,
 ) -> str:
     area_id = new_id("area")
     camera = connection.execute(
@@ -1140,6 +1173,29 @@ def criar_area_monitorada(
             1 if ativa else 0,
         ),
     )
+    from app.operational_context import resolve_context
+
+    context = resolve_context(connection, camera_id=camera_id, machine_monitor_id=machine_id)
+    connection.execute(
+        """
+        UPDATE monitored_areas
+        SET site_id = ?,
+            area_context_id = COALESCE(?, ?),
+            process_id = COALESCE(?, ?),
+            asset_id = COALESCE(?, ?, machine_id)
+        WHERE id = ?
+        """,
+        (
+            context.get("site_id"),
+            area_context_id,
+            context.get("area_context_id"),
+            process_id,
+            context.get("process_id"),
+            asset_id,
+            context.get("asset_id"),
+            area_id,
+        ),
+    )
     connection.commit()
     return area_id
 
@@ -1159,6 +1215,9 @@ def atualizar_area_monitorada(
     dwell_limit_seconds: float | None = None,
     expected_min_people: int | None = None,
     machine_id: str | None = None,
+    area_context_id: str | None = None,
+    process_id: str | None = None,
+    asset_id: str | None = None,
 ) -> dict[str, Any] | None:
     existing = connection.execute("SELECT * FROM monitored_areas WHERE id = ?", (area_id,)).fetchone()
     if existing is None:
@@ -1183,6 +1242,9 @@ def atualizar_area_monitorada(
             dwell_limit_seconds = COALESCE(?, dwell_limit_seconds),
             expected_min_people = COALESCE(?, expected_min_people),
             machine_id = COALESCE(?, machine_id),
+            area_context_id = COALESCE(?, area_context_id),
+            process_id = COALESCE(?, process_id),
+            asset_id = COALESCE(?, asset_id),
             ativa = ?,
             atualizado_em = CURRENT_TIMESTAMP
         WHERE id = ?
@@ -1199,6 +1261,9 @@ def atualizar_area_monitorada(
             dwell_limit_seconds,
             expected_min_people,
             machine_id,
+            area_context_id,
+            process_id,
+            asset_id,
             1 if next_ativa else 0,
             area_id,
         ),
@@ -1546,6 +1611,9 @@ def criar_machine_monitor(
     units_per_minute: float | None = None,
     margin_per_unit: float | None = None,
     indicator_polygon: list[dict[str, float]] | None = None,
+    area_context_id: str | None = None,
+    process_id: str | None = None,
+    asset_id: str | None = None,
 ) -> str:
     monitor_id = new_id("mach")
     connection.execute(
@@ -1582,6 +1650,29 @@ def criar_machine_monitor(
             units_per_minute,
             margin_per_unit,
             json.dumps(indicator_polygon) if indicator_polygon else None,
+        ),
+    )
+    from app.operational_context import resolve_context
+
+    context = resolve_context(connection, camera_id=camera_id)
+    connection.execute(
+        """
+        UPDATE machine_monitors
+        SET site_id = ?,
+            area_context_id = COALESCE(?, ?),
+            process_id = COALESCE(?, ?),
+            asset_id = COALESCE(?, ?)
+        WHERE id = ?
+        """,
+        (
+            context.get("site_id") or unit_id,
+            area_context_id,
+            context.get("area_context_id"),
+            process_id,
+            context.get("process_id"),
+            asset_id,
+            context.get("asset_id"),
+            monitor_id,
         ),
     )
     connection.commit()
@@ -1643,6 +1734,9 @@ def atualizar_machine_monitor(
     separation_score: float | None = None,
     calibration_result: str | None = None,
     calibration_algorithm_version: str | None = None,
+    area_context_id: str | None = None,
+    process_id: str | None = None,
+    asset_id: str | None = None,
 ) -> dict[str, Any] | None:
     current = obter_machine_monitor(connection, monitor_id)
     if current is None:
@@ -1681,6 +1775,10 @@ def atualizar_machine_monitor(
             separation_score = COALESCE(?, separation_score),
             calibration_result = COALESCE(?, calibration_result),
             calibration_algorithm_version = COALESCE(?, calibration_algorithm_version),
+            site_id = COALESCE(site_id, unit_id),
+            area_context_id = COALESCE(?, area_context_id),
+            process_id = COALESCE(?, process_id),
+            asset_id = COALESCE(?, asset_id),
             atualizado_em = CURRENT_TIMESTAMP
         WHERE id = ?
         """,
@@ -1716,6 +1814,9 @@ def atualizar_machine_monitor(
             separation_score,
             calibration_result,
             calibration_algorithm_version,
+            area_context_id,
+            process_id,
+            asset_id,
             monitor_id,
         ),
     )
@@ -1856,6 +1957,9 @@ def criar_evento_machine_stoppage(
             len(set(track_ids)),
         ),
     )
+    from app.operational_context import apply_context_to_event
+
+    apply_context_to_event(connection, evento_id, camera_id=camera_id, machine_monitor_id=machine_monitor_id)
     _enqueue_evento_cloud(
         connection,
         event_uuid=event_uuid,
@@ -1873,6 +1977,7 @@ def criar_evento_machine_stoppage(
             "track_ids": sorted(set(track_ids)),
         },
     )
+    atualizar_outbox_evento(connection, evento_id)
     connection.commit()
     return evento_id
 
@@ -1943,6 +2048,9 @@ def criar_evento_machine_operational(
             json.dumps(metadata, ensure_ascii=False),
         ),
     )
+    from app.operational_context import apply_context_to_event
+
+    apply_context_to_event(connection, evento_id, camera_id=camera_id, machine_monitor_id=machine_monitor_id)
     _enqueue_evento_cloud(
         connection,
         event_uuid=event_uuid,
@@ -1961,6 +2069,7 @@ def criar_evento_machine_operational(
             "track_ids": sorted(set(track_ids)),
         },
     )
+    atualizar_outbox_evento(connection, evento_id)
     connection.commit()
     return evento_id
 

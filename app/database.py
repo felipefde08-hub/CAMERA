@@ -66,6 +66,51 @@ def init_db(connection: sqlite3.Connection) -> None:
             FOREIGN KEY (dispositivo_id) REFERENCES dispositivos (id)
         );
 
+        CREATE TABLE IF NOT EXISTS operational_areas (
+            id TEXT PRIMARY KEY,
+            cliente_id TEXT NOT NULL,
+            unidade_id TEXT NOT NULL,
+            nome TEXT NOT NULL,
+            tipo TEXT NOT NULL DEFAULT 'production_area',
+            ativo INTEGER NOT NULL DEFAULT 1,
+            criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (cliente_id) REFERENCES clientes (id),
+            FOREIGN KEY (unidade_id) REFERENCES unidades (id)
+        );
+
+        CREATE TABLE IF NOT EXISTS operational_processes (
+            id TEXT PRIMARY KEY,
+            cliente_id TEXT NOT NULL,
+            unidade_id TEXT NOT NULL,
+            area_id TEXT,
+            nome TEXT NOT NULL,
+            tipo TEXT NOT NULL DEFAULT 'station',
+            ativo INTEGER NOT NULL DEFAULT 1,
+            criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (cliente_id) REFERENCES clientes (id),
+            FOREIGN KEY (unidade_id) REFERENCES unidades (id),
+            FOREIGN KEY (area_id) REFERENCES operational_areas (id)
+        );
+
+        CREATE TABLE IF NOT EXISTS operational_assets (
+            id TEXT PRIMARY KEY,
+            cliente_id TEXT NOT NULL,
+            unidade_id TEXT NOT NULL,
+            area_id TEXT,
+            process_id TEXT,
+            nome TEXT NOT NULL,
+            tipo TEXT NOT NULL DEFAULT 'machine',
+            ativo INTEGER NOT NULL DEFAULT 1,
+            criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (cliente_id) REFERENCES clientes (id),
+            FOREIGN KEY (unidade_id) REFERENCES unidades (id),
+            FOREIGN KEY (area_id) REFERENCES operational_areas (id),
+            FOREIGN KEY (process_id) REFERENCES operational_processes (id)
+        );
+
         CREATE TABLE IF NOT EXISTS regras (
             id TEXT PRIMARY KEY,
             camera_id TEXT NOT NULL,
@@ -340,7 +385,11 @@ def init_db(connection: sqlite3.Connection) -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sample_uuid TEXT UNIQUE,
             tenant_id TEXT,
+            site_id TEXT,
             unit_id TEXT,
+            area_context_id TEXT,
+            process_id TEXT,
+            asset_id TEXT,
             camera_id TEXT,
             machine_id TEXT,
             machine_state TEXT,
@@ -516,9 +565,17 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "cameras", "fps", "REAL")
     _ensure_column(connection, "cameras", "canal", "TEXT")
     _ensure_column(connection, "cameras", "ativa", "INTEGER NOT NULL DEFAULT 1")
+    _ensure_column(connection, "cameras", "site_id", "TEXT")
+    _ensure_column(connection, "cameras", "area_context_id", "TEXT")
+    _ensure_column(connection, "cameras", "process_id", "TEXT")
+    _ensure_column(connection, "cameras", "asset_id", "TEXT")
     _ensure_column(connection, "monitored_areas", "cliente_id", "TEXT")
     _ensure_column(connection, "monitored_areas", "unidade_id", "TEXT")
     _ensure_column(connection, "monitored_areas", "machine_id", "TEXT")
+    _ensure_column(connection, "monitored_areas", "site_id", "TEXT")
+    _ensure_column(connection, "monitored_areas", "area_context_id", "TEXT")
+    _ensure_column(connection, "monitored_areas", "process_id", "TEXT")
+    _ensure_column(connection, "monitored_areas", "asset_id", "TEXT")
     _ensure_column(connection, "monitored_areas", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(connection, "monitored_areas", "collaborator_name", "TEXT")
     _ensure_column(connection, "monitored_areas", "expected_start", "TEXT")
@@ -556,6 +613,10 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "eventos", "cause_notes", "TEXT")
     _ensure_column(connection, "eventos", "classified_at", "TEXT")
     _ensure_column(connection, "eventos", "classified_by", "TEXT")
+    _ensure_column(connection, "eventos", "site_id", "TEXT")
+    _ensure_column(connection, "eventos", "area_context_id", "TEXT")
+    _ensure_column(connection, "eventos", "process_id", "TEXT")
+    _ensure_column(connection, "eventos", "asset_id", "TEXT")
     _ensure_column(connection, "operational_events", "activity_score", "REAL")
     _ensure_column(connection, "operational_events", "snapshot_path", "TEXT")
     _ensure_column(connection, "operational_events", "machine_id", "TEXT")
@@ -581,6 +642,10 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "regras", "atualizado_em", "TEXT")
     _ensure_column(connection, "eventos", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
     _ensure_column(connection, "eventos", "event_uuid", "TEXT")
+    _ensure_column(connection, "machine_monitors", "site_id", "TEXT")
+    _ensure_column(connection, "machine_monitors", "area_context_id", "TEXT")
+    _ensure_column(connection, "machine_monitors", "process_id", "TEXT")
+    _ensure_column(connection, "machine_monitors", "asset_id", "TEXT")
     _ensure_column(connection, "machine_monitors", "active_baseline", "REAL")
     _ensure_column(connection, "machine_monitors", "stopped_baseline", "REAL")
     _ensure_column(connection, "machine_monitors", "active_noise", "REAL")
@@ -605,6 +670,11 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "machine_monitors", "separation_score", "REAL")
     _ensure_column(connection, "machine_monitors", "calibration_result", "TEXT NOT NULL DEFAULT 'INVALID'")
     _ensure_column(connection, "machine_monitors", "calibration_algorithm_version", "TEXT")
+    _ensure_column(connection, "operational_samples", "site_id", "TEXT")
+    _ensure_column(connection, "operational_samples", "area_context_id", "TEXT")
+    _ensure_column(connection, "operational_samples", "process_id", "TEXT")
+    _ensure_column(connection, "operational_samples", "asset_id", "TEXT")
+    _backfill_operational_context(connection)
     connection.commit()
 
 
@@ -612,3 +682,11 @@ def _ensure_column(connection: sqlite3.Connection, table: str, column: str, defi
     existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
     if column not in existing:
         connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _backfill_operational_context(connection: sqlite3.Connection) -> None:
+    connection.execute("UPDATE cameras SET site_id = COALESCE(site_id, unidade_id)")
+    connection.execute("UPDATE monitored_areas SET site_id = COALESCE(site_id, unidade_id)")
+    connection.execute("UPDATE machine_monitors SET site_id = COALESCE(site_id, unit_id)")
+    connection.execute("UPDATE eventos SET site_id = COALESCE(site_id, unidade_id)")
+    connection.execute("UPDATE operational_samples SET site_id = COALESCE(site_id, unit_id)")
