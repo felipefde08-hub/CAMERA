@@ -22,6 +22,14 @@ from app.config import ROOT
 from app.database import connect, init_db
 from app.event_workflow import acknowledge_event, event_detail, resolve_event, update_human_context
 from app.live_stream import LiveStreamManager
+from app.operational_read_model import (
+    ReadModelFilters,
+    comparison as read_model_comparison,
+    current_operation as read_model_current,
+    losses as read_model_losses,
+    period_bounds as read_model_period_bounds,
+    period_summary as read_model_summary,
+)
 from app.models import (
     atualizar_evento,
     atualizar_area_monitorada,
@@ -2432,6 +2440,187 @@ def get_operations_current_status(
         init_db(connection)
         require_camera_access(connection, require_user(request, connection), camera_id)
         return current_status(connection, camera_id, machine_name)
+
+
+def _read_model_filters(
+    user: dict[str, Any],
+    *,
+    cliente_id: str | None = None,
+    site_id: str | None = None,
+    area_context_id: str | None = None,
+    process_id: str | None = None,
+    asset_id: str | None = None,
+    camera_id: str | None = None,
+    event_family: str | None = None,
+    tipo: str | None = None,
+    workflow_status: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    period: str = "day",
+) -> ReadModelFilters:
+    tenant_id = tenant_filter(user) or cliente_id
+    start_dt, end_dt = read_model_period_bounds(period, start, end)
+    return ReadModelFilters(
+        cliente_id=tenant_id,
+        site_id=site_id,
+        area_context_id=area_context_id,
+        process_id=process_id,
+        asset_id=asset_id,
+        camera_id=camera_id,
+        event_family=event_family,
+        tipo=tipo,
+        workflow_status=workflow_status,
+        start=start_dt,
+        end=end_dt,
+    )
+
+
+@api.get("/operations/read-model/current")
+def get_operations_read_model_current(
+    request: Request,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = ReadModelFilters(
+            cliente_id=tenant_filter(user) or cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+        )
+        return read_model_current(connection, filters)
+
+
+@api.get("/operations/read-model/summary")
+def get_operations_read_model_summary(
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+            start=start,
+            end=end,
+            period=period,
+        )
+        return read_model_summary(connection, filters)
+
+
+@api.get("/operations/read-model/losses")
+def get_operations_read_model_losses(
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+            start=start,
+            end=end,
+            period=period,
+        )
+        return read_model_losses(connection, filters)
+
+
+@api.get("/operations/read-model/comparison")
+def get_operations_read_model_comparison(
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+            start=start,
+            end=end,
+            period=period,
+        )
+        try:
+            return read_model_comparison(connection, filters)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @api.get("/analytics/summary")
