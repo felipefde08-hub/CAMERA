@@ -71,7 +71,7 @@ def test_sidebar_links_are_registered_internal_routes() -> None:
         ROOT / "frontend" / "index.html",
         ROOT / "frontend" / "live-view.html",
     ]
-    expected = set(INTERNAL_ROUTES) | {"/live-view"}
+    expected = set(INTERNAL_ROUTES) | {"/live-view", "/live-grid"}
 
     for html_file in html_files:
         content = Path(html_file).read_text(encoding="utf-8")
@@ -79,7 +79,7 @@ def test_sidebar_links_are_registered_internal_routes() -> None:
             "/operations-view",
             "/events",
             "/insights",
-            "/live-view",
+            "/live-grid",
             "/settings/cameras",
         ]:
             assert f'href="{route}"' in content, f"{html_file.name} sem link para {route}"
@@ -227,7 +227,7 @@ def test_browser_sidebar_navigation_back_forward_refresh_and_new_tab(browser, br
     route_labels = [
         ("/events", "Events"),
         ("/insights", "Intelligence"),
-        ("/live-view", "Live"),
+        ("/live-grid", "Live"),
         ("/settings/cameras", "Setup"),
     ]
     for route, label in route_labels:

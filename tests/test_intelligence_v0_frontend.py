@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from app.api import api
+from app.config import ROOT
+
+
+def _workspace_script() -> str:
+    return Path(ROOT / "frontend" / "workspace.js").read_text(encoding="utf-8")
+
+
+def test_intelligence_route_serves_product_shell() -> None:
+    client = TestClient(api)
+
+    response = client.get("/insights")
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "workspace.js" in response.text
+
+
+def test_intelligence_consumes_read_model_insights_endpoint() -> None:
+    script = _workspace_script()
+    start = script.index('"/insights":')
+    end = script.index('"/history":')
+    route_block = script[start:end]
+    render_start = script.index("async function renderIntelligencePage")
+    render_end = script.index("async function loadAlertsWorkspace")
+    render_block = script[render_start:render_end]
+
+    assert 'endpoint: "/operations/read-model/insights"' in route_block
+    assert "/operations/read-model/insights" in render_block
+    assert "/operations/summary" not in render_block
+    assert "/operations/events?limit=200" not in render_block
+
+
+def test_intelligence_explains_and_traces_insights_without_legacy_loader() -> None:
+    script = _workspace_script()
+    render_start = script.index("async function renderIntelligencePage")
+    render_end = script.index("async function loadAlertsWorkspace")
+    render_block = script[render_start:render_end]
+
+    assert "O que a Campex entendeu sobre a operação?" in render_block
+    assert "Por que a Campex está destacando isso?" in script
+    assert "Causas confirmadas" in render_block
+    assert "Observações da câmera não viram causa automaticamente." in render_block
+    assert "traceButton(\"Investigar\"" in script
+    assert "loadInsightsWorkspace" not in script

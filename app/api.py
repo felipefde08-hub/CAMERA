@@ -26,9 +26,18 @@ from app.operational_read_model import (
     ReadModelFilters,
     comparison as read_model_comparison,
     current_operation as read_model_current,
+    intelligence as read_model_intelligence,
     losses as read_model_losses,
+    parse_datetime as read_model_parse_datetime,
     period_bounds as read_model_period_bounds,
     period_summary as read_model_summary,
+)
+from app.operational_context import (
+    apply_context_to_camera,
+    criar_operational_area,
+    criar_operational_asset,
+    criar_operational_process,
+    resolve_context,
 )
 from app.models import (
     atualizar_evento,
@@ -403,6 +412,36 @@ class MachineCalibrationIn(BaseModel):
     stopped_motion: Optional[float] = None
     samples: Optional[list[float]] = None
     duration_seconds: float = 20.0
+
+
+class SetupAreaIn(BaseModel):
+    cliente_id: Optional[str] = None
+    unidade_id: str
+    nome: str
+    tipo: str = "production_area"
+
+
+class SetupProcessIn(BaseModel):
+    cliente_id: Optional[str] = None
+    unidade_id: str
+    area_id: Optional[str] = None
+    nome: str
+    tipo: str = "station"
+
+
+class SetupAssetIn(BaseModel):
+    cliente_id: Optional[str] = None
+    unidade_id: str
+    area_id: Optional[str] = None
+    process_id: Optional[str] = None
+    nome: str
+    tipo: str = "machine"
+
+
+class SetupCameraContextIn(BaseModel):
+    area_context_id: Optional[str] = None
+    process_id: Optional[str] = None
+    asset_id: Optional[str] = None
 
 
 class AssistedMachineCalibrationIn(BaseModel):
@@ -840,6 +879,277 @@ def get_unidades(request: Request, cliente_id: Optional[str] = None) -> list[dic
         return listar_por_cliente(connection, "unidades", effective)
 
 
+SETUP_CAPABILITIES = [
+    {
+        "id": "interruption",
+        "label": "Paradas/Interrupções",
+        "supported": True,
+        "description": "Monitora paradas de máquina a partir da região calibrada.",
+    },
+    {
+        "id": "absence",
+        "label": "Ausência",
+        "supported": True,
+        "description": "Monitora ausência de operador em zona configurada.",
+    },
+    {
+        "id": "wait",
+        "label": "Espera",
+        "supported": False,
+        "description": "Em desenvolvimento para o piloto.",
+    },
+    {
+        "id": "flow",
+        "label": "Movimentação/Fluxo",
+        "supported": False,
+        "description": "Em desenvolvimento para o piloto.",
+    },
+]
+
+
+def _setup_rows(connection, table: str, tenant: str | None) -> list[dict[str, Any]]:
+    if tenant:
+        rows = connection.execute(f"SELECT * FROM {table} WHERE cliente_id = ? ORDER BY criado_em DESC", (tenant,)).fetchall()
+    else:
+        rows = connection.execute(f"SELECT * FROM {table} ORDER BY criado_em DESC").fetchall()
+    return [dict(row) for row in rows]
+
+
+def _find_setup_record(connection, table: str, **filters: str | None) -> dict[str, Any] | None:
+    clauses = []
+    values: list[str] = []
+    for key, value in filters.items():
+        if value is None:
+            clauses.append(f"{key} IS NULL")
+        else:
+            clauses.append(f"{key} = ?")
+            values.append(value)
+    row = connection.execute(
+        f"SELECT * FROM {table} WHERE {' AND '.join(clauses)} ORDER BY criado_em ASC LIMIT 1",
+        tuple(values),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _setup_asset_status(asset: dict[str, Any], cameras: list[dict[str, Any]], areas: list[dict[str, Any]], monitors: list[dict[str, Any]]) -> dict[str, Any]:
+    asset_id = asset["id"]
+    linked_cameras = [camera for camera in cameras if camera.get("asset_id") == asset_id]
+    linked_camera_ids = {camera["id"] for camera in linked_cameras}
+    linked_monitors = [
+        monitor
+        for monitor in monitors
+        if monitor.get("asset_id") == asset_id or monitor.get("camera_id") in linked_camera_ids
+    ]
+    linked_monitor_ids = {monitor["id"] for monitor in linked_monitors}
+    machine_regions = [
+        area
+        for area in areas
+        if area.get("tipo") == "machine_region"
+        and (area.get("asset_id") == asset_id or area.get("machine_id") in linked_monitor_ids or area.get("camera_id") in linked_camera_ids)
+        and area.get("ativa")
+    ]
+    operator_zones = [
+        area
+        for area in areas
+        if area.get("tipo") in {"operator_zone", "workstation", "work_area"}
+        and (area.get("asset_id") == asset_id or area.get("machine_id") in linked_monitor_ids or area.get("camera_id") in linked_camera_ids)
+        and area.get("ativa")
+    ]
+    active_monitor = next((monitor for monitor in linked_monitors if monitor.get("ativo")), None)
+    missing = []
+    if not linked_cameras:
+        missing.append("associar uma câmera")
+    if not machine_regions:
+        missing.append("desenhar região da máquina")
+    if not operator_zones:
+        missing.append("desenhar zona do operador")
+    if not active_monitor:
+        missing.append("ativar monitor do ativo")
+    return {
+        "asset_id": asset_id,
+        "asset_name": asset.get("nome"),
+        "ready": not missing,
+        "status": "Pronto para monitorar" if not missing else "Configuração incompleta",
+        "missing": missing,
+        "camera_ids": [camera["id"] for camera in linked_cameras],
+        "monitor_ids": [monitor["id"] for monitor in linked_monitors],
+        "machine_region_ids": [area["id"] for area in machine_regions],
+        "operator_zone_ids": [area["id"] for area in operator_zones],
+    }
+
+
+@api.get("/setup/operation")
+def get_setup_operation(request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        tenant = tenant_filter(user)
+        clientes = listar_por_cliente(connection, "clientes", tenant)
+        unidades = listar_por_cliente(connection, "unidades", tenant)
+        areas = _setup_rows(connection, "operational_areas", tenant)
+        processes = _setup_rows(connection, "operational_processes", tenant)
+        assets = _setup_rows(connection, "operational_assets", tenant)
+        cameras = listar_por_cliente(connection, "cameras", tenant)
+        monitored_areas: list[dict[str, Any]] = []
+        monitors: list[dict[str, Any]] = []
+        for camera in cameras:
+            monitored_areas.extend(listar_areas_camera(connection, camera["id"]))
+            monitors.extend(listar_machine_monitors_camera(connection, camera["id"]))
+        return {
+            "clientes": clientes,
+            "unidades": unidades,
+            "areas": areas,
+            "processes": processes,
+            "assets": assets,
+            "cameras": cameras,
+            "monitored_areas": monitored_areas,
+            "machine_monitors": monitors,
+            "capabilities": SETUP_CAPABILITIES,
+            "asset_status": [_setup_asset_status(asset, cameras, monitored_areas, monitors) for asset in assets],
+        }
+
+
+@api.post("/setup/areas", status_code=status.HTTP_201_CREATED)
+def post_setup_area(payload: SetupAreaIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        cliente_id = effective_cliente_id(user, payload.cliente_id)
+        if cliente_id is None:
+            unit = connection.execute("SELECT cliente_id FROM unidades WHERE id = ?", (payload.unidade_id,)).fetchone()
+            cliente_id = unit["cliente_id"] if unit else None
+        if cliente_id is None:
+            raise HTTPException(status_code=400, detail="Unidade invalida para criar area.")
+        existing = _find_setup_record(
+            connection,
+            "operational_areas",
+            cliente_id=cliente_id,
+            unidade_id=payload.unidade_id,
+            nome=payload.nome,
+            tipo=payload.tipo,
+        )
+        if existing:
+            existing["created"] = False
+            return existing
+        area_id = criar_operational_area(connection, cliente_id=cliente_id, unidade_id=payload.unidade_id, nome=payload.nome, tipo=payload.tipo)
+        created = _find_setup_record(connection, "operational_areas", id=area_id)
+        if created is None:
+            raise HTTPException(status_code=500, detail="Area operacional nao foi persistida.")
+        created["created"] = True
+        return created
+
+
+@api.post("/setup/processes", status_code=status.HTTP_201_CREATED)
+def post_setup_process(payload: SetupProcessIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        cliente_id = effective_cliente_id(user, payload.cliente_id)
+        if cliente_id is None:
+            unit = connection.execute("SELECT cliente_id FROM unidades WHERE id = ?", (payload.unidade_id,)).fetchone()
+            cliente_id = unit["cliente_id"] if unit else None
+        if cliente_id is None:
+            raise HTTPException(status_code=400, detail="Unidade invalida para criar processo.")
+        existing = _find_setup_record(
+            connection,
+            "operational_processes",
+            cliente_id=cliente_id,
+            unidade_id=payload.unidade_id,
+            area_id=payload.area_id,
+            nome=payload.nome,
+            tipo=payload.tipo,
+        )
+        if existing:
+            existing["created"] = False
+            return existing
+        process_id = criar_operational_process(
+            connection,
+            cliente_id=cliente_id,
+            unidade_id=payload.unidade_id,
+            area_id=payload.area_id,
+            nome=payload.nome,
+            tipo=payload.tipo,
+        )
+        created = _find_setup_record(connection, "operational_processes", id=process_id)
+        if created is None:
+            raise HTTPException(status_code=500, detail="Processo operacional nao foi persistido.")
+        created["created"] = True
+        return created
+
+
+@api.post("/setup/assets", status_code=status.HTTP_201_CREATED)
+def post_setup_asset(payload: SetupAssetIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        cliente_id = effective_cliente_id(user, payload.cliente_id)
+        if cliente_id is None:
+            unit = connection.execute("SELECT cliente_id FROM unidades WHERE id = ?", (payload.unidade_id,)).fetchone()
+            cliente_id = unit["cliente_id"] if unit else None
+        if cliente_id is None:
+            raise HTTPException(status_code=400, detail="Unidade invalida para criar ativo.")
+        existing = _find_setup_record(
+            connection,
+            "operational_assets",
+            cliente_id=cliente_id,
+            unidade_id=payload.unidade_id,
+            area_id=payload.area_id,
+            process_id=payload.process_id,
+            nome=payload.nome,
+            tipo=payload.tipo,
+        )
+        if existing:
+            existing["created"] = False
+            return existing
+        asset_id = criar_operational_asset(
+            connection,
+            cliente_id=cliente_id,
+            unidade_id=payload.unidade_id,
+            area_id=payload.area_id,
+            process_id=payload.process_id,
+            nome=payload.nome,
+            tipo=payload.tipo,
+        )
+        created = _find_setup_record(connection, "operational_assets", id=asset_id)
+        if created is None:
+            raise HTTPException(status_code=500, detail="Ativo operacional nao foi persistido.")
+        created["created"] = True
+        return created
+
+
+@api.post("/setup/cameras/{camera_id}/context")
+def post_setup_camera_context(camera_id: str, payload: SetupCameraContextIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        camera = obter_camera(connection, camera_id)
+        if camera is None:
+            raise HTTPException(status_code=404, detail="Camera nao encontrada.")
+        if tenant_filter(user) and camera.get("cliente_id") != tenant_filter(user):
+            raise HTTPException(status_code=403, detail="Camera de outro cliente.")
+        context = apply_context_to_camera(
+            connection,
+            camera_id,
+            area_context_id=payload.area_context_id,
+            process_id=payload.process_id,
+            asset_id=payload.asset_id,
+        )
+        monitors = listar_machine_monitors_camera(connection, camera_id)
+        for monitor in monitors:
+            atualizar_machine_monitor(
+                connection,
+                monitor["id"],
+                area_context_id=payload.area_context_id,
+                process_id=payload.process_id,
+                asset_id=payload.asset_id,
+            )
+        return {"camera_id": camera_id, "context": context}
+
+
 @api.get("/auth/users")
 def get_users(request: Request) -> list[dict[str, Any]]:
     with connect() as connection:
@@ -1030,7 +1340,14 @@ def get_live_view_status(session_id: str) -> dict[str, object]:
     stream = live_streams.get(live_view_stream_id(session_id))
     status = stream.public_status() if stream else {"status": "offline", "width": None, "height": None, "fps": None}
     ops = live_view_official_ops(session, stream)
-    return {"session_id": session_id, "nome": session["nome"], **status, "ops": ops}
+    context = None
+    if session.get("camera_id"):
+        with connect() as connection:
+            init_db(connection)
+            camera = obter_camera(connection, str(session["camera_id"]))
+            if camera:
+                context = _live_context(connection, camera, status)
+    return {"session_id": session_id, "nome": session["nome"], **status, "ops": ops, "context": context}
 
 
 @api.get("/live-view/{session_id}/stream")
@@ -1111,6 +1428,120 @@ def live_view_official_ops(session: dict[str, object] | None, stream) -> dict[st
         "event_id": status.get("machine_event_id"),
         "observation": observation,
     }
+
+
+OFFICIAL_LIVE_FAMILIES = {"interruption", "wait", "flow", "absence"}
+
+
+def _lookup_name(connection, table: str, item_id: object | None) -> str | None:
+    if not item_id:
+        return None
+    if table not in {"unidades", "operational_areas", "operational_processes", "operational_assets"}:
+        return None
+    row = connection.execute(f"SELECT nome FROM {table} WHERE id = ?", (str(item_id),)).fetchone()
+    return str(row["nome"]) if row and row["nome"] else None
+
+
+def _public_live_event(event: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not event:
+        return None
+    started_at = event.get("inicio")
+    duration = event.get("duracao")
+    if event.get("status") == "open" and started_at:
+        try:
+            duration = max(0, round((datetime.now(timezone.utc) - read_model_parse_datetime(str(started_at))).total_seconds()))
+        except Exception:
+            duration = event.get("duracao")
+    return {
+        "id": event.get("id"),
+        "event_uuid": event.get("event_uuid"),
+        "tipo": event.get("tipo"),
+        "event_family": event.get("event_family"),
+        "event_subtype": event.get("event_subtype"),
+        "status": event.get("status"),
+        "workflow_status": event.get("workflow_status") or "new",
+        "started_at": started_at,
+        "ended_at": event.get("fim"),
+        "duration_seconds": duration,
+        "severity": event.get("severidade"),
+        "evidence_available": bool(event.get("midia_path")),
+    }
+
+
+def _live_context(connection, camera: dict[str, Any], status_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    camera_id = str(camera.get("id"))
+    context = resolve_context(connection, camera_id=camera_id)
+    monitor = None
+    monitors = listar_machine_monitors_camera(connection, camera_id)
+    if monitors:
+        monitor = monitors[0]
+    area_name = _lookup_name(connection, "operational_areas", context.get("area_context_id"))
+    process_name = _lookup_name(connection, "operational_processes", context.get("process_id"))
+    asset_name = _lookup_name(connection, "operational_assets", context.get("asset_id"))
+    site_name = _lookup_name(connection, "unidades", context.get("site_id") or context.get("unidade_id"))
+    if not asset_name and monitor:
+        asset_name = str(monitor.get("nome") or "")
+    primary = asset_name or process_name or area_name or str(camera.get("nome") or camera_id)
+    path = " → ".join([part for part in [area_name, process_name] if part]) or site_name or "Contexto não informado"
+    events = [
+        event
+        for event in listar_eventos_filtrados(connection, camera_id=camera_id, status="open")
+        if (event.get("event_family") or "unknown") in OFFICIAL_LIVE_FAMILIES and event.get("tipo") != "camera_status"
+    ]
+    current_event = events[0] if events else None
+    status_payload = status_payload or {}
+    ops_state = status_payload.get("machine_state") or status_payload.get("observation", {}).get("machine_state")
+    if current_event:
+        operational_status = "evento_aberto"
+    elif status_payload.get("status") != "online":
+        operational_status = "sem_frame_recente" if camera.get("ultimo_frame") else "offline"
+    elif status_payload.get("ai_status") in {"indisponivel", "erro"}:
+        operational_status = "inferencia_indisponivel"
+    elif ops_state in {"STOPPED", "PARADA"}:
+        operational_status = "parada"
+    elif ops_state in {"ACTIVE", "ATIVA"}:
+        operational_status = "ativa"
+    elif status_payload.get("status") == "online":
+        operational_status = "sem_evento"
+    else:
+        operational_status = "cobertura_parcial"
+    return {
+        "site_id": context.get("site_id") or context.get("unidade_id"),
+        "site_name": site_name,
+        "area_id": context.get("area_context_id"),
+        "area_name": area_name,
+        "process_id": context.get("process_id"),
+        "process_name": process_name,
+        "asset_id": context.get("asset_id"),
+        "asset_name": asset_name,
+        "camera_id": camera_id,
+        "camera_name": camera.get("nome"),
+        "primary_label": primary,
+        "path_label": path,
+        "machine_monitor_id": monitor.get("id") if monitor else context.get("machine_monitor_id"),
+        "operational_status": operational_status,
+        "current_event": _public_live_event(current_event),
+    }
+
+
+def _live_status_for_camera(connection, camera: dict[str, Any]) -> dict[str, Any]:
+    camera_id = str(camera.get("id"))
+    stream = live_streams.get(camera_id)
+    if stream is None:
+        status_payload = {
+            "camera_id": camera_id,
+            "status": "offline",
+            "width": None,
+            "height": None,
+            "fps": None,
+            "last_frame_at": camera.get("ultimo_frame"),
+            "error": None,
+            "viewers": 0,
+            "reconnect_attempts": camera.get("reconexoes") or 0,
+        }
+    else:
+        status_payload = stream.public_status()
+    return {**status_payload, "context": _live_context(connection, camera, status_payload)}
 
 
 def expanded_live_view_polygon(points: list[dict[str, float]], margin: float = 0.08) -> list[dict[str, float]]:
@@ -1368,22 +1799,29 @@ def get_camera_live_status(camera_id: str) -> dict[str, object]:
     with connect() as connection:
         init_db(connection)
         camera = obter_camera(connection, camera_id)
-    if camera is None:
-        raise HTTPException(status_code=404, detail="Camera nao encontrada.")
-    stream = live_streams.get(camera_id)
-    if stream is None:
-        return {
-            "camera_id": camera_id,
-            "status": "offline",
-            "width": None,
-            "height": None,
-            "fps": None,
-            "last_frame_at": camera.get("ultimo_frame"),
-            "error": None,
-            "viewers": 0,
-            "reconnect_attempts": camera.get("reconexoes") or 0,
-        }
-    return stream.public_status()
+        if camera is None:
+            raise HTTPException(status_code=404, detail="Camera nao encontrada.")
+        return _live_status_for_camera(connection, camera)
+
+
+@api.get("/live/overview")
+def get_live_overview(request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        user = get_request_user(request, connection)
+        cameras = listar(connection, "cameras")
+        if user and tenant_filter(user):
+            cameras = [camera for camera in cameras if camera.get("cliente_id") == tenant_filter(user)]
+        items = [{"camera": camera, "status": _live_status_for_camera(connection, camera)} for camera in cameras]
+    streams = live_streams.statuses()
+    return {
+        "cameras": items,
+        "resources": {
+            "active_streams": len(streams),
+            "cpu_percent": psutil.cpu_percent(interval=None),
+            "memory_percent": psutil.virtual_memory().percent,
+        },
+    }
 
 
 @api.get("/live-streams/status")
@@ -2620,6 +3058,47 @@ def get_operations_read_model_comparison(
         )
         try:
             return read_model_comparison(connection, filters)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.get("/operations/read-model/insights")
+def get_operations_read_model_insights(
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+            start=start,
+            end=end,
+            period=period,
+        )
+        try:
+            return read_model_intelligence(connection, filters)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

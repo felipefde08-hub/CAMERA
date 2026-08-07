@@ -145,7 +145,7 @@ class LiveStreamStage2Test(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/html", response.headers.get("content-type", ""))
-        self.assertIn("Duas câmeras simultâneas", response.text)
+        self.assertIn("Setores monitorados", response.text)
 
     def test_live_streams_status_returns_resource_snapshot_without_credentials(self) -> None:
         original_manager = api_module.live_streams

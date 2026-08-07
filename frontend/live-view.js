@@ -9,6 +9,8 @@ const liveViewResolution = document.querySelector("#liveViewResolution");
 const liveViewFps = document.querySelector("#liveViewFps");
 const liveViewInferenceFps = document.querySelector("#liveViewInferenceFps");
 const liveViewPeople = document.querySelector("#liveViewPeople");
+const liveViewAsset = document.querySelector("#liveViewAsset");
+const liveViewPath = document.querySelector("#liveViewPath");
 const liveViewMachine = document.querySelector("#liveViewMachine");
 const liveViewMachineState = document.querySelector("#liveViewMachineState");
 const liveViewOperator = document.querySelector("#liveViewOperator");
@@ -29,6 +31,7 @@ const liveCriticalTime = document.querySelector("#liveCriticalTime");
 const liveCriticalDuration = document.querySelector("#liveCriticalDuration");
 const liveCriticalEvidence = document.querySelector("#liveCriticalEvidence");
 const liveCurrentEvent = document.querySelector("#liveCurrentEvent");
+const liveCurrentEventLink = document.querySelector("#liveCurrentEventLink");
 const liveLastAlert = document.querySelector("#liveLastAlert");
 const liveRealtimeAlerts = document.querySelector("#liveRealtimeAlerts");
 const liveToast = document.querySelector("#liveToast");
@@ -214,19 +217,23 @@ function drawCanvas() {
 function renderStatus(payload) {
   const status = payload.status || "offline";
   const ops = payload.ops || {};
+  const context = payload.context || {};
+  const currentEvent = context.current_event;
   machineConfig = ops.machine || machineConfig;
-  liveViewName.textContent = payload.nome || "Live View";
-  if (liveRailName) liveRailName.textContent = payload.nome || "Live View";
+  liveViewName.textContent = context.primary_label || payload.nome || "Live View";
+  if (liveRailName) liveRailName.textContent = context.primary_label || payload.nome || "Live View";
   const cameraText = formatCameraStatus(status);
   const aiText = formatAiStatus(payload.ai_status || ops.ai_status);
   if (liveRailStatus) liveRailStatus.textContent = `${cameraText} · ${aiText}`;
   if (liveStreamSummary) {
-    liveStreamSummary.textContent = `${cameraText} | ${aiText} | ${formatLastFrame(payload.last_frame_at || ops.last_frame_at)}`;
+    liveStreamSummary.textContent = `${context.path_label || "Contexto operacional em configuração"} | ${cameraText} | ${formatLastFrame(payload.last_frame_at || ops.last_frame_at)}`;
   }
   liveViewResolution.textContent = payload.width && payload.height ? `${payload.width}x${payload.height}` : "indisponível";
   liveViewFps.textContent = payload.fps ?? "indisponível";
   liveViewInferenceFps.textContent = ops.inference_fps ?? 0;
   liveViewPeople.textContent = ops.people_count ?? 0;
+  if (liveViewAsset) liveViewAsset.textContent = context.primary_label || currentMachine()?.nome || "Não configurado";
+  if (liveViewPath) liveViewPath.textContent = context.path_label || "Contexto em configuração";
   liveViewMachine.textContent = currentMachine()?.nome || (machineConfig ? machineConfig.nome : "Não configurada");
   liveViewMachineState.textContent = formatMachineState(ops.machine_state);
   liveViewOperator.textContent = operatorLabel(ops);
@@ -241,6 +248,17 @@ function renderStatus(payload) {
   if (liveViewConfidence) liveViewConfidence.textContent = Number(ops.visual_confidence || 0).toFixed(2);
   if (liveViewStateTime) liveViewStateTime.textContent = `${Math.round(ops.machine_seconds_in_state || 0)}s`;
   if (liveViewReason) liveViewReason.textContent = ops.machine_reason || ops.analysis_error || "Aguardando análise";
+  if (currentEvent) {
+    const label = liveEventLabel(currentEvent);
+    liveCurrentEvent.textContent = `${label} · ${formatDuration(currentEvent.duration_seconds)} · workflow ${currentEvent.workflow_status || "new"}`;
+    if (liveCurrentEventLink) {
+      liveCurrentEventLink.href = `/events?event_uuid=${encodeURIComponent(currentEvent.event_uuid || "")}`;
+      liveCurrentEventLink.hidden = false;
+    }
+  } else {
+    liveCurrentEvent.textContent = liveCurrentEventText(status, ops, context);
+    if (liveCurrentEventLink) liveCurrentEventLink.hidden = true;
+  }
   const observation = payload.observation || {};
   liveViewRelation.textContent = observation.machine_state
     ? `${observation.machine_state} · conf. ${observation.machine_confidence} · operador ${observation.people_in_operator_zone} · restrita ${observation.people_in_restricted_zone}`
@@ -259,6 +277,26 @@ function renderStatus(payload) {
     setStatus("offline", payload.error || "Câmera offline.");
   }
   drawCanvas();
+}
+
+function liveEventLabel(event) {
+  const labels = {
+    machine_stoppage: "Parada operacional",
+    machine_running_without_operator: "Máquina ativa sem operador",
+    machine_stopped_with_operator: "Máquina parada com operador",
+    workstation_unattended: "Posto sem operador",
+  };
+  return labels[event?.tipo] || "Evento operacional aberto";
+}
+
+function liveCurrentEventText(status, ops, context) {
+  if (status !== "online") return "Sem evento operacional aberto. Conexão técnica indisponível.";
+  if (ops.analysis_status && !["ANALYZING", "WAITING_FOR_PREVIOUS_FRAME"].includes(ops.analysis_status)) {
+    return "Sem evento aberto. Dados ainda insuficientes para afirmar operação normal.";
+  }
+  if (context.operational_status === "sem_evento") return "Sem evento operacional aberto.";
+  if (context.operational_status === "ativa") return "Operação normal.";
+  return "Nenhum evento operacional aberto.";
 }
 
 function eventTypeFromAlert(alert) {

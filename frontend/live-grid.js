@@ -27,6 +27,47 @@ function statusLabel(status) {
   return "Offline";
 }
 
+function secondsLabel(value) {
+  const total = Math.max(0, Math.round(Number(value || 0)));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  if (minutes) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  return `${seconds}s`;
+}
+
+function operationalStatusLabel(status, event) {
+  if (event) return `${eventLabel(event)} · ${secondsLabel(event.duration_seconds)}`;
+  const labels = {
+    ativa: "ATIVA",
+    parada: "PARADA",
+    evento_aberto: "EVENTO ABERTO",
+    sem_evento: "Sem evento aberto",
+    offline: "Offline",
+    sem_frame_recente: "Sem frame recente",
+    inferencia_indisponivel: "Inferência indisponível",
+    cobertura_parcial: "Cobertura parcial",
+  };
+  return labels[status] || "Status indisponível";
+}
+
+function eventLabel(event) {
+  const labels = {
+    machine_stoppage: "PARADA",
+    machine_running_without_operator: "ATIVA SEM OPERADOR",
+    machine_stopped_with_operator: "PARADA COM OPERADOR",
+    workstation_unattended: "POSTO SEM OPERADOR",
+  };
+  return labels[event?.tipo] || "EVENTO ABERTO";
+}
+
+function connectionClass(status) {
+  if (status === "online") return "online";
+  if (status === "conectando" || status === "reconectando") return "warning";
+  return "offline";
+}
+
 function renderPicker() {
   const rows = Array.from(cameras.values());
   if (!rows.length) {
@@ -40,8 +81,8 @@ function renderPicker() {
       <label class="cx-grid-picker-item">
         <input type="checkbox" data-camera-id="${camera.id}" ${checked} />
         <span>
-          <strong>${camera.nome}</strong>
-          <small>${camera.rtsp_host || camera.secure_ref || "Fonte protegida"}</small>
+          <strong>${camera.context?.primary_label || camera.nome}</strong>
+          <small>${camera.context?.path_label || camera.nome || "Contexto em configuração"}</small>
         </span>
       </label>
     `;
@@ -60,27 +101,31 @@ function renderGrid() {
     <article class="cx-live-grid-card" data-camera-id="${item.camera.id}">
       <header>
         <div>
-          <h3>${item.camera.nome}</h3>
-          <p>${item.camera.rtsp_host || "Fonte RTSP protegida"}</p>
+          <h3>${item.status?.context?.primary_label || item.camera.context?.primary_label || item.camera.nome}</h3>
+          <p>${item.status?.context?.path_label || item.camera.context?.path_label || "Contexto operacional em configuração"}</p>
         </div>
-        <span class="badge ${item.status?.status === "online" ? "online" : "offline"}">${statusLabel(item.status?.status)}</span>
+        <span class="badge ${item.status?.context?.current_event ? "danger" : connectionClass(item.status?.status)}">${operationalStatusLabel(item.status?.context?.operational_status, item.status?.context?.current_event)}</span>
       </header>
       <div class="cx-live-grid-frame">
         <img src="${item.streamUrl}" alt="Transmissão ${item.camera.nome}" />
-        <span class="cx-live-grid-overlay">${item.status?.status === "reconectando" ? "Tentando reconectar" : ""}</span>
+        <a class="cx-live-grid-hit" href="/live-view?camera_id=${encodeURIComponent(item.camera.id)}&nome=${encodeURIComponent(item.camera.nome)}" aria-label="Abrir ${item.status?.context?.primary_label || item.camera.nome}"></a>
+        <span class="cx-live-grid-overlay">${item.status?.status === "reconectando" ? "Tentando reconectar" : item.status?.context?.current_event ? eventLabel(item.status.context.current_event) : ""}</span>
       </div>
+      <section class="cx-live-operational-summary">
+        <strong>${item.status?.context?.current_event ? "Evento físico em andamento" : item.status?.context?.operational_status === "sem_evento" ? "Sem evento aberto" : "Estado atual"}</strong>
+        <span>${operationalStatusLabel(item.status?.context?.operational_status, item.status?.context?.current_event)}</span>
+        ${item.status?.context?.current_event ? `<a href="/events?event_uuid=${encodeURIComponent(item.status.context.current_event.event_uuid || "")}">Ver evento</a>` : ""}
+      </section>
       <dl>
-        <div><dt>Vídeo</dt><dd>${item.status?.width && item.status?.height ? `${item.status.width}x${item.status.height}` : "indisponível"}</dd></div>
-        <div><dt>FPS</dt><dd>${item.status?.fps ?? "-"}</dd></div>
-        <div><dt>IA</dt><dd>${item.status?.ai_status || "inativa"}</dd></div>
-        <div><dt>FPS IA</dt><dd>${item.status?.analysis_fps ?? "-"}</dd></div>
+        <div><dt>Conexão</dt><dd>${statusLabel(item.status?.status)}</dd></div>
+        <div><dt>Inferência</dt><dd>${item.status?.ai_status || "inativa"}</dd></div>
         <div><dt>Pessoas</dt><dd>${item.status?.people_count ?? 0}</dd></div>
-        <div><dt>Área</dt><dd>${item.status?.area_estado || "sem área"}</dd></div>
+        <div><dt>Último frame</dt><dd>${item.status?.last_frame_at ? "recente" : "sem frame"}</dd></div>
       </dl>
       <footer>
         <button type="button" data-action="ai-start" data-camera-id="${item.camera.id}" ${item.status?.ai_status === "ativa" ? "hidden" : ""}>Ativar IA</button>
         <button type="button" data-action="ai-stop" data-camera-id="${item.camera.id}" ${item.status?.ai_status !== "ativa" ? "hidden" : ""}>Desativar IA</button>
-        <a class="button-link" href="/live-view?camera_id=${encodeURIComponent(item.camera.id)}&nome=${encodeURIComponent(item.camera.nome)}">Configurar zona</a>
+        <a class="button-link" href="/live-view?camera_id=${encodeURIComponent(item.camera.id)}&nome=${encodeURIComponent(item.camera.nome)}">Abrir setor</a>
         <button type="button" data-action="stop" data-camera-id="${item.camera.id}">Parar esta câmera</button>
       </footer>
     </article>
@@ -113,21 +158,30 @@ async function stopCamera(cameraId) {
 }
 
 async function refreshStatuses() {
-  await Promise.all(Array.from(selected.keys()).map(async (cameraId) => {
-    try {
-      const status = await requestJson(`/cameras/${cameraId}/status`);
-      const item = selected.get(cameraId);
-      if (item) item.status = status;
-    } catch (error) {
-      const item = selected.get(cameraId);
-      if (item) item.status = { status: "offline", error: error.message };
-    }
-  }));
   try {
-    const resource = await requestJson("/live-streams/status");
-    resources.textContent = `CPU ${Math.round(resource.cpu_percent)}% · Memória ${Math.round(resource.memory_percent)}% · Streams ${resource.active_streams}`;
-  } catch (_error) {
+    const overview = await requestJson("/live/overview");
+    overview.cameras.forEach((entry) => {
+      cameras.set(entry.camera.id, { ...entry.camera, context: entry.status?.context });
+      const item = selected.get(entry.camera.id);
+      if (item) {
+        item.camera = { ...entry.camera, context: entry.status?.context };
+        item.status = entry.status;
+      }
+    });
+    const resource = overview.resources || {};
+    resources.textContent = `CPU ${Math.round(resource.cpu_percent || 0)}% · Memória ${Math.round(resource.memory_percent || 0)}% · Streams ${resource.active_streams || 0}`;
+  } catch (error) {
     resources.textContent = "Recursos indisponíveis";
+    await Promise.all(Array.from(selected.keys()).map(async (cameraId) => {
+      try {
+        const status = await requestJson(`/cameras/${cameraId}/status`);
+        const item = selected.get(cameraId);
+        if (item) item.status = status;
+      } catch (statusError) {
+        const item = selected.get(cameraId);
+        if (item) item.status = { status: "offline", error: statusError.message };
+      }
+    }));
   }
   renderGrid();
 }
@@ -160,7 +214,11 @@ grid.addEventListener("click", (event) => {
 });
 
 async function boot() {
-  const rows = await requestJson("/cameras/estado");
+  const overview = await requestJson("/live/overview").catch(async () => {
+    const rows = await requestJson("/cameras/estado");
+    return { cameras: rows.map((camera) => ({ camera, status: { context: null } })), resources: {} };
+  });
+  const rows = overview.cameras.map((entry) => ({ ...entry.camera, context: entry.status?.context }));
   rows.forEach((camera) => cameras.set(camera.id, camera));
   renderPicker();
   const auto = rows.slice(0, 2);

@@ -72,20 +72,21 @@ const routes = {
     card: cameraCard,
   },
   "/events": {
-    title: "Eventos",
+    title: "Events",
     section: "operation",
-    breadcrumb: "Operação / Eventos",
+    breadcrumb: "Operations / Events",
     permissions: [],
-    heading: "Eventos",
-    subtitle: "Ocorrências operacionais com duração, severidade, evidência, alerta e responsável.",
+    heading: "Events",
+    subtitle: "Memória operacional verificável: o que aconteceu, quando, onde e como foi tratado.",
     endpoint: "/eventos",
-    action: "Exportar eventos",
-    emptyTitle: "Nenhum evento registrado.",
-    emptyDescription: "Os eventos aparecerão aqui quando a operação gerar histórico.",
-    tabs: ["Todos", "Aberto", "Em análise", "Reconhecido", "Encerrado", "Descartado", "Com evidência"],
-    filters: ["Período", "Tipo", "Categoria", "Unidade", "Área", "Câmera", "Severidade", "Status", "Evidência", "Alerta"],
-    columns: ["Data e hora", "Tipo", "Categoria", "Unidade", "Área", "Câmera", "Máquina/equipamento", "Duração", "Severidade", "Status", "Evidência", "Alerta", "Responsável", "Ação"],
+    action: "Atualizar",
+    emptyTitle: "Nenhum evento operacional registrado neste período.",
+    emptyDescription: "A memória operacional será preenchida quando regras reais criarem eventos canônicos.",
+    tabs: ["Todos", "Abertos", "Encerrados", "Novo", "Reconhecido", "Resolvido", "Não classificados", "Com evidência"],
+    filters: ["Período", "Unidade", "Área", "Processo", "Ativo", "Família", "Estado físico", "Workflow"],
+    columns: ["Evento", "Contexto", "Horário", "Duração", "Workflow", "Evidência", "Ação"],
     row: eventRow,
+    card: eventCard,
     detail: eventDetail,
   },
   "/alerts": {
@@ -176,21 +177,21 @@ const routes = {
     row: (item) => [reportLabel(item.key), "Período atual", "—", "—", badge(item.value ? "Prévia" : "Sem dados"), "Tela", typeof item.value === "object" ? JSON.stringify(item.value) : item.value ?? "—"],
   },
   "/insights": {
-    title: "Insights",
+    title: "Intelligence",
     section: "intelligence",
-    breadcrumb: "Inteligência / Insights",
+    breadcrumb: "Intelligence",
     permissions: [],
-    heading: "Insights",
-    subtitle: "Padrões gerados somente quando há dados suficientes para sustentar a constatação.",
-    endpoint: "/operations/summary",
-    action: "Atualizar insights",
+    heading: "Intelligence",
+    subtitle: "O que a Campex entendeu sobre a operação que merece ser percebido.",
+    endpoint: "/operations/read-model/insights",
+    action: "Atualizar",
     emptyTitle: "Ainda não existem dados suficientes para gerar padrões confiáveis.",
-    emptyDescription: "A Campex só apresenta insights quando há ocorrências suficientes, período definido e base comparável.",
-    tabs: ["Todos", "Recorrência", "Duração", "Horário", "Câmera", "Comparação"],
-    filters: ["Período", "Categoria", "Área", "Câmera", "Confiança"],
-    columns: ["Constatação", "Dados utilizados", "Período", "Confiança", "Investigar"],
-    load: loadInsightsWorkspace,
-    row: (item) => [item.statement, item.data, item.period, badge(item.confidence), `<a class="cx-link" href="${item.href}">Investigar</a>`],
+    emptyDescription: "A Campex só apresenta insights quando os eventos classificados sustentam a constatação.",
+    tabs: ["Briefing", "Atenção", "Padrões", "KPIs", "Causas"],
+    filters: [],
+    columns: ["Insight", "Número", "Por que", "Eventos", "Investigar"],
+    customRender: renderIntelligencePage,
+    row: (item) => [item.statement, item.number || "—", item.why || "—", traceButton("Eventos", item.event_uuids), `<a class="cx-link" href="/events">Investigar</a>`],
   },
   "/history": {
     title: "Histórico",
@@ -639,7 +640,7 @@ function renderTraceDrawer(uuids) {
   drawerContent.innerHTML = `
     <h2>Eventos que explicam o número</h2>
     <p>Esta métrica foi composta pelos seguintes event_uuid:</p>
-    <ul class="cx-trace-list">${uuids.map((uuid) => `<li><code>${uuid}</code></li>`).join("")}</ul>
+    <ul class="cx-trace-list">${uuids.map((uuid) => `<li><a class="cx-link" href="/events?event_uuid=${encodeURIComponent(uuid)}"><code>${uuid}</code></a></li>`).join("")}</ul>
     <p class="muted">Use esses UUIDs para consultar os eventos na aba Eventos ou pela API.</p>
   `;
   drawer.querySelector("h2")?.setAttribute("id", "workspaceDrawerTitle");
@@ -747,6 +748,146 @@ async function renderOperationsReadModelPage(config) {
   document.querySelector(".cx-panel")?.classList.toggle("cx-ops-hide-panel", !rows.length);
 }
 
+function intelligenceBriefingText(payload) {
+  const lines = payload.briefing || [];
+  if (!lines.length) return "Ainda não existem eventos operacionais classificados suficientes neste período.";
+  return lines.join(" ");
+}
+
+function intelligenceKpiValue(kpi) {
+  if (kpi.value_seconds !== undefined && kpi.value_seconds !== null) return secondsLabel(kpi.value_seconds);
+  if (kpi.value !== undefined && kpi.value !== null) return String(kpi.value);
+  return "Sem dados";
+}
+
+function renderInsightCard(item) {
+  return `
+    <article class="cx-intel-card">
+      <div>
+        <strong>${item.statement}</strong>
+        <span>${item.number || "—"}</span>
+      </div>
+      <p><b>Por que a Campex está destacando isso?</b> ${item.why || "Insight gerado por regra determinística do Read Model."}</p>
+      ${traceButton("Investigar", item.event_uuids)}
+    </article>
+  `;
+}
+
+function renderInsightList(items, emptyText) {
+  if (!items?.length) return `<div class="cx-empty-state"><strong>${emptyText}</strong><p>A Campex não inventa padrões quando os dados não sustentam a afirmação.</p></div>`;
+  return `<div class="cx-intel-list">${items.map(renderInsightCard).join("")}</div>`;
+}
+
+function renderCauseRows(causes = []) {
+  if (!causes.length) return `<p class="muted">Nenhuma causa confirmada foi registrada por humanos neste período.</p>`;
+  return causes.map((cause) => `
+    <div class="cx-intel-cause">
+      <strong>${cause.key}</strong>
+      <span>${secondsLabel(cause.total_duration_seconds)} · ${cause.total_events} evento(s)</span>
+      ${traceButton("Eventos", cause.event_uuids)}
+    </div>
+  `).join("");
+}
+
+async function renderIntelligencePage(config) {
+  const params = readModelQuery();
+  const payload = await requestJson(`/operations/read-model/insights?${params}`);
+  const allInsights = [...(payload.attention || []), ...(payload.patterns || [])];
+  rowsCache = allInsights;
+  title.textContent = "Intelligence";
+  heading.textContent = "O que a Campex entendeu sobre a operação?";
+  subtitle.textContent = "Insights determinísticos gerados a partir dos eventos canônicos e do Operational Read Model.";
+  tableTitle.textContent = "Rastreabilidade dos insights";
+  tableHint.textContent = "Cada insight lista os event_uuid que sustentam a constatação.";
+  primaryAction.textContent = "Atualizar";
+  primaryAction.onclick = () => loadPage(window.location.pathname);
+  filters.innerHTML = `
+    <label>Período
+      <select id="operationsPeriod">
+        <option value="day" ${operationPeriod() === "day" ? "selected" : ""}>Hoje</option>
+        <option value="turno" ${operationPeriod() === "turno" ? "selected" : ""}>Turno</option>
+        <option value="week" ${operationPeriod() === "week" ? "selected" : ""}>Semana</option>
+        <option value="month" ${operationPeriod() === "month" ? "selected" : ""}>Mês</option>
+      </select>
+    </label>
+  `;
+  const unknownCount = Number(payload.data_quality?.unknown_events || 0);
+  cards.innerHTML = `
+    <section class="cx-intel-page">
+      <section class="cx-ops-header">
+        <div>
+          <small>Período</small>
+          <strong>${formatOperationsPeriod(payload.period)}</strong>
+        </div>
+        <div>
+          <small>Cobertura</small>
+          <strong>${payload.coverage?.status || "unknown"}</strong>
+        </div>
+        <div>
+          <small>Eventos classificados</small>
+          <strong>${payload.data_quality?.classified_events || 0}</strong>
+        </div>
+        <div>
+          <small>Última atualização</small>
+          <strong>${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</strong>
+        </div>
+      </section>
+      ${coverageWarning(payload.coverage)}
+      ${unknownCount ? `<div class="cx-ops-quality"><strong>${unknownCount} evento(s) sem classificação operacional.</strong><span>Preservados para auditoria, fora dos insights oficiais.</span></div>` : ""}
+      <section class="cx-intel-briefing">
+        <small>Briefing do período</small>
+        <strong>${intelligenceBriefingText(payload)}</strong>
+      </section>
+      <section class="cx-intel-kpis">
+        ${(payload.kpis || []).map((kpi) => `
+          <article>
+            <button type="button" aria-label="Marcar ${kpi.label} como KPI da operação">☆</button>
+            <span>${kpi.label}</span>
+            <strong>${intelligenceKpiValue(kpi)}</strong>
+            ${traceButton("Eventos", kpi.event_uuids)}
+          </article>
+        `).join("")}
+      </section>
+      <section class="cx-intel-layout">
+        <div class="cx-intel-column">
+          <section class="cx-ops-block">
+            <h3>O que merece atenção</h3>
+            ${renderInsightList(payload.attention, "Sem destaques sustentados pelos dados do período.")}
+          </section>
+          <section class="cx-ops-block">
+            <h3>Padrões verificáveis</h3>
+            ${renderInsightList(payload.patterns, "Ainda não há padrões matematicamente verificáveis.")}
+          </section>
+        </div>
+        <aside class="cx-intel-column">
+          <section class="cx-ops-block">
+            <h3>Causas confirmadas</h3>
+            <p class="muted">Somente informações registradas por pessoas entram aqui. Observações da câmera não viram causa automaticamente.</p>
+            ${renderCauseRows(payload.confirmed_causes)}
+          </section>
+          <section class="cx-ops-block">
+            <h3>Comparação</h3>
+            <p>Eventos: ${comparisonText(payload.comparison?.metrics?.total_events || {})}</p>
+            <p>Duração: ${comparisonText(payload.comparison?.metrics?.total_duration_seconds || {})}</p>
+          </section>
+        </aside>
+      </section>
+    </section>
+  `;
+  renderTabs(config);
+  head.innerHTML = `<tr>${config.columns.map((column) => `<th>${column}</th>`).join("")}</tr>`;
+  body.innerHTML = rowsCache.length ? rowsCache.map((item) => `
+    <tr>
+      <td>${item.statement}</td>
+      <td>${item.number || "—"}</td>
+      <td>${item.why || "—"}</td>
+      <td>${traceButton("Eventos", item.event_uuids)}</td>
+      <td><a class="cx-link" href="/events">Investigar</a></td>
+    </tr>
+  `).join("") : `<tr><td colspan="${config.columns.length}">${emptyState(config)}</td></tr>`;
+  grid.style.display = "none";
+}
+
 async function loadAlertsWorkspace() {
   const [deliveries, recipients, rules] = await Promise.all([
     requestJson("/alert-deliveries").catch(() => []),
@@ -757,82 +898,6 @@ async function loadAlertsWorkspace() {
   const recipientRows = (Array.isArray(recipients) ? recipients : recipients.recipients || []).map((item) => ({ ...item, workspace_kind: "destinatario" }));
   const ruleRows = (Array.isArray(rules) ? rules : rules.rules || []).map((item) => ({ ...item, workspace_kind: "regra" }));
   return [...ruleRows, ...recipientRows, ...deliveryRows];
-}
-
-async function loadInsightsWorkspace() {
-  const [summary, eventsPayload, operationsPayload] = await Promise.all([
-    requestJson("/operations/summary").catch(() => ({})),
-    requestJson("/operations/events?limit=200&offset=0").catch(() => ({ events: [] })),
-    requestJson("/operations").catch(() => ({ machines: [] })),
-  ]);
-  const events = eventsPayload.events || [];
-  const insights = [];
-  if (events.length < 3) return insights;
-
-  const byType = countBy(events, (event) => event.event_type || event.tipo || "Evento operacional");
-  const topType = topEntry(byType);
-  if (topType && topType[1] >= 2) {
-    insights.push({
-      statement: `${topType[0]} se repetiu ${topType[1]} vezes no período.`,
-      data: `${topType[1]} de ${events.length} ocorrências`,
-      period: "Período atual",
-      confidence: `${topType[1]} ocorrências`,
-      href: "/history",
-    });
-  }
-
-  const byArea = sumBy(events, (event) => event.machine_name || event.area_id || event.camera_id || "Sem área", (event) => Number(event.duration_seconds || event.duracao || 0));
-  const topArea = topEntry(byArea);
-  const totalDuration = Array.from(byArea.values()).reduce((sum, value) => sum + value, 0);
-  if (topArea && totalDuration > 0 && topArea[1] / totalDuration >= 0.35) {
-    insights.push({
-      statement: `${topArea[0]} concentrou ${Math.round((topArea[1] / totalDuration) * 100)}% da duração total das ocorrências.`,
-      data: `${Math.round(topArea[1])}s de ${Math.round(totalDuration)}s`,
-      period: "Período atual",
-      confidence: `${events.length} eventos`,
-      href: "/events",
-    });
-  }
-
-  const byHour = countBy(events, (event) => {
-    const date = new Date(event.started_at || event.inicio || event.criado_em || "");
-    return Number.isNaN(date.getTime()) ? "Sem horário" : `${String(date.getHours()).padStart(2, "0")}:00`;
-  });
-  const topHour = topEntry(byHour);
-  if (topHour && topHour[1] >= 2 && topHour[0] !== "Sem horário") {
-    insights.push({
-      statement: `${topHour[0]} foi o horário com maior concentração de ocorrências.`,
-      data: `${topHour[1]} ocorrências`,
-      period: "Período atual",
-      confidence: `${topHour[1]} ocorrências`,
-      href: "/events",
-    });
-  }
-
-  const offlineSeconds = Number(summary.tempo_total_monitorado || 0) * (1 - Number(summary.disponibilidade_camera || 100) / 100);
-  if (offlineSeconds >= 60) {
-    insights.push({
-      statement: `Houve indisponibilidade estimada de câmera no período.`,
-      data: `${Math.round(offlineSeconds)}s offline estimados`,
-      period: "Período atual",
-      confidence: summary.disponibilidade_camera ? `${summary.disponibilidade_camera}% disponibilidade` : "baixo",
-      href: "/cameras",
-    });
-  }
-
-  const machines = operationsPayload.machines || [];
-  const unavailableMachines = machines.filter((item) => item.monitor?.current_state === "unavailable");
-  if (unavailableMachines.length) {
-    insights.push({
-      statement: `${unavailableMachines.length} operação(ões) estão sem estado operacional disponível.`,
-      data: "Estados atuais de máquinas/áreas",
-      period: "Agora",
-      confidence: `${unavailableMachines.length} registros`,
-      href: "/overview",
-    });
-  }
-
-  return insights;
 }
 
 async function loadHelpWorkspace() {
@@ -862,28 +927,6 @@ async function loadHelpWorkspace() {
     { name: "Armazenamento", note: "Snapshots e banco ficam no diretório local de dados da instalação.", status: "Local" },
     { name: "Contato com a Campex", note: "Use o acompanhamento assistido do piloto para suporte técnico e validação operacional.", status: "Assistido" },
   ];
-}
-
-function countBy(items, keyFn) {
-  const map = new Map();
-  items.forEach((item) => {
-    const key = keyFn(item);
-    map.set(key, (map.get(key) || 0) + 1);
-  });
-  return map;
-}
-
-function sumBy(items, keyFn, valueFn) {
-  const map = new Map();
-  items.forEach((item) => {
-    const key = keyFn(item);
-    map.set(key, (map.get(key) || 0) + valueFn(item));
-  });
-  return map;
-}
-
-function topEntry(map) {
-  return Array.from(map.entries()).sort((a, b) => b[1] - a[1])[0];
 }
 
 function latestFrameText(cameras) {
@@ -933,11 +976,14 @@ function alertRow(item) {
 
 function eventStatusLabel(status) {
   if (status === "open") return "Aberto";
-  if (status === "analysis" || status === "em_analise") return "Em análise";
-  if (status === "acknowledged") return "Reconhecido";
   if (status === "closed") return "Encerrado";
-  if (status === "discarded" || status === "false_positive") return "Descartado";
   return status || "Aberto";
+}
+
+function workflowLabel(status) {
+  if (status === "acknowledged") return "Reconhecido";
+  if (status === "resolved") return "Resolvido";
+  return "Novo";
 }
 
 function eventSeverity(event) {
@@ -949,22 +995,50 @@ function eventSeverity(event) {
   return "normal";
 }
 
+function eventFamily(event) {
+  return event.event_family || event.business_taxonomy?.event_family || "unknown";
+}
+
+function eventSubtype(event) {
+  return event.event_subtype || event.business_taxonomy?.event_subtype || event.tipo || event.technical_type || "evento";
+}
+
+function eventFamilyTitle(event) {
+  const subtype = eventSubtype(event);
+  if (subtype === "machine_stoppage") return "Parada operacional";
+  if (subtype === "machine_running_without_operator") return "Máquina ativa sem operador";
+  if (subtype === "machine_stopped_with_operator") return "Máquina parada com operador";
+  if (subtype === "workstation_unattended") return "Posto sem operador";
+  if (eventFamily(event) === "interruption") return "Interrupção operacional";
+  if (eventFamily(event) === "wait") return "Espera operacional";
+  if (eventFamily(event) === "absence") return "Ausência operacional";
+  if (eventFamily(event) === "flow") return "Fluxo operacional";
+  return "Evento não classificado";
+}
+
+function eventWorkflow(event) {
+  return event.workflow_status || "new";
+}
+
+function eventPhysicalStatus(event) {
+  return event.physical_status || event.status || "open";
+}
+
 function eventStart(event) {
   return event.inicio || event.started_at || event.criado_em || "—";
 }
 
 function eventEnd(event) {
-  return event.fim || event.ended_at || "—";
+  return event.fim || event.ended_at || "";
 }
 
 function eventDuration(event) {
-  return event.duracao ?? event.duration_seconds ?? "—";
+  const value = event.duracao ?? event.duration_seconds ?? event.read_duration_seconds;
+  return value === null || value === undefined || value === "" ? "—" : secondsLabel(value);
 }
 
 function eventTitle(event) {
-  if (event.tipo === "machine_stoppage") return "Parada detectada";
-  if (event.tipo === "restricted_area_occupied") return "Pessoa em área restrita";
-  return event.tipo || event.event_type || "Evento operacional";
+  return eventFamilyTitle(event);
 }
 
 function eventCategory(event) {
@@ -979,30 +1053,83 @@ function unitForEvent(event) {
 }
 
 function evidenceLink(event) {
-  return event.midia_path || event.snapshot_path ? `<a class="cx-link" href="/eventos/${event.id}/evidence" target="_blank">Abrir</a>` : "—";
+  return event.midia_path || event.snapshot_path ? `<a class="cx-link" href="/eventos/${event.id}/evidence" target="_blank">Evidência</a>` : "Sem evidência";
 }
 
 function rowMenu() {
   return '<button class="cx-row-menu" type="button" data-open-detail>•••</button>';
 }
 
+function eventContext(event) {
+  const physical = event.physical_context || {};
+  const asset = event.asset_name || event.asset_id || physical.asset_id || event.machine_name || event.machine_monitor_id || physical.machine_monitor_id;
+  const process = event.process_name || event.process_id || physical.process_id;
+  const area = event.area_name || event.area_context_id || physical.area_context_id || event.area_id || physical.area_id;
+  const camera = event.camera_name || event.camera_id || physical.camera_id;
+  const unit = event.unidade_id || event.unit_id || physical.unidade_id || physical.site_id;
+  const primary = asset || process || area || camera || "Contexto não informado";
+  const location = [area, process].filter(Boolean).join(" → ") || unit || camera || "Local não informado";
+  return { primary, location, asset, process, area, camera, unit };
+}
+
+function eventTimeRange(event) {
+  const start = eventStart(event);
+  const end = eventEnd(event);
+  if (!end || end === "—") return `${start} → em andamento`;
+  return `${start} → ${end}`;
+}
+
+function eventObservedSummary(event) {
+  const observed = event.observed_context || event.metadata || event.metadados || {};
+  const parts = [];
+  if (observed.operator_absent_seconds) parts.push(`Operador ausente durante ${secondsLabel(observed.operator_absent_seconds)}`);
+  if (observed.operator_present_seconds) parts.push(`Operador presente durante ${secondsLabel(observed.operator_present_seconds)}`);
+  if (observed.duracao || event.duracao) parts.push(`Duração observada: ${eventDuration(event)}`);
+  if (event.confianca || observed.confianca) parts.push(`Confiança: ${Number(event.confianca || observed.confianca).toFixed(2)}`);
+  return parts.join(" · ") || "Fatos observados disponíveis no detalhe.";
+}
+
+function filterCanonicalEvents(rows) {
+  return (rows || []).filter((event) => {
+    const family = eventFamily(event);
+    return family !== "unknown" || currentTab === "não classificados";
+  });
+}
+
 function eventRow(event) {
+  const context = eventContext(event);
   return [
-    eventStart(event),
-    `<strong>${eventTitle(event)}</strong>`,
-    eventCategory(event),
-    event.unidade_id || event.unit_id || "—",
-    event.area_id || event.regiao_id || "—",
-    event.camera_id || "—",
-    event.machine_name || event.maquina || "—",
-    eventDuration(event),
-    badge(eventSeverity(event)),
-    badge(eventStatusLabel(event.status)),
+    `<div class="cx-event-cell"><strong>${eventTitle(event)}</strong><span>${familyLabel(eventFamily(event))}</span></div>`,
+    `<div class="cx-event-cell"><strong>${context.primary}</strong><span>${context.location}</span></div>`,
+    eventTimeRange(event),
+    eventPhysicalStatus(event) === "open" ? "em andamento" : eventDuration(event),
+    badge(workflowLabel(eventWorkflow(event))),
     evidenceLink(event),
-    event.alert_sent || event.alerta_enviado ? "Enviado" : "—",
-    event.responsavel || event.owner || "—",
     rowMenu(),
   ];
+}
+
+function eventCard(event) {
+  const context = eventContext(event);
+  const physical = eventPhysicalStatus(event);
+  return `
+    <article class="cx-event-card" data-event-card="${event.id || ""}">
+      <div class="cx-event-card-head">
+        <div>
+          <strong>${eventTitle(event)}</strong>
+          <span>${context.primary} · ${context.location}</span>
+        </div>
+        ${badge(physical === "open" ? "Em andamento" : "Encerrado")}
+      </div>
+      <p>${eventTimeRange(event)} · ${physical === "open" ? "em andamento" : eventDuration(event)}</p>
+      <p>${eventObservedSummary(event)}</p>
+      <div class="cx-event-card-actions">
+        ${badge(workflowLabel(eventWorkflow(event)))}
+        ${event.midia_path || event.snapshot_path ? `<a class="cx-link" href="/eventos/${event.id}/evidence" target="_blank">Evidência</a>` : `<span class="muted">Sem evidência</span>`}
+        <button class="cx-linklike" type="button" data-open-detail>Abrir evento</button>
+      </div>
+    </article>
+  `;
 }
 
 function cameraCard(camera) {
@@ -1048,15 +1175,17 @@ function evidenceRow(event) {
 }
 
 function eventTimelineSteps(event) {
+  const workflow = eventWorkflow(event);
   return [
     eventStart(event) !== "—" ? ["Situação iniciada", eventStart(event)] : null,
     event.confirmed_at ? ["Condição confirmada", event.confirmed_at] : null,
     event.id ? ["Evento criado", event.criado_em || eventStart(event)] : null,
     event.midia_path || event.snapshot_path ? ["Evidência salva", "Disponível"] : null,
     event.alert_sent || event.alerta_enviado ? ["Alerta enviado", "Registrado"] : null,
-    event.status === "acknowledged" ? ["Reconhecido", event.acknowledged_at || "—"] : null,
-    eventEnd(event) !== "—" ? ["Normalizado", eventEnd(event)] : null,
-    ["closed", "discarded"].includes(event.status) ? ["Encerrado", eventEnd(event)] : null,
+    workflow === "acknowledged" || workflow === "resolved" ? ["Reconhecido", event.acknowledged_at || event.human_context?.acknowledged_at || "—"] : null,
+    eventEnd(event) ? ["Normalizado", eventEnd(event)] : null,
+    eventPhysicalStatus(event) === "closed" ? ["Encerrado fisicamente", eventEnd(event) || "—"] : null,
+    workflow === "resolved" ? ["Resolvido pela gestão", event.resolved_at || event.human_context?.resolved_at || "—"] : null,
   ].filter(Boolean);
 }
 
@@ -1066,30 +1195,60 @@ function renderTimelineList(steps) {
 }
 
 function eventDetail(event) {
+  const context = eventContext(event);
+  const physical = event.physical_context || {};
+  const observed = event.observed_context || {};
+  const human = event.human_context || {};
+  const workflow = eventWorkflow(event);
+  const evidence = event.midia_path || event.snapshot_path;
   return `
     <h2>${eventTitle(event)}</h2>
-    <div class="cx-detail-frame">${event.midia_path || event.snapshot_path ? `<img src="/eventos/${event.id}/evidence" alt="Frame da ocorrência" />` : "Sem snapshot disponível"}</div>
+    <p class="muted">${context.primary} · ${context.location}</p>
     <dl>
-      <div><dt>Horário inicial</dt><dd>${eventStart(event)}</dd></div>
-      <div><dt>Horário final</dt><dd>${eventEnd(event)}</dd></div>
-      <div><dt>Duração</dt><dd>${eventDuration(event)}</dd></div>
-      <div><dt>Área</dt><dd>${event.area_id || event.regiao_id || "—"}</dd></div>
-      <div><dt>Câmera</dt><dd>${event.camera_id || "—"}</dd></div>
-      <div><dt>Regra acionada</dt><dd>${event.regra_id || event.rule_id || "—"}</dd></div>
+      <div><dt>Família</dt><dd>${familyLabel(eventFamily(event))}</dd></div>
+      <div><dt>Horário</dt><dd>${eventTimeRange(event)}</dd></div>
+      <div><dt>Duração</dt><dd>${eventPhysicalStatus(event) === "open" ? "em andamento" : eventDuration(event)}</dd></div>
+      <div><dt>Status físico</dt><dd>${eventStatusLabel(eventPhysicalStatus(event))}</dd></div>
+      <div><dt>Workflow</dt><dd>${workflowLabel(workflow)}</dd></div>
       <div><dt>Severidade</dt><dd>${eventSeverity(event)}</dd></div>
-      <div><dt>Responsável</dt><dd>${event.responsavel || "—"}</dd></div>
-      <div><dt>Status</dt><dd>${eventStatusLabel(event.status)}</dd></div>
-      <div><dt>Entregas de alerta</dt><dd>${event.alert_sent || event.alerta_enviado ? "Registradas" : "—"}</dd></div>
+      <div><dt>event_uuid</dt><dd><code>${event.event_uuid || "—"}</code></dd></div>
+    </dl>
+    <h3>Evidência</h3>
+    <div class="cx-detail-frame">${evidence ? `<img src="/eventos/${event.id}/evidence" alt="Frame da ocorrência" />` : "Este evento não possui evidência visual disponível."}</div>
+    <h3>O que a Campex observou</h3>
+    <dl>
+      <div><dt>Tipo técnico</dt><dd>${event.technical_type || event.tipo || "—"}</dd></div>
+      <div><dt>Operador presente</dt><dd>${observed.operador_presente ?? event.operador_presente ?? "—"}</dd></div>
+      <div><dt>Confiança</dt><dd>${observed.confianca ?? event.confianca ?? "—"}</dd></div>
+      <div><dt>Pessoas</dt><dd>${observed.quantidade_maxima ?? event.quantidade_maxima ?? event.quantidade_atual ?? "—"}</dd></div>
+      <div><dt>Contexto observado</dt><dd>${eventObservedSummary(event)}</dd></div>
+    </dl>
+    <h3>Contexto da operação</h3>
+    <dl>
+      <div><dt>Empresa</dt><dd>${event.cliente_id || physical.cliente_id || "—"}</dd></div>
+      <div><dt>Unidade</dt><dd>${event.unidade_id || physical.unidade_id || physical.site_id || "—"}</dd></div>
+      <div><dt>Área</dt><dd>${context.area || "—"}</dd></div>
+      <div><dt>Processo</dt><dd>${context.process || "—"}</dd></div>
+      <div><dt>Ativo/posto</dt><dd>${context.asset || "—"}</dd></div>
+      <div><dt>Câmera</dt><dd>${context.camera || "—"}</dd></div>
     </dl>
     <h3>Timeline</h3>
     ${renderTimelineList(eventTimelineSteps(event))}
-    <h3>Metadados</h3>
-    <pre>${JSON.stringify(event.metadados || event.metadata || {}, null, 2)}</pre>
-    <div class="cx-detail-actions">
-      <button type="button" ${event.id ? `data-event-detail-action="acknowledged" data-event-id="${event.id}"` : "disabled"}>Reconhecer</button>
-      <button type="button" disabled title="Encerramento manual será ativado quando o backend suportar esta ação.">Encerrar</button>
-      <button type="button" disabled title="Descarte manual será ativado quando o backend suportar esta ação.">Descartar falso positivo</button>
-    </div>
+    <h3>Gestão do evento</h3>
+    <form class="cx-event-workflow-form" data-event-workflow-form data-event-id="${event.id || ""}" data-workflow="${workflow}">
+      <label>Causa confirmada<input name="confirmed_cause" value="${human.confirmed_cause || event.confirmed_cause || ""}" placeholder="Ex.: falta de material" /></label>
+      <label>Ação tomada<input name="action_taken" value="${human.action_taken || event.action_taken || ""}" placeholder="Ex.: abastecimento solicitado" /></label>
+      <label>Notas<textarea name="human_notes" rows="3" placeholder="Observações da gestão">${human.human_notes || event.human_notes || ""}</textarea></label>
+      <div class="cx-detail-actions">
+        ${workflow === "new" ? `<button type="button" data-event-workflow-action="acknowledge" data-event-id="${event.id}">Reconhecer</button>` : ""}
+        ${workflow !== "resolved" ? `<button type="button" data-event-workflow-action="save-human" data-event-id="${event.id}">Salvar contexto</button><button type="button" data-event-workflow-action="resolve" data-event-id="${event.id}">Resolver</button>` : `<span class="muted">Resolvido por ${human.resolved_by || event.resolved_by || "—"} em ${human.resolved_at || event.resolved_at || "—"}</span>`}
+      </div>
+      <p class="muted" data-event-workflow-status></p>
+    </form>
+    <details>
+      <summary>Detalhe técnico</summary>
+      <pre>${JSON.stringify({ technical_type: event.technical_type || event.tipo, observed_context: observed, human_context: human }, null, 2)}</pre>
+    </details>
   `;
 }
 
@@ -1250,12 +1409,19 @@ function conditionFromForm(data) {
 
 function matchesTab(row) {
   const text = JSON.stringify(row).toLowerCase();
+  if ((currentTab === "all" || currentTab === "todas" || currentTab === "todos") && (row.tipo || row.event_family || row.event_uuid)) return eventFamily(row) !== "unknown";
   if (currentTab === "all" || currentTab === "todas" || currentTab === "todos" || currentTab === "grade" || currentTab === "lista") return true;
   if (currentTab === "ativa") return cameraStatusLabel(row.status).toLowerCase() === "ativa";
   if (currentTab === "sem sinal") return cameraStatusLabel(row.status).toLowerCase() === "sem sinal";
   if (currentTab === "em configuração") return cameraStatusLabel(row.status).toLowerCase() === "em configuração";
   if (currentTab === "pausada") return cameraStatusLabel(row.status).toLowerCase() === "pausada";
-  if (["aberto", "em análise", "reconhecido", "encerrado", "descartado"].includes(currentTab)) return eventStatusLabel(row.status).toLowerCase() === currentTab;
+  if (currentTab === "abertos") return eventPhysicalStatus(row) === "open";
+  if (currentTab === "encerrados") return eventPhysicalStatus(row) === "closed";
+  if (currentTab === "novo") return eventWorkflow(row) === "new";
+  if (currentTab === "reconhecido") return eventWorkflow(row) === "acknowledged";
+  if (currentTab === "resolvido") return eventWorkflow(row) === "resolved";
+  if (currentTab === "não classificados") return eventFamily(row) === "unknown";
+  if (["aberto", "em análise", "encerrado", "descartado"].includes(currentTab)) return eventStatusLabel(row.status).toLowerCase() === currentTab;
   if (currentTab === "paradas") return text.includes("stoppage") || text.includes("parada");
   if (currentTab === "pessoas") return text.includes("restricted") || text.includes("pessoa");
   if (currentTab === "máquinas") return text.includes("machine") || text.includes("máquina");
@@ -1323,6 +1489,10 @@ function loginState(config) {
   `;
 }
 
+function usesProductMemoryShell(path) {
+  return path === "/operations-view" || path === "/events" || path === "/insights";
+}
+
 function renderOperationsAuthState() {
   title.textContent = "";
   heading.textContent = "";
@@ -1364,9 +1534,23 @@ function renderRows(config) {
     body.innerHTML = rows.map((row, index) => `<tr data-row-index="${index}">${config.row(row).map((cell) => `<td>${cell}</td>`).join("")}</tr>`).join("");
   }
   const path = window.location.pathname;
-  const useGrid = config.card && (viewMode === "grid" || path === "/cameras" || path === "/evidence");
+  const useGrid = config.card && (viewMode === "grid" || path === "/cameras" || path === "/evidence" || path === "/events");
   grid.style.display = useGrid ? "grid" : "none";
-  grid.innerHTML = useGrid ? rows.map(config.card).join("") : "";
+  grid.innerHTML = useGrid ? (rows.length ? rows.map(config.card).join("") : emptyState(config)) : "";
+  openEventFromQuery(config, rowsCache);
+}
+
+function openEventFromQuery(config, rows) {
+  if (config.title !== "Events") return;
+  const params = new URLSearchParams(window.location.search);
+  const eventUuid = params.get("event_uuid");
+  const eventId = params.get("event_id") || params.get("id");
+  if (!eventUuid && !eventId) return;
+  const event = rows.find((item) => item.event_uuid === eventUuid || item.id === eventId);
+  if (event) {
+    window.history.replaceState({ path: window.location.pathname }, "", window.location.pathname);
+    openDrawer(event, config);
+  }
 }
 
 function renderNotFound(path = window.location.pathname) {
@@ -1405,10 +1589,15 @@ function renderNotFound(path = window.location.pathname) {
   });
 }
 
-function openDrawer(row, config) {
+async function openDrawer(row, config) {
   drawer.classList.add("open");
   drawer.setAttribute("aria-hidden", "false");
-  drawerContent.innerHTML = config.detail ? config.detail(row) : `<h2>${config.title}</h2><pre>${JSON.stringify(row, null, 2)}</pre>`;
+  drawerContent.innerHTML = "<p>Carregando detalhe...</p>";
+  let detailRow = row;
+  if (config.title === "Events" && row?.id) {
+    detailRow = await requestJson(`/eventos/${row.id}/detail`).catch(() => row);
+  }
+  drawerContent.innerHTML = config.detail ? config.detail(detailRow) : `<h2>${config.title}</h2><pre>${JSON.stringify(detailRow, null, 2)}</pre>`;
   drawer.querySelector("h2")?.setAttribute("id", "workspaceDrawerTitle");
   drawer.focus({ preventScroll: true });
 }
@@ -1420,7 +1609,9 @@ async function loadPage(path = window.location.pathname) {
     return;
   }
   document.body.classList.toggle("cx-operations-mode", path === "/operations-view");
-  if (path !== "/operations-view") {
+  document.body.classList.toggle("cx-events-mode", path === "/events");
+  document.body.classList.toggle("cx-intelligence-mode", path === "/insights");
+  if (path !== "/operations-view" && path !== "/insights") {
     document.querySelector(".cx-panel")?.classList.remove("cx-ops-hide-panel");
   }
   if (config.external) {
@@ -1459,7 +1650,7 @@ async function loadPage(path = window.location.pathname) {
     if (config.actionHref) window.location.href = config.actionHref;
     else openPopover(primaryAction, config.action || "Ação futura", ["Recurso futuro do piloto", "Nenhuma alteração feita"]);
   };
-  cards.innerHTML = path === "/operations-view" ? "" : [
+  cards.innerHTML = usesProductMemoryShell(path) ? "" : [
     `<article><strong id="workspaceCount">—</strong><span>Registros</span></article>`,
     `<article><strong>Local</strong><span>SQLite persistente</span></article>`,
     `<article><strong>Seguro</strong><span>Sem credenciais no navegador</span></article>`,
@@ -1492,7 +1683,8 @@ async function loadPage(path = window.location.pathname) {
     let rows = config.transform ? config.transform(payload) : Array.isArray(payload) ? payload : payload.events || payload.deliveries || payload.recipients || payload.machines || [];
     rows = Array.isArray(rows) ? rows : [];
     rowsCache = config.filterRows ? config.filterRows(rows) : rows;
-    document.querySelector("#workspaceCount").textContent = rowsCache.length;
+    const workspaceCount = document.querySelector("#workspaceCount");
+    if (workspaceCount) workspaceCount.textContent = rowsCache.length;
     renderRows(config);
   } catch (error) {
     body.innerHTML = `<tr><td>Não foi possível carregar: ${error.message}</td></tr>`;
@@ -1586,13 +1778,42 @@ document.body.addEventListener("click", async (event) => {
     }
     return;
   }
+  const workflowButton = event.target.closest("[data-event-workflow-action]");
+  if (workflowButton) {
+    const form = workflowButton.closest("[data-event-workflow-form]");
+    const status = form?.querySelector("[data-event-workflow-status]");
+    const data = new FormData(form);
+    const payload = {
+      confirmed_cause: String(data.get("confirmed_cause") || "").trim() || null,
+      action_taken: String(data.get("action_taken") || "").trim() || null,
+      human_notes: String(data.get("human_notes") || "").trim() || null,
+    };
+    const eventId = workflowButton.dataset.eventId;
+    const action = workflowButton.dataset.eventWorkflowAction;
+    workflowButton.textContent = "Salvando...";
+    try {
+      const path = action === "acknowledge"
+        ? `/eventos/${eventId}/acknowledge`
+        : action === "resolve"
+          ? `/eventos/${eventId}/resolve`
+          : `/eventos/${eventId}/human-context`;
+      const method = action === "save-human" ? "PATCH" : "POST";
+      const updated = await requestJson(path, { method, body: JSON.stringify(payload) });
+      if (status) status.textContent = "Evento atualizado.";
+      drawerContent.innerHTML = eventDetail(updated);
+    } catch (error) {
+      if (status) status.textContent = `Erro: ${error.message}`;
+      workflowButton.textContent = "Erro";
+    }
+    return;
+  }
   const ruleForm = event.target.closest("#visualRuleForm");
   if (ruleForm && event.type === "submit") return;
   const row = event.target.closest("[data-row-index]");
   const menu = event.target.closest("[data-open-detail]");
   if (!row && !menu) return;
   const index = row ? Number(row.dataset.rowIndex) : 0;
-  openDrawer(rowsCache.filter(matchesTab).filter(includesSearch)[index] || rowsCache[0], currentRouteConfig());
+  await openDrawer(rowsCache.filter(matchesTab).filter(includesSearch)[index] || rowsCache[0], currentRouteConfig());
 });
 
 document.body.addEventListener("submit", async (event) => {

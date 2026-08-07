@@ -33,7 +33,7 @@
         <a href="/operations-view"><span class="cx-nav-icon" data-icon="operations"></span>Operations</a>
         <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Events</a>
         <a href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Intelligence</a>
-        <a class="active" aria-current="page" title="Live" href="/live-view"><span class="cx-nav-icon" data-icon="camera"></span>Live</a>
+        <a class="active" aria-current="page" title="Live" href="/live-grid"><span class="cx-nav-icon" data-icon="camera"></span>Live</a>
         <hr />
         <a href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Setup</a>
       </nav>
@@ -135,6 +135,8 @@
             <p>Leitura rápida da situação atual.</p>
           </div>
           <dl class="cx-context-list">
+            <div><dt>Ativo/posto</dt><dd id="liveViewAsset">Não configurado</dd></div>
+            <div><dt>Área/processo</dt><dd id="liveViewPath">Contexto em configuração</dd></div>
             <div><dt>Máquina</dt><dd id="liveViewMachine">Não configurada</dd></div>
             <div><dt>Estado</dt><dd id="liveViewMachineState">Dados indisponíveis</dd></div>
             <div><dt>Operador</dt><dd id="liveViewOperator">Dados indisponíveis</dd></div>
@@ -145,6 +147,7 @@
           <section class="live-current-event">
             <strong>Evento atual</strong>
             <span id="liveCurrentEvent">Nenhum evento operacional aberto.</span>
+            <a id="liveCurrentEventLink" href="/events" hidden>Ver evento</a>
           </section>
           <section class="live-current-event">
             <strong>Último alerta</strong>
@@ -157,45 +160,51 @@
             <span id="liveCriticalDuration">Tempo de ausência: 0s</span>
             <a id="liveCriticalEvidence" href="#" target="_blank" rel="noreferrer" hidden>Ver evidência</a>
           </section>
-          <section id="monitorConfigCard" class="zone-card monitor-config-card">
-            <strong id="monitorConfigTitle">Configure esta câmera</strong>
-            <p id="monitorConfigText">Defina a região da máquina e a área do operador para iniciar o monitoramento operacional.</p>
-            <label>
-              Máquina
-              <select id="machineSelect"></select>
-            </label>
-            <label>
-              Nome da máquina
-              <input id="machineNameInput" placeholder="Ex.: Extrusora principal" />
-            </label>
-            <label>
-              Máquina parada após (s)
-              <input id="machineStopSecondsInput" type="number" min="1" step="1" value="10" />
-            </label>
-            <label>
-              Operador ausente após (s)
-              <input id="operatorAbsenceSecondsInput" type="number" min="1" step="1" value="5" />
-            </label>
-            <label>
-              Parada com operador após (s)
-              <input id="stoppedWithOperatorSecondsInput" type="number" min="1" step="1" value="5" />
-            </label>
-            <div class="actions">
-              <button type="button" id="createMachineMonitor">Configurar monitoramento</button>
-              <button type="button" id="refreshMachines">Atualizar</button>
+          <details class="zone-card monitor-config-card live-config-mode">
+            <summary>
+              <span>
+                <strong id="monitorConfigTitle">Modo configuração</strong>
+                <small id="monitorConfigText">Zonas, calibração e parâmetros técnicos desta câmera.</small>
+              </span>
+            </summary>
+            <div id="monitorConfigCard" class="live-config-body">
+              <label>
+                Máquina
+                <select id="machineSelect"></select>
+              </label>
+              <label>
+                Nome da máquina
+                <input id="machineNameInput" placeholder="Ex.: Extrusora principal" />
+              </label>
+              <label>
+                Máquina parada após (s)
+                <input id="machineStopSecondsInput" type="number" min="1" step="1" value="10" />
+              </label>
+              <label>
+                Operador ausente após (s)
+                <input id="operatorAbsenceSecondsInput" type="number" min="1" step="1" value="5" />
+              </label>
+              <label>
+                Parada com operador após (s)
+                <input id="stoppedWithOperatorSecondsInput" type="number" min="1" step="1" value="5" />
+              </label>
+              <div class="actions">
+                <button type="button" id="createMachineMonitor">Configurar monitoramento</button>
+                <button type="button" id="refreshMachines">Atualizar</button>
+              </div>
+              <span id="machineRegionStatus">machine_region: não verificada</span>
+              <span id="calibrationStatus">Calibração: aguardando</span>
+              <span id="calibrationProgress">Progresso: 0%</span>
+              <span id="calibrationSamples">Amostras: 0</span>
+              <span id="calibrationBaselines">Baselines: ativa — / parada —</span>
+              <span id="calibrationSeparation">Separação: —</span>
+              <div class="actions">
+                <button type="button" id="calibrateActive">Calibrar máquina ativa</button>
+                <button type="button" id="calibrateStopped">Calibrar máquina parada</button>
+                <button type="button" id="startMonitoring">Iniciar monitoramento</button>
+              </div>
             </div>
-            <span id="machineRegionStatus">machine_region: não verificada</span>
-            <span id="calibrationStatus">Calibração: aguardando</span>
-            <span id="calibrationProgress">Progresso: 0%</span>
-            <span id="calibrationSamples">Amostras: 0</span>
-            <span id="calibrationBaselines">Baselines: ativa — / parada —</span>
-            <span id="calibrationSeparation">Separação: —</span>
-            <div class="actions">
-              <button type="button" id="calibrateActive">Calibrar máquina ativa</button>
-              <button type="button" id="calibrateStopped">Calibrar máquina parada</button>
-              <button type="button" id="startMonitoring">Iniciar monitoramento</button>
-            </div>
-          </section>
+          </details>
           <details class="technical-details">
             <summary>Detalhes técnicos</summary>
             <dl class="cx-context-list">

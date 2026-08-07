@@ -33,7 +33,7 @@
         <a href="/operations-view"><span class="cx-nav-icon" data-icon="operations"></span>Operations</a>
         <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Events</a>
         <a href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Intelligence</a>
-        <a href="/live-view"><span class="cx-nav-icon" data-icon="camera"></span>Live</a>
+        <a href="/live-grid"><span class="cx-nav-icon" data-icon="camera"></span>Live</a>
         <hr />
         <a class="active" aria-current="page" title="Setup" href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Setup</a>
       </nav>
@@ -100,6 +100,141 @@
           </div>
           <div id="loginStatus" class="muted">Sem login ou em modo configuração inicial.</div>
         </form>
+
+        <section id="setup-operacao" class="setup-v0-panel">
+          <div class="setup-v0-header">
+            <div>
+              <p class="eyebrow">Setup</p>
+              <h2>Estrutura da operação</h2>
+              <p>Organize a operação em unidade, área, processo, ativo e câmera. A Campex usa esse contexto para gerar eventos e métricas.</p>
+            </div>
+            <span id="setupSaveStatus" class="badge">Carregando configuração</span>
+          </div>
+
+          <div class="setup-v0-grid">
+            <form id="setupUnitForm" class="form compact-card">
+              <h3>1. Unidade/Fábrica</h3>
+              <label>
+                Cliente
+                <select name="cliente_id" id="setupUnitClientSelect"></select>
+              </label>
+              <label>
+                Nome da unidade
+                <input name="nome" required placeholder="Ex.: Fábrica principal" />
+              </label>
+              <button type="submit">Salvar unidade</button>
+            </form>
+
+            <form id="setupAreaForm" class="form compact-card">
+              <h3>2. Área</h3>
+              <label>
+                Unidade
+                <select name="unidade_id" id="setupAreaUnitSelect" required></select>
+              </label>
+              <label>
+                Nome da área
+                <input name="nome" required placeholder="Ex.: Corte" />
+              </label>
+              <button type="submit">Salvar área</button>
+            </form>
+
+            <form id="setupProcessForm" class="form compact-card">
+              <h3>3. Processo/Estação</h3>
+              <label>
+                Área
+                <select name="area_id" id="setupProcessAreaSelect"></select>
+              </label>
+              <label>
+                Nome do processo
+                <input name="nome" required placeholder="Ex.: Linha A6" />
+              </label>
+              <button type="submit">Salvar processo</button>
+            </form>
+
+            <form id="setupAssetForm" class="form compact-card">
+              <h3>4. Máquina/Posto</h3>
+              <label>
+                Processo
+                <select name="process_id" id="setupAssetProcessSelect"></select>
+              </label>
+              <label>
+                Nome do ativo
+                <input name="nome" required placeholder="Ex.: A6" />
+              </label>
+              <button type="submit">Salvar ativo</button>
+            </form>
+          </div>
+
+          <div class="settings-grid">
+            <section class="compact-card">
+              <h3>Hierarquia configurada</h3>
+              <div id="setupHierarchy" class="compact-list">Carregando...</div>
+            </section>
+
+            <section class="compact-card">
+              <h3>Associar câmera ao ativo</h3>
+              <form id="setupCameraContextForm" class="form compact-form">
+                <label>
+                  Câmera
+                  <select name="camera_id" id="setupContextCameraSelect" required></select>
+                </label>
+                <label>
+                  Ativo/máquina/posto
+                  <select name="asset_id" id="setupContextAssetSelect" required></select>
+                </label>
+                <button type="submit">Associar câmera</button>
+              </form>
+              <div id="setupCameraLinks" class="compact-list"></div>
+            </section>
+          </div>
+
+          <div class="settings-grid">
+            <section class="compact-card">
+              <h3>O que a Campex deve observar?</h3>
+              <div id="setupCapabilities" class="compact-list">Carregando capacidades...</div>
+            </section>
+
+            <section class="compact-card">
+              <h3>Status de configuração</h3>
+              <div id="setupReadiness" class="compact-list">Carregando status...</div>
+            </section>
+          </div>
+
+          <section class="compact-card">
+            <h3>Zonas, tolerâncias e monitor</h3>
+            <p class="muted">
+              Desenhe a região da máquina e a zona do operador na câmera aberta abaixo. Depois salve o monitor com tempos em linguagem operacional.
+            </p>
+            <form id="setupMonitorForm" class="form">
+              <div class="grid">
+                <label>
+                  Câmera
+                  <select name="camera_id" id="setupMonitorCameraSelect" required></select>
+                </label>
+                <label>
+                  Nome da máquina/posto
+                  <input name="nome" required placeholder="Ex.: A6" />
+                </label>
+                <label>
+                  Considere parada após
+                  <input name="stop_seconds" type="number" min="1" value="30" />
+                </label>
+                <label>
+                  Considere ausência após
+                  <input name="operator_absence_seconds" type="number" min="1" value="300" />
+                </label>
+                <label>
+                  Parada com operador após
+                  <input name="stopped_with_operator_seconds" type="number" min="1" value="120" />
+                </label>
+              </div>
+              <div class="actions">
+                <button type="button" id="setupOpenCameraButton">Abrir câmera para desenhar zonas</button>
+                <button type="submit">Salvar monitor com zonas desenhadas</button>
+              </div>
+            </form>
+          </section>
+        </section>
 
         <div class="settings-grid">
           <div id="cliente">

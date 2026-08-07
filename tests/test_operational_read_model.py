@@ -12,7 +12,7 @@ from app.auth import create_user
 from app.database import connect, init_db
 from app.models import criar_camera, criar_cliente, criar_unidade, obter_evento, registrar_evento, registrar_operational_sample
 from app.operational_context import criar_operational_area, criar_operational_asset, criar_operational_process
-from app.operational_read_model import ReadModelFilters, comparison, current_operation, losses, parse_datetime, period_summary
+from app.operational_read_model import ReadModelFilters, comparison, current_operation, intelligence, losses, parse_datetime, period_summary
 
 
 NOW = datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc)
@@ -234,3 +234,86 @@ def test_read_model_api_summary_endpoint() -> None:
 
     assert response.status_code == 200
     assert response.json()["event_uuids"] == ["evt-api-1"]
+
+
+def test_intelligence_excludes_unknown_from_insights_and_keeps_quality_note() -> None:
+    temp_dir, _db_path, connection, cliente_id, site_id, _area_id, _process_id, _asset_id, camera_id = make_context()
+    with temp_dir, connection:
+        add_event(connection, cliente_id, site_id, camera_id, "machine_stoppage", start="2026-08-07T09:00:00+00:00", end="2026-08-07T09:20:00+00:00", duration=1200, event_uuid="evt-intel-known")
+        add_event(connection, cliente_id, site_id, camera_id, "restricted_area_occupied", start="2026-08-07T10:00:00+00:00", end="2026-08-07T10:15:00+00:00", duration=900, event_uuid="evt-intel-unknown")
+        payload = intelligence(connection, ReadModelFilters(cliente_id=cliente_id, start=START, end=END), now=NOW)
+
+    insight_uuids = {uuid for item in [*payload["attention"], *payload["patterns"]] for uuid in item["event_uuids"]}
+    assert "evt-intel-known" in insight_uuids
+    assert "evt-intel-unknown" not in insight_uuids
+    assert payload["data_quality"]["unknown_events"] == 1
+    assert payload["data_quality"]["unknown_event_uuids"] == ["evt-intel-unknown"]
+
+
+def test_intelligence_uses_only_confirmed_cause_not_observed_context() -> None:
+    temp_dir, _db_path, connection, cliente_id, site_id, _area_id, _process_id, _asset_id, camera_id = make_context()
+    with temp_dir, connection:
+        event_id = add_event(
+            connection,
+            cliente_id,
+            site_id,
+            camera_id,
+            "machine_stoppage",
+            start="2026-08-07T09:00:00+00:00",
+            end="2026-08-07T09:10:00+00:00",
+            duration=600,
+            event_uuid="evt-observed-not-cause",
+        )
+        connection.execute("UPDATE eventos SET metadata_json = ? WHERE id = ?", ('{"observed_context": "falta de material aparente"}', event_id))
+        add_event(
+            connection,
+            cliente_id,
+            site_id,
+            camera_id,
+            "machine_stoppage",
+            start="2026-08-07T10:00:00+00:00",
+            end="2026-08-07T10:10:00+00:00",
+            duration=600,
+            event_uuid="evt-confirmed-cause",
+            confirmed_cause="manutenção",
+        )
+        payload = intelligence(connection, ReadModelFilters(cliente_id=cliente_id, start=START, end=END), now=NOW)
+
+    causes = {item["key"]: item for item in payload["confirmed_causes"]}
+    assert "falta de material aparente" not in causes
+    assert causes["manutenção"]["event_uuids"] == ["evt-confirmed-cause"]
+    assert causes["causa não informada"]["event_uuids"] == ["evt-observed-not-cause"]
+
+
+def test_intelligence_comparison_is_safe_and_traceable() -> None:
+    temp_dir, _db_path, connection, cliente_id, site_id, _area_id, _process_id, _asset_id, camera_id = make_context()
+    with temp_dir, connection:
+        add_event(connection, cliente_id, site_id, camera_id, "machine_stoppage", start="2026-08-07T09:00:00+00:00", end="2026-08-07T09:10:00+00:00", duration=600, event_uuid="evt-intel-current")
+        payload = intelligence(connection, ReadModelFilters(cliente_id=cliente_id, start=START, end=END), now=NOW)
+
+    duration_metric = payload["comparison"]["metrics"]["total_duration_seconds"]
+    assert duration_metric["current"] == 600
+    assert duration_metric["previous"] == 0
+    assert duration_metric["percent_change"] is None
+    assert payload["traceability"]["event_uuids"] == ["evt-intel-current"]
+    assert payload["coverage"]["status"] == "unknown"
+
+
+def test_intelligence_api_endpoint() -> None:
+    temp_dir, db_path, connection, cliente_id, site_id, _area_id, _process_id, _asset_id, camera_id = make_context()
+    with temp_dir:
+        add_event(connection, cliente_id, site_id, camera_id, "machine_stoppage", start="2026-08-07T09:00:00+00:00", end="2026-08-07T09:10:00+00:00", duration=600, event_uuid="evt-intel-api")
+        create_user(connection, "intel@example.com", "senha", "admin_cliente", cliente_id)
+        connection.close()
+
+        def test_connect(_path=None):
+            return connect(db_path)
+
+        with patch("app.api.connect", test_connect):
+            client = TestClient(api)
+            client.post("/auth/login", json={"email": "intel@example.com", "senha": "senha"})
+            response = client.get("/operations/read-model/insights", params={"start": "2026-08-07T08:00:00+00:00", "end": "2026-08-07T12:00:00+00:00", "camera_id": camera_id})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["attention"][0]["event_uuids"] == ["evt-intel-api"]

@@ -103,7 +103,9 @@ def test_operations_current_uses_canonical_context_labels() -> None:
 def test_operations_load_page_does_not_inject_legacy_shell_cards() -> None:
     script = Path(ROOT / "frontend" / "workspace.js").read_text(encoding="utf-8")
 
-    assert 'cards.innerHTML = path === "/operations-view" ? ""' in script
+    assert "function usesProductMemoryShell" in script
+    assert 'path === "/operations-view" || path === "/events" || path === "/insights"' in script
+    assert "cards.innerHTML = usesProductMemoryShell(path) ? \"\"" in script
     assert "renderOperationsAuthState" in script
     assert "Entre para acessar os dados da operação." in script
     assert "/settings/cameras?next=%2Foperations-view#login" in script

@@ -58,6 +58,25 @@ const unitClientSelect = document.querySelector("#unitClientSelect");
 const userClientSelect = document.querySelector("#userClientSelect");
 const cameraUnitSelect = document.querySelector("#cameraUnitSelect");
 const machineCameraSelect = document.querySelector("#machineCameraSelect");
+const setupSaveStatus = document.querySelector("#setupSaveStatus");
+const setupUnitForm = document.querySelector("#setupUnitForm");
+const setupAreaForm = document.querySelector("#setupAreaForm");
+const setupProcessForm = document.querySelector("#setupProcessForm");
+const setupAssetForm = document.querySelector("#setupAssetForm");
+const setupCameraContextForm = document.querySelector("#setupCameraContextForm");
+const setupMonitorForm = document.querySelector("#setupMonitorForm");
+const setupOpenCameraButton = document.querySelector("#setupOpenCameraButton");
+const setupUnitClientSelect = document.querySelector("#setupUnitClientSelect");
+const setupAreaUnitSelect = document.querySelector("#setupAreaUnitSelect");
+const setupProcessAreaSelect = document.querySelector("#setupProcessAreaSelect");
+const setupAssetProcessSelect = document.querySelector("#setupAssetProcessSelect");
+const setupContextCameraSelect = document.querySelector("#setupContextCameraSelect");
+const setupContextAssetSelect = document.querySelector("#setupContextAssetSelect");
+const setupMonitorCameraSelect = document.querySelector("#setupMonitorCameraSelect");
+const setupHierarchy = document.querySelector("#setupHierarchy");
+const setupCameraLinks = document.querySelector("#setupCameraLinks");
+const setupCapabilities = document.querySelector("#setupCapabilities");
+const setupReadiness = document.querySelector("#setupReadiness");
 
 let currentCameraId = null;
 let currentCameraName = null;
@@ -80,6 +99,15 @@ let knownClients = [];
 let knownUnits = [];
 let knownCameras = [];
 let knownRecipients = [];
+let setupOperation = {
+  areas: [],
+  processes: [],
+  assets: [],
+  capabilities: [],
+  asset_status: [],
+  monitored_areas: [],
+  machine_monitors: [],
+};
 
 function formPayload(targetForm) {
   const data = new FormData(targetForm);
@@ -97,6 +125,232 @@ function fillSelect(select, items, emptyLabel) {
     `<option value="">${emptyLabel}</option>`,
     ...items.map((item) => `<option value="${item.id}">${item.nome}</option>`),
   ].join("");
+}
+
+function safeText(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function setSetupStatus(message, offline = false) {
+  if (!setupSaveStatus) return;
+  setupSaveStatus.textContent = message;
+  setupSaveStatus.classList.toggle("offline", offline);
+}
+
+function fillSetupSelects() {
+  fillSelect(setupUnitClientSelect, knownClients, "Cliente padrão ou selecione");
+  fillSelect(setupAreaUnitSelect, knownUnits, "Selecione a unidade");
+  fillSelect(setupContextCameraSelect, knownCameras, "Selecione a câmera");
+  fillSelect(setupMonitorCameraSelect, knownCameras, "Selecione a câmera");
+  fillSelect(setupProcessAreaSelect, setupOperation.areas, "Selecione a área");
+  fillSelect(setupAssetProcessSelect, setupOperation.processes, "Selecione o processo");
+  fillSelect(setupContextAssetSelect, setupOperation.assets, "Selecione o ativo");
+}
+
+function contextForProcess(processId) {
+  const process = setupOperation.processes.find((item) => item.id === processId);
+  const area = setupOperation.areas.find((item) => item.id === process?.area_id);
+  const unit = knownUnits.find((item) => item.id === process?.unidade_id);
+  return { process, area, unit };
+}
+
+function contextForAsset(assetId) {
+  const asset = setupOperation.assets.find((item) => item.id === assetId);
+  const process = setupOperation.processes.find((item) => item.id === asset?.process_id);
+  const area = setupOperation.areas.find((item) => item.id === (asset?.area_id || process?.area_id));
+  const unit = knownUnits.find((item) => item.id === asset?.unidade_id);
+  return { asset, process, area, unit };
+}
+
+function renderSetupHierarchy() {
+  if (!setupHierarchy) return;
+  if (!knownUnits.length) {
+    setupHierarchy.innerHTML = '<div class="muted">Crie a primeira unidade para começar.</div>';
+    return;
+  }
+  setupHierarchy.innerHTML = knownUnits.map((unit) => {
+    const areas = setupOperation.areas.filter((area) => area.unidade_id === unit.id);
+    return `
+      <article class="compact-card">
+        <strong>${safeText(unit.nome)}</strong>
+        ${areas.length ? areas.map((area) => {
+          const processes = setupOperation.processes.filter((process) => process.area_id === area.id);
+          return `
+            <div class="setup-tree-row"><span>Área</span>${safeText(area.nome)}</div>
+            ${processes.map((process) => {
+              const assets = setupOperation.assets.filter((asset) => asset.process_id === process.id);
+              return `
+                <div class="setup-tree-row nested"><span>Processo</span>${safeText(process.nome)}</div>
+                ${assets.map((asset) => `<div class="setup-tree-row nested deep"><span>Ativo</span>${safeText(asset.nome)}</div>`).join("")}
+              `;
+            }).join("")}
+          `;
+        }).join("") : '<div class="muted">Nenhuma área criada nesta unidade.</div>'}
+      </article>
+    `;
+  }).join("");
+}
+
+function renderSetupCameraLinks() {
+  if (!setupCameraLinks) return;
+  const linked = knownCameras.filter((camera) => camera.asset_id);
+  setupCameraLinks.innerHTML = linked.length ? linked.map((camera) => {
+    const { asset, process, area } = contextForAsset(camera.asset_id);
+    return `
+      <article class="compact-card">
+        <strong>${safeText(camera.nome)}</strong>
+        <span>${safeText(asset?.nome || "Ativo")} · ${safeText(area?.nome || "Área")} → ${safeText(process?.nome || "Processo")}</span>
+      </article>
+    `;
+  }).join("") : '<div class="muted">Nenhuma câmera associada ao contexto operacional.</div>';
+}
+
+function renderSetupCapabilities() {
+  if (!setupCapabilities) return;
+  setupCapabilities.innerHTML = setupOperation.capabilities.map((capability) => `
+    <article class="compact-card">
+      <strong>${safeText(capability.label)}</strong>
+      <span>${safeText(capability.description)} · ${capability.supported ? "Disponível" : "Em desenvolvimento"}</span>
+    </article>
+  `).join("");
+}
+
+function renderSetupReadiness() {
+  if (!setupReadiness) return;
+  if (!setupOperation.asset_status.length) {
+    setupReadiness.innerHTML = '<div class="muted">Crie um ativo para acompanhar o status de configuração.</div>';
+    return;
+  }
+  setupReadiness.innerHTML = setupOperation.asset_status.map((item) => `
+    <article class="compact-card">
+      <strong>${safeText(item.asset_name)}</strong>
+      <span>${item.ready ? "Pronto para monitorar" : "Configuração incompleta"}</span>
+      ${item.missing?.length ? `<div class="muted">Falta: ${item.missing.map(safeText).join(", ")}.</div>` : '<div class="muted">Câmera, zonas e monitor ativos.</div>'}
+    </article>
+  `).join("");
+}
+
+async function loadSetupOperation() {
+  if (!setupHierarchy) return;
+  try {
+    setupOperation = await requestJson("/setup/operation");
+    knownClients = setupOperation.clientes || knownClients;
+    knownUnits = setupOperation.unidades || knownUnits;
+    knownCameras = setupOperation.cameras || knownCameras;
+    fillSetupSelects();
+    renderSetupHierarchy();
+    renderSetupCameraLinks();
+    renderSetupCapabilities();
+    renderSetupReadiness();
+    setSetupStatus("Configuração carregada");
+  } catch (error) {
+    setSetupStatus(`Setup indisponível: ${error.message}`, true);
+  }
+}
+
+async function saveSetupUnit(event) {
+  event.preventDefault();
+  await requestJson("/unidades", {
+    method: "POST",
+    body: JSON.stringify(formPayload(setupUnitForm)),
+  });
+  setupUnitForm.reset();
+  await Promise.all([loadConfigData(), loadSetupOperation()]);
+}
+
+async function saveSetupArea(event) {
+  event.preventDefault();
+  const payload = formPayload(setupAreaForm);
+  if (!payload.unidade_id) throw new Error("Selecione a unidade da área.");
+  await requestJson("/setup/areas", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  setupAreaForm.reset();
+  await loadSetupOperation();
+}
+
+async function saveSetupProcess(event) {
+  event.preventDefault();
+  const payload = formPayload(setupProcessForm);
+  const area = setupOperation.areas.find((item) => item.id === payload.area_id);
+  if (!area) throw new Error("Selecione a área do processo.");
+  payload.unidade_id = area.unidade_id;
+  await requestJson("/setup/processes", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  setupProcessForm.reset();
+  await loadSetupOperation();
+}
+
+async function saveSetupAsset(event) {
+  event.preventDefault();
+  const payload = formPayload(setupAssetForm);
+  const { process, area } = contextForProcess(payload.process_id);
+  if (!process) throw new Error("Selecione o processo do ativo.");
+  payload.unidade_id = process.unidade_id;
+  payload.area_id = area?.id || process.area_id;
+  await requestJson("/setup/assets", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  setupAssetForm.reset();
+  await loadSetupOperation();
+}
+
+async function saveSetupCameraContext(event) {
+  event.preventDefault();
+  const payload = formPayload(setupCameraContextForm);
+  const { asset, process, area } = contextForAsset(payload.asset_id);
+  if (!payload.camera_id || !asset) throw new Error("Selecione câmera e ativo.");
+  await requestJson(`/setup/cameras/${payload.camera_id}/context`, {
+    method: "POST",
+    body: JSON.stringify({
+      asset_id: asset.id,
+      process_id: process?.id || asset.process_id,
+      area_context_id: area?.id || asset.area_id,
+    }),
+  });
+  setupCameraContextForm.reset();
+  await Promise.all([loadCameras(), loadSetupOperation()]);
+}
+
+function activeAreaByType(typeNames) {
+  return currentAreas.find((area) => area.ativa && typeNames.includes(area.tipo));
+}
+
+async function saveSetupMonitor(event) {
+  event.preventDefault();
+  const payload = formPayload(setupMonitorForm);
+  if (!payload.camera_id) throw new Error("Selecione a câmera do monitor.");
+  if (currentCameraId !== payload.camera_id) {
+    const camera = knownCameras.find((item) => item.id === payload.camera_id);
+    await openCamera(payload.camera_id, camera?.nome || "Câmera");
+  }
+  const machineRegion = activeAreaByType(["machine_region"]);
+  const operatorZone = activeAreaByType(["operator_zone", "workstation", "work_area"]);
+  if (!machineRegion || !operatorZone) {
+    throw new Error("Desenhe e salve uma região da máquina e uma zona do operador antes de ativar o monitor.");
+  }
+  await requestJson(`/cameras/${payload.camera_id}/machine-monitors`, {
+    method: "POST",
+    body: JSON.stringify({
+      nome: payload.nome,
+      ativo: true,
+      machine_polygon: machineRegion.pontos,
+      operator_polygon: operatorZone.pontos,
+      stop_seconds: Number(payload.stop_seconds || 30),
+      operator_absence_seconds: Number(payload.operator_absence_seconds || 300),
+      stopped_with_operator_seconds: Number(payload.stopped_with_operator_seconds || 120),
+    }),
+  });
+  setupMonitorForm.reset();
+  await Promise.all([loadMachines(), loadMachineConfigList(), loadSetupOperation()]);
 }
 
 function focusLoginFromHash() {
@@ -210,6 +464,7 @@ async function saveCamera(event) {
       sessionStorage.setItem("campex_live_view_source", JSON.stringify(lastRtspPayload));
     }
     await loadCameras();
+    await loadSetupOperation();
     form.reset();
     form.elements.porta_rtsp.value = 554;
   } catch (error) {
@@ -245,6 +500,7 @@ async function loadCameras() {
   knownCameras = cameras;
   renderCameras(cameras);
   fillSelect(machineCameraSelect, cameras, "Selecione uma câmera");
+  fillSetupSelects();
   if (cameras.length === 1 && !currentCameraId) {
     openCamera(cameras[0].id, cameras[0].nome).catch(() => {});
   }
@@ -261,6 +517,7 @@ async function loadConfigData() {
   fillSelect(unitClientSelect, clients, "Cliente padrão ou selecione");
   fillSelect(userClientSelect, clients, "Cliente padrão ou selecione");
   fillSelect(cameraUnitSelect, units, "Usar unidade padrão");
+  fillSetupSelects();
   clientList.innerHTML = clients.length ? clients.map((client) => `
     <article class="compact-card">
       <strong>${client.nome}</strong>
@@ -547,22 +804,7 @@ async function saveUser(event) {
 
 async function saveDefaultMachine(event) {
   event.preventDefault();
-  const payload = formPayload(machineConfigForm);
-  if (!payload.camera_id) {
-    machineConfigList.innerHTML = '<div class="muted">Selecione uma câmera para criar a máquina.</div>';
-    return;
-  }
-  await requestJson(`/cameras/${payload.camera_id}/machine-monitors`, {
-    method: "POST",
-    body: JSON.stringify({
-      nome: payload.nome,
-      ativo: true,
-      machine_polygon: [{ x: 0.2, y: 0.2 }, { x: 0.8, y: 0.2 }, { x: 0.8, y: 0.8 }, { x: 0.2, y: 0.8 }],
-      operator_polygon: [{ x: 0.05, y: 0.2 }, { x: 0.18, y: 0.2 }, { x: 0.18, y: 0.8 }, { x: 0.05, y: 0.8 }],
-    }),
-  });
-  machineConfigForm.reset();
-  await loadMachineConfigList();
+  machineConfigList.innerHTML = '<div class="muted">Use “Zonas, tolerâncias e monitor” acima: abra a câmera, desenhe a região da máquina e a zona do operador, depois salve o monitor.</div>';
 }
 
 async function loadEvents() {
@@ -780,19 +1022,25 @@ async function saveArea() {
     setViewerMessage("A área precisa de pelo menos 3 pontos.", "online");
     return;
   }
-  const nome = window.prompt("Nome da área restrita", "Área restrita");
+  const nome = window.prompt("Nome da zona", "Zona operacional");
   if (!nome) return;
+  const tipo = window.prompt(
+    "Tipo da zona: machine_region, operator_zone, work_area, restricted_area ou dwell_area",
+    "operator_zone",
+  );
+  if (!tipo) return;
   await requestJson(`/cameras/${currentCameraId}/areas`, {
     method: "POST",
     body: JSON.stringify({
       nome,
-      tipo: "restricted_area",
+      tipo,
       ativa: true,
       pontos: draftPoints,
     }),
   });
   cancelDrawingArea();
   await loadAreas();
+  await loadSetupOperation();
 }
 
 function startDrawingMachine() {
@@ -933,6 +1181,33 @@ machineConfigForm.addEventListener("submit", (event) => {
   saveDefaultMachine(event).catch((error) => {
     machineConfigList.innerHTML = `<div class="muted">Erro ao salvar máquina: ${error.message}</div>`;
   });
+});
+setupUnitForm?.addEventListener("submit", (event) => {
+  saveSetupUnit(event).catch((error) => setSetupStatus(`Erro ao salvar unidade: ${error.message}`, true));
+});
+setupAreaForm?.addEventListener("submit", (event) => {
+  saveSetupArea(event).catch((error) => setSetupStatus(`Erro ao salvar área: ${error.message}`, true));
+});
+setupProcessForm?.addEventListener("submit", (event) => {
+  saveSetupProcess(event).catch((error) => setSetupStatus(`Erro ao salvar processo: ${error.message}`, true));
+});
+setupAssetForm?.addEventListener("submit", (event) => {
+  saveSetupAsset(event).catch((error) => setSetupStatus(`Erro ao salvar ativo: ${error.message}`, true));
+});
+setupCameraContextForm?.addEventListener("submit", (event) => {
+  saveSetupCameraContext(event).catch((error) => setSetupStatus(`Erro ao associar câmera: ${error.message}`, true));
+});
+setupMonitorForm?.addEventListener("submit", (event) => {
+  saveSetupMonitor(event).catch((error) => setSetupStatus(`Erro ao salvar monitor: ${error.message}`, true));
+});
+setupOpenCameraButton?.addEventListener("click", () => {
+  const cameraId = setupMonitorCameraSelect?.value || setupContextCameraSelect?.value;
+  const camera = knownCameras.find((item) => item.id === cameraId);
+  if (!cameraId) {
+    setSetupStatus("Selecione uma câmera para abrir o vídeo.", true);
+    return;
+  }
+  openCamera(cameraId, camera?.nome || "Câmera").catch((error) => setSetupStatus(`Erro ao abrir câmera: ${error.message}`, true));
 });
 form.addEventListener("submit", saveCamera);
 cameraList.addEventListener("click", async (event) => {
@@ -1129,8 +1404,8 @@ deliveryList.addEventListener("click", async (event) => {
 window.addEventListener("resize", drawAreaCanvas);
 window.addEventListener("hashchange", focusLoginFromHash);
 checkApi();
-loadConfigData().catch(() => {});
-loadCameras().then(loadMachineConfigList).catch(() => renderCameras([]));
+loadConfigData().then(loadSetupOperation).catch(() => {});
+loadCameras().then(() => Promise.all([loadMachineConfigList(), loadSetupOperation()])).catch(() => renderCameras([]));
 loadEvents().catch(() => renderEvents([]));
 loadRecipients().catch(() => {});
 loadDeliveries().catch(() => {});
