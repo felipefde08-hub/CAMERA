@@ -598,6 +598,12 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "eventos", "observacao", "TEXT")
     _ensure_column(connection, "eventos", "acknowledged_at", "TEXT")
     _ensure_column(connection, "eventos", "acknowledged_by", "TEXT")
+    _ensure_column(connection, "eventos", "workflow_status", "TEXT NOT NULL DEFAULT 'new'")
+    _ensure_column(connection, "eventos", "resolved_at", "TEXT")
+    _ensure_column(connection, "eventos", "resolved_by", "TEXT")
+    _ensure_column(connection, "eventos", "confirmed_cause", "TEXT")
+    _ensure_column(connection, "eventos", "action_taken", "TEXT")
+    _ensure_column(connection, "eventos", "human_notes", "TEXT")
     _ensure_column(connection, "eventos", "ultimo_ocupado_em", "TEXT")
     _ensure_column(connection, "eventos", "evidence_error", "TEXT")
     _ensure_column(connection, "eventos", "atualizado_em", "TEXT")
@@ -675,6 +681,7 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "operational_samples", "process_id", "TEXT")
     _ensure_column(connection, "operational_samples", "asset_id", "TEXT")
     _backfill_operational_context(connection)
+    _backfill_event_workflow(connection)
     connection.commit()
 
 
@@ -690,3 +697,15 @@ def _backfill_operational_context(connection: sqlite3.Connection) -> None:
     connection.execute("UPDATE machine_monitors SET site_id = COALESCE(site_id, unit_id)")
     connection.execute("UPDATE eventos SET site_id = COALESCE(site_id, unidade_id)")
     connection.execute("UPDATE operational_samples SET site_id = COALESCE(site_id, unit_id)")
+
+
+def _backfill_event_workflow(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        UPDATE eventos
+        SET workflow_status = 'acknowledged',
+            status = 'closed'
+        WHERE status = 'acknowledged'
+        """
+    )
+    connection.execute("UPDATE eventos SET workflow_status = COALESCE(workflow_status, 'new')")

@@ -655,20 +655,15 @@ def reconhecer_ocorrencia(
     acknowledged_by: str | None,
     acknowledged_at: str,
 ) -> dict[str, Any] | None:
-    connection.execute(
-        """
-        UPDATE eventos
-        SET status = 'acknowledged',
-            observacao = COALESCE(?, observacao),
-            acknowledged_by = ?,
-            acknowledged_at = ?,
-            atualizado_em = CURRENT_TIMESTAMP
-        WHERE id = ?
-        """,
-        (observacao, acknowledged_by, acknowledged_at, evento_id),
+    from app.event_workflow import acknowledge_event
+
+    return acknowledge_event(
+        connection,
+        evento_id,
+        actor=acknowledged_by,
+        human_notes=observacao,
+        at=acknowledged_at,
     )
-    connection.commit()
-    return obter_evento(connection, evento_id)
 
 
 def obter_evento(connection: sqlite3.Connection, evento_id: str) -> dict[str, Any] | None:
@@ -2135,17 +2130,13 @@ def classificar_evento(
     classified_by: str | None,
     classified_at: str,
 ) -> dict[str, Any] | None:
-    connection.execute(
-        """
-        UPDATE eventos
-        SET cause_category = ?,
-            cause_notes = ?,
-            classified_by = ?,
-            classified_at = ?,
-            atualizado_em = CURRENT_TIMESTAMP
-        WHERE id = ?
-        """,
-        (cause_category, cause_notes, classified_by, classified_at, evento_id),
+    from app.event_workflow import update_human_context
+
+    return update_human_context(
+        connection,
+        evento_id,
+        confirmed_cause=cause_category,
+        human_notes=cause_notes,
+        actor=classified_by,
+        at=classified_at,
     )
-    connection.commit()
-    return obter_evento(connection, evento_id)

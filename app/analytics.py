@@ -304,6 +304,30 @@ def generate_insights(connection, *, machine_id: str | None, start: datetime, en
     return insights
 
 
+def confirmed_cause_summary(connection, *, start: datetime, end: datetime, machine_id: str | None = None, camera_id: str | None = None) -> list[dict[str, Any]]:
+    clauses = ["inicio <= ?", "COALESCE(fim, ?) >= ?"]
+    params: list[Any] = [iso(end), iso(end), iso(start)]
+    if machine_id:
+        clauses.append("machine_monitor_id = ?")
+        params.append(machine_id)
+    if camera_id:
+        clauses.append("camera_id = ?")
+        params.append(camera_id)
+    rows = connection.execute(
+        f"""
+        SELECT COALESCE(confirmed_cause, cause_category, 'sem causa confirmada') AS confirmed_cause,
+               COUNT(*) AS total_events,
+               SUM(COALESCE(duracao, 0)) AS total_duration_seconds
+        FROM eventos
+        WHERE {' AND '.join(clauses)}
+        GROUP BY COALESCE(confirmed_cause, cause_category, 'sem causa confirmada')
+        ORDER BY total_events DESC
+        """,
+        params,
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def persist_aggregation(connection, table: str, machine_id: str, camera_id: str | None, start: datetime, end: datetime, timezone_name: str, metrics: dict[str, Any], shift_name: str | None = None) -> str:
     digest = hashlib.sha1(f"{table}:{machine_id}:{shift_name or ''}:{iso(start)}:{iso(end)}".encode("utf-8")).hexdigest()[:16]
     row_id = f"met_{digest}"

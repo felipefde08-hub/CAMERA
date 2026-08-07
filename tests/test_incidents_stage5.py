@@ -145,7 +145,8 @@ class IncidentStage5Test(unittest.TestCase):
         self.assertEqual(listed.status_code, 200)
         self.assertEqual(len(listed.json()), 1)
         self.assertEqual(detail.status_code, 200)
-        self.assertEqual(ack.json()["status"], "acknowledged")
+        self.assertEqual(ack.json()["status"], "open")
+        self.assertEqual(ack.json()["workflow_status"], "acknowledged")
         self.assertEqual(evidence.status_code, 200)
         self.assertNotIn("secret", listed.text + detail.text + ack.text)
 

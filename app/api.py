@@ -20,6 +20,7 @@ from app.analytics import aggregate_period, compute_summary, current_period_rang
 from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, get_request_user, require_role, require_user, tenant_filter, update_user_password, users_exist
 from app.config import ROOT
 from app.database import connect, init_db
+from app.event_workflow import acknowledge_event, event_detail, resolve_event, update_human_context
 from app.live_stream import LiveStreamManager
 from app.models import (
     atualizar_evento,
@@ -404,6 +405,18 @@ class EventCauseIn(BaseModel):
     cause_category: str
     cause_notes: Optional[str] = None
     classified_by: Optional[str] = None
+
+
+class EventHumanContextIn(BaseModel):
+    confirmed_cause: Optional[str] = None
+    action_taken: Optional[str] = None
+    human_notes: Optional[str] = None
+
+
+class EventResolveIn(BaseModel):
+    confirmed_cause: Optional[str] = None
+    action_taken: Optional[str] = None
+    human_notes: Optional[str] = None
 
 
 class LiveViewMachineIn(BaseModel):
@@ -2206,6 +2219,90 @@ def get_evento(evento_id: str) -> dict[str, Any]:
     if event is None:
         raise HTTPException(status_code=404, detail="Evento nao encontrado.")
     return event
+
+
+@api.get("/eventos/{evento_id}/detail")
+def get_evento_detail(evento_id: str, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        event = event_detail(connection, evento_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+        if tenant_filter(user) and event.get("cliente_id") != tenant_filter(user):
+            raise HTTPException(status_code=403, detail="Evento de outro cliente.")
+        return event
+
+
+@api.post("/eventos/{evento_id}/acknowledge")
+def post_evento_acknowledge(evento_id: str, payload: EventHumanContextIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        event = obter_evento(connection, evento_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+        if tenant_filter(user) and event.get("cliente_id") != tenant_filter(user):
+            raise HTTPException(status_code=403, detail="Evento de outro cliente.")
+        acknowledged = acknowledge_event(connection, evento_id, actor=user, human_notes=payload.human_notes)
+        if acknowledged is None:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+        if payload.confirmed_cause or payload.action_taken:
+            acknowledged = update_human_context(
+                connection,
+                evento_id,
+                confirmed_cause=payload.confirmed_cause,
+                action_taken=payload.action_taken,
+                human_notes=payload.human_notes,
+                actor=user,
+            )
+        return event_detail(connection, evento_id) or acknowledged
+
+
+@api.patch("/eventos/{evento_id}/human-context")
+def patch_evento_human_context(evento_id: str, payload: EventHumanContextIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        event = obter_evento(connection, evento_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+        if tenant_filter(user) and event.get("cliente_id") != tenant_filter(user):
+            raise HTTPException(status_code=403, detail="Evento de outro cliente.")
+        updated = update_human_context(
+            connection,
+            evento_id,
+            confirmed_cause=payload.confirmed_cause,
+            action_taken=payload.action_taken,
+            human_notes=payload.human_notes,
+            actor=user,
+        )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+        return event_detail(connection, evento_id) or updated
+
+
+@api.post("/eventos/{evento_id}/resolve")
+def post_evento_resolve(evento_id: str, payload: EventResolveIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        event = obter_evento(connection, evento_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+        if tenant_filter(user) and event.get("cliente_id") != tenant_filter(user):
+            raise HTTPException(status_code=403, detail="Evento de outro cliente.")
+        resolved = resolve_event(
+            connection,
+            evento_id,
+            actor=user,
+            confirmed_cause=payload.confirmed_cause,
+            action_taken=payload.action_taken,
+            human_notes=payload.human_notes,
+        )
+        if resolved is None:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+        return event_detail(connection, evento_id) or resolved
 
 
 @api.get("/eventos/{evento_id}/evidence")
