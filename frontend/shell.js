@@ -6,7 +6,7 @@ const shellState = {
 function routeKey(pathname = window.location.pathname) {
   if (pathname === "/settings" || pathname.startsWith("/settings/")) return "/settings/cameras";
   if (pathname === "/overview") return "/overview";
-  if (pathname === "/dashboard" || pathname === "/") return "/dashboard";
+  if (pathname === "/dashboard" || pathname === "/" || pathname === "/operations-view") return "/operations-view";
   return pathname;
 }
 

@@ -508,17 +508,18 @@ def shutdown() -> None:
 
 @api.get("/")
 def index() -> RedirectResponse:
-    return RedirectResponse(url="/dashboard", status_code=307)
+    return RedirectResponse(url="/operations-view", status_code=307)
 
 
 @api.get("/home")
 def home_page() -> RedirectResponse:
-    return RedirectResponse(url="/dashboard", status_code=307)
+    return RedirectResponse(url="/operations-view", status_code=307)
 
 
 INTERNAL_ROUTE_FILES = {
     "/dashboard": "dashboard.html",
     "/overview": "dashboard.html",
+    "/operations-view": "workspace.html",
     "/cameras": "workspace.html",
     "/events": "workspace.html",
     "/alerts": "workspace.html",
@@ -628,7 +629,7 @@ def local_diagnostics_view_page_slash() -> FileResponse:
 
 @api.get("/operations-dashboard")
 def operations_dashboard_page() -> RedirectResponse:
-    return RedirectResponse(url="/dashboard", status_code=307)
+    return RedirectResponse(url="/operations-view", status_code=307)
 
 
 @api.get("/dashboard.html")

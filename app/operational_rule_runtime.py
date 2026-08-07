@@ -101,5 +101,6 @@ class OperationalRuleRuntime:
         return results
 
     def camera_status(self, status: str, frame: np.ndarray | None = None) -> list[dict[str, Any]]:
-        facts = facts_from_stream(self.camera_id, status)
-        return self.evaluate(facts, frame=frame, force=True)
+        # Camera availability is technical telemetry, not a canonical operational event.
+        # Readiness/coverage consume camera status through samples, health and stream status.
+        return []

@@ -116,6 +116,8 @@ def open_event(
     snapshot_path: str | None = None,
     severity: str = "medium",
 ) -> str:
+    if event_type == "camera_status":
+        return ""
     existing = _find_open_event(connection, session_id, event_type, new_state)
     if existing:
         return str(existing["id"])

@@ -15,6 +15,7 @@ from app.config import ROOT
 INTERNAL_ROUTES = [
     "/dashboard",
     "/overview",
+    "/operations-view",
     "/cameras",
     "/events",
     "/alerts",
@@ -50,7 +51,7 @@ def assert_shell_response(route: str, response) -> None:
     assert "Not Found" not in response.text, route
     assert '<aside class="cx-sidebar">' in response.text, route
     assert '<header class="cx-header cx-topbar">' in response.text, route
-    assert 'href="/dashboard"' in response.text, route
+    assert 'href="/operations-view"' in response.text, route
     assert 'href="/events"' in response.text, route
 
 
@@ -75,18 +76,10 @@ def test_sidebar_links_are_registered_internal_routes() -> None:
     for html_file in html_files:
         content = Path(html_file).read_text(encoding="utf-8")
         for route in [
-            "/dashboard",
-            "/overview",
-            "/cameras",
+            "/operations-view",
             "/events",
-            "/alerts",
-            "/evidence",
-            "/rules",
-            "/reports",
             "/insights",
-            "/history",
-            "/integrations",
-            "/users",
+            "/live-view",
             "/settings/cameras",
         ]:
             assert f'href="{route}"' in content, f"{html_file.name} sem link para {route}"
@@ -225,25 +218,17 @@ def _assert_active(page, label: str) -> None:
 
 
 def test_browser_sidebar_navigation_back_forward_refresh_and_new_tab(browser, browser_base_url) -> None:
-    page, response, js_errors = _open_page(browser, browser_base_url, "/dashboard")
+    page, response, js_errors = _open_page(browser, browser_base_url, "/operations-view")
     assert response.status == 200
     assert page.locator(".cx-sidebar").is_visible()
     assert page.locator(".cx-header").is_visible()
-    _assert_active(page, "Home")
+    _assert_active(page, "Operations")
 
     route_labels = [
-        ("/overview", "Visão geral"),
-        ("/cameras", "Câmeras"),
-        ("/events", "Eventos"),
-        ("/alerts", "Alertas"),
-        ("/evidence", "Evidências"),
-        ("/rules", "Regras"),
-        ("/reports", "Relatórios"),
-        ("/insights", "Insights"),
-        ("/history", "Histórico"),
-        ("/integrations", "Integrações"),
-        ("/users", "Usuários"),
-        ("/settings/cameras", "Configurações"),
+        ("/events", "Events"),
+        ("/insights", "Intelligence"),
+        ("/live-view", "Live"),
+        ("/settings/cameras", "Setup"),
     ]
     for route, label in route_labels:
         page.locator(f'.cx-nav a[href="{route}"]').first.click()
@@ -255,27 +240,27 @@ def test_browser_sidebar_navigation_back_forward_refresh_and_new_tab(browser, br
         _assert_active(page, label)
         assert "Not Found" not in page.content()
 
-    for route, label in [("/events", "Eventos"), ("/cameras", "Câmeras"), ("/settings", "Configurações")]:
+    for route, label in [("/operations-view", "Operations"), ("/events", "Events"), ("/settings/cameras", "Setup")]:
         response = page.goto(f"{browser_base_url}{route}", wait_until="domcontentloaded")
         assert response.status == 200
         page.locator(".cx-header").wait_for(state="visible")
         _assert_active(page, label)
 
-    page.goto(f"{browser_base_url}/cameras", wait_until="domcontentloaded")
+    page.goto(f"{browser_base_url}/operations-view", wait_until="domcontentloaded")
     page.locator('.cx-nav a[href="/events"]').first.click()
     page.wait_for_url(re.compile(r".*/events$"))
-    page.locator('.cx-nav a[href="/alerts"]').first.click()
-    page.wait_for_url(re.compile(r".*/alerts$"))
+    page.locator('.cx-nav a[href="/insights"]').first.click()
+    page.wait_for_url(re.compile(r".*/insights$"))
     page.go_back(wait_until="domcontentloaded")
     assert page.url.endswith("/events")
-    _assert_active(page, "Eventos")
+    _assert_active(page, "Events")
     page.go_forward(wait_until="domcontentloaded")
-    assert page.url.endswith("/alerts")
-    _assert_active(page, "Alertas")
+    assert page.url.endswith("/insights")
+    _assert_active(page, "Intelligence")
 
-    new_page, new_response, new_errors = _open_page(browser, browser_base_url, "/reports")
+    new_page, new_response, new_errors = _open_page(browser, browser_base_url, "/insights")
     assert new_response.status == 200
-    _assert_active(new_page, "Relatórios")
+    _assert_active(new_page, "Intelligence")
     assert not new_errors
     new_page.close()
 
@@ -290,14 +275,14 @@ def test_browser_invalid_internal_route_shows_shell_404(browser, browser_base_ur
     assert page.locator(".cx-sidebar").is_visible()
     assert page.locator(".cx-header").is_visible()
     assert page.get_by_text("Página não encontrada").first.is_visible()
-    assert page.get_by_text("Voltar para a Home").first.is_visible()
+    assert page.get_by_text("Voltar para Operations").first.is_visible()
     assert page.locator(".cx-nav a.active").count() == 0
     assert not js_errors
     page.close()
 
 
 def test_browser_mobile_drawer_and_collapsed_sidebar(browser, browser_base_url) -> None:
-    page, response, js_errors = _open_page(browser, browser_base_url, "/cameras", width=390, height=844)
+    page, response, js_errors = _open_page(browser, browser_base_url, "/operations-view", width=390, height=844)
 
     assert response.status == 200
     page.locator(".cx-mobile-menu").click()
@@ -307,16 +292,16 @@ def test_browser_mobile_drawer_and_collapsed_sidebar(browser, browser_base_url) 
     page.wait_for_url(re.compile(r".*/events$"))
     assert page.url.endswith("/events")
     assert not page.locator(".cx-mobile-overlay").is_visible()
-    _assert_active(page, "Eventos")
+    _assert_active(page, "Events")
     page.close()
 
-    desktop, response, desktop_errors = _open_page(browser, browser_base_url, "/cameras")
+    desktop, response, desktop_errors = _open_page(browser, browser_base_url, "/operations-view")
     assert response.status == 200
     desktop.locator(".cx-collapse").first.click()
     assert "sidebar-collapsed" in (desktop.locator("body").get_attribute("class") or "")
     for link in desktop.locator(".cx-nav a").all():
         assert link.get_attribute("title")
-    _assert_active(desktop, "Câmeras")
+    _assert_active(desktop, "Operations")
     assert not js_errors
     assert not desktop_errors
     desktop.close()

@@ -877,6 +877,10 @@ async function login(event) {
     loginStatus.textContent = `Logado como ${payload.user.email} (${payload.user.role})`;
     await Promise.all([loadConfigData(), loadCameras(), loadEvents(), loadRecipients(), loadDeliveries(), loadSystemHealth()]);
     await loadMachineConfigList();
+    const next = new URLSearchParams(window.location.search).get("next");
+    if (next && next.startsWith("/") && !next.startsWith("//")) {
+      window.location.href = next;
+    }
   } catch (error) {
     loginStatus.textContent = `Login falhou: ${error.message}`;
   }

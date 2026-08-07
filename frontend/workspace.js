@@ -18,6 +18,7 @@ const drawerClose = document.querySelector("#workspaceDrawerClose");
 let rowsCache = [];
 let currentTab = "all";
 let viewMode = "grid";
+let operationsSelectedPeriod = "day";
 
 const routes = {
   "/dashboard": {
@@ -31,6 +32,19 @@ const routes = {
     section: "operation",
     breadcrumb: "Operação / Visão geral",
     external: true,
+  },
+  "/operations-view": {
+    title: "Operations",
+    section: "operation",
+    breadcrumb: "Operação / Operations",
+    permissions: [],
+    heading: "Operations",
+    subtitle: "O que merece atenção na operação.",
+    action: "Atualizar",
+    tabs: ["Hoje", "Turno", "Semana", "Mês", "Personalizado"],
+    filters: ["Período", "Família", "Ativo"],
+    columns: ["Item", "Família", "Duração", "Eventos", "Rastreabilidade"],
+    customRender: renderOperationsReadModelPage,
   },
   "/cameras": {
     title: "Câmeras",
@@ -373,6 +387,364 @@ function alertStatusLabel(status) {
   if (status === "pending") return "Em processamento";
   if (status === "failed") return "Falha de entrega";
   return status || "Resolvido";
+}
+
+function secondsLabel(value) {
+  const total = Math.max(0, Math.round(Number(value || 0)));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours) return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  if (minutes) return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  return `${seconds}s`;
+}
+
+function familyLabel(family) {
+  const labels = {
+    interruption: "Interrupções",
+    wait: "Esperas",
+    absence: "Ausências",
+    flow: "Fluxo/movimentação",
+    unknown: "Sem classificação",
+  };
+  return labels[family] || family || "Sem classificação";
+}
+
+function isOfficialFamily(family) {
+  return ["interruption", "wait", "absence", "flow"].includes(String(family || ""));
+}
+
+function officialFamilyRows(summary) {
+  return (summary.events_by_family || []).filter((item) => isOfficialFamily(item.key));
+}
+
+function officialEventCount(summary) {
+  return officialFamilyRows(summary).reduce((sum, item) => sum + Number(item.total_events || 0), 0);
+}
+
+function officialDuration(summary) {
+  return officialFamilyRows(summary).reduce((sum, item) => sum + Number(item.total_duration_seconds || 0), 0);
+}
+
+function unknownEventCount(summary, currentPayload) {
+  const summaryUnknown = (summary.events_by_family || [])
+    .filter((item) => !isOfficialFamily(item.key))
+    .reduce((sum, item) => sum + Number(item.total_events || 0), 0);
+  const openUnknown = (currentPayload.open_events || []).filter((event) => !isOfficialFamily(event.event_family)).length;
+  return Math.max(summaryUnknown, openUnknown);
+}
+
+function classifiedOpenEvents(currentPayload) {
+  return (currentPayload.open_events || []).filter((event) => isOfficialFamily(event.event_family));
+}
+
+function formatDateParts(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const day = date.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" }).replace(".", "");
+  const time = date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  return { day, time };
+}
+
+function formatOperationsPeriod(period) {
+  const start = formatDateParts(period?.start);
+  const end = formatDateParts(period?.end);
+  if (!start || !end) return "Período não informado";
+  if (start.day === end.day) return `Hoje · ${start.day}<br><span>${start.time} → ${end.time}</span>`;
+  return `${start.day} → ${end.day}<br><span>${start.time} → ${end.time}</span>`;
+}
+
+function operationPeriod() {
+  const selected = document.querySelector("#operationsPeriod")?.value;
+  const tabPeriod = { hoje: "day", turno: "turno", semana: "week", mês: "month", personalizado: "custom" }[currentTab];
+  return selected || operationsSelectedPeriod || tabPeriod || "day";
+}
+
+function readModelQuery(extra = {}) {
+  const params = new URLSearchParams();
+  params.set("period", operationPeriod());
+  Object.entries(extra).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== "") params.set(key, value);
+  });
+  return params.toString();
+}
+
+function groupByKey(items = []) {
+  return new Map((items || []).map((item) => [item.key, item]));
+}
+
+function getFamily(summary, family) {
+  return groupByKey(summary.events_by_family || []).get(family) || {
+    key: family,
+    total_events: 0,
+    total_duration_seconds: 0,
+    event_uuids: [],
+  };
+}
+
+function comparisonFor(comparison, key) {
+  return comparison?.metrics?.[key] || { current: 0, previous: 0, absolute_difference: 0, percent_change: null };
+}
+
+function comparisonText(metric) {
+  if (metric.percent_change === null || metric.percent_change === undefined) return "sem base anterior";
+  const sign = metric.percent_change > 0 ? "+" : "";
+  return `${sign}${metric.percent_change}% vs período anterior`;
+}
+
+function coverageWarning(coverage) {
+  if (!coverage || coverage.status === "observed") return "";
+  const label = coverage.status === "partial" ? "Cobertura parcial" : "Cobertura desconhecida";
+  const detail = coverage.reason || "Alguns períodos não possuem dados suficientes.";
+  return `<div class="cx-ops-warning"><strong>${label}</strong><span>${detail}</span></div>`;
+}
+
+function traceButton(label, uuids = []) {
+  const list = (uuids || []).filter(Boolean).join(",");
+  if (!list) return `<button type="button" class="cx-linklike" disabled>${label}</button>`;
+  return `<button type="button" class="cx-linklike" data-event-uuids="${list}">${label}</button>`;
+}
+
+function operationsBriefing(summary, lossesPayload) {
+  const coverage = summary.coverage || {};
+  const classifiedCount = officialEventCount(summary);
+  if (!classifiedCount) {
+    if (Number(summary.total_events || 0) > 0) {
+      return "Sem eventos operacionais classificados suficientes neste período.";
+    }
+    return coverage.status && coverage.status !== "observed"
+      ? "Ainda não há eventos no período, e a cobertura dos dados não permite afirmar que a operação esteve sem ocorrências."
+      : "Nenhum evento operacional foi registrado no período selecionado.";
+  }
+  const topArea = (summary.events_by_area || []).find((item) => item.key !== "não informado");
+  const topAsset = (lossesPayload.by_asset || []).find((item) => item.key !== "não informado");
+  const topFamily = officialFamilyRows(summary)[0];
+  if (topArea && topAsset && topFamily) {
+    return `${topArea.key} concentrou ${secondsLabel(topArea.total_duration_seconds)} em ${familyLabel(topFamily.key).toLowerCase()}. O ativo ${topAsset.key} é o principal ponto de atenção no período.`;
+  }
+  if (topFamily) {
+    return `${familyLabel(topFamily.key)} concentraram ${secondsLabel(topFamily.total_duration_seconds)} no período selecionado.`;
+  }
+  return "A Campex consolidou os eventos do período, mas ainda não há concentração operacional suficiente para destacar uma área.";
+}
+
+function operationsAttention(summary, lossesPayload, comparisonPayload, currentPayload) {
+  const callouts = [];
+  const topAsset = (lossesPayload.by_asset || [])[0];
+  const totalLossDuration = (lossesPayload.by_family || []).reduce((sum, item) => sum + Number(item.total_duration_seconds || 0), 0);
+  if (topAsset && totalLossDuration > 0) {
+    const share = Math.round((Number(topAsset.total_duration_seconds || 0) / totalLossDuration) * 100);
+    callouts.push({
+      title: `${topAsset.key} concentrou ${share}% das perdas monitoradas.`,
+      why: `${secondsLabel(topAsset.total_duration_seconds)} em ${topAsset.total_events} evento(s) classificados como perda operacional.`,
+      event_uuids: topAsset.event_uuids,
+    });
+  }
+  const durationComparison = comparisonFor(comparisonPayload, "total_duration_seconds");
+  if (durationComparison.percent_change !== null && Math.abs(durationComparison.percent_change) >= 10) {
+    callouts.push({
+      title: `A duração total mudou ${comparisonText(durationComparison)}.`,
+      why: `${secondsLabel(durationComparison.current)} no período atual contra ${secondsLabel(durationComparison.previous)} no período anterior.`,
+      event_uuids: comparisonPayload.current_event_uuids || [],
+    });
+  }
+  const repeatedAsset = (summary.events_by_asset || []).find((item) => item.total_events >= 3 && item.key !== "não informado");
+  if (repeatedAsset) {
+    callouts.push({
+      title: `${repeatedAsset.total_events} ocorrências foram registradas no mesmo ativo.`,
+      why: `O ativo ${repeatedAsset.key} repetiu eventos no período selecionado.`,
+      event_uuids: repeatedAsset.event_uuids,
+    });
+  }
+  const openClassified = classifiedOpenEvents(currentPayload);
+  if (openClassified.length) {
+    callouts.push({
+      title: `${openClassified.length} evento(s) operacionais continuam abertos.`,
+      why: "Há ocorrências físicas em andamento que ainda não foram normalizadas.",
+      event_uuids: openClassified.map((event) => event.event_uuid),
+    });
+  }
+  return callouts.slice(0, 4);
+}
+
+function renderOperationsCards(summary, currentPayload, comparisonPayload) {
+  const families = ["interruption", "wait", "absence", "flow"];
+  return families.map((family) => {
+    const item = getFamily(summary, family);
+    const hasData = item.total_events > 0;
+    return `
+      <article class="cx-ops-card">
+        <span>${familyLabel(family)}</span>
+        <strong>${hasData ? secondsLabel(item.total_duration_seconds) : "Sem dados"}</strong>
+        <small>${hasData ? `${item.total_events} evento(s)` : "Aguardando eventos reais"}</small>
+        ${traceButton("Ver eventos", item.event_uuids)}
+      </article>
+    `;
+  }).join("") + `
+    <article class="cx-ops-card cx-ops-card-open">
+      <span>Eventos abertos</span>
+      <strong>${classifiedOpenEvents(currentPayload).length || 0}</strong>
+      <small>Ocorrências operacionais classificadas ainda OPEN</small>
+      ${traceButton("Ver ativos", classifiedOpenEvents(currentPayload).map((event) => event.event_uuid))}
+    </article>
+  `;
+}
+
+function eventContextLabel(event) {
+  const asset = event.asset_name || event.asset_id || event.machine_name || event.machine_monitor_id;
+  const process = event.process_name || event.process_id;
+  const area = event.area_name || event.area_context_id || event.area_id;
+  const camera = event.camera_name || event.camera_id;
+  const primary = asset || process || area || camera || "Contexto operacional não informado";
+  const path = [area, process].filter(Boolean).join(" → ");
+  return { primary, path: path || camera || "Contexto não informado" };
+}
+
+function renderOperationsCurrent(currentPayload) {
+  const events = classifiedOpenEvents(currentPayload);
+  if (!events.length) return `<div class="cx-empty-state"><strong>Nenhum evento operacional classificado aberto.</strong><p>A operação não possui ocorrências OPEN classificadas no momento.</p></div>`;
+  return events.map((event) => `
+    <article class="cx-ops-current">
+      <strong>${eventContextLabel(event).primary}</strong>
+      <span>${familyLabel(event.event_family)} há ${secondsLabel(event.current_duration_seconds)}</span>
+      <small>${eventContextLabel(event).path} · workflow: ${event.workflow_status || "new"}</small>
+      ${traceButton("Ver evento", [event.event_uuid])}
+    </article>
+  `).join("");
+}
+
+function renderOperationsRanking(title, items = [], total = 0) {
+  const rows = (items || []).slice(0, 5);
+  if (!rows.length) return `<section class="cx-ops-block"><h3>${title}</h3><p class="muted">Sem dados para ranking.</p></section>`;
+  return `
+    <section class="cx-ops-block">
+      <h3>${title}</h3>
+      ${rows.map((item) => {
+        const share = total ? Math.round((Number(item.total_duration_seconds || 0) / total) * 100) : 0;
+        return `<div class="cx-ops-rank"><strong>${item.key}</strong><span>${secondsLabel(item.total_duration_seconds)} · ${item.total_events} evento(s) · ${share}%</span>${traceButton("Eventos", item.event_uuids)}</div>`;
+      }).join("")}
+    </section>
+  `;
+}
+
+function renderUnknownQualityNote(summary, currentPayload) {
+  const count = unknownEventCount(summary, currentPayload);
+  if (!count) return "";
+  return `<div class="cx-ops-quality"><strong>${count} evento(s) ainda não possuem classificação operacional.</strong><span>Eles continuam preservados para auditoria, mas não entram nos indicadores oficiais da Operations.</span></div>`;
+}
+
+function renderTraceDrawer(uuids) {
+  drawer.classList.add("open");
+  drawer.setAttribute("aria-hidden", "false");
+  drawerContent.innerHTML = `
+    <h2>Eventos que explicam o número</h2>
+    <p>Esta métrica foi composta pelos seguintes event_uuid:</p>
+    <ul class="cx-trace-list">${uuids.map((uuid) => `<li><code>${uuid}</code></li>`).join("")}</ul>
+    <p class="muted">Use esses UUIDs para consultar os eventos na aba Eventos ou pela API.</p>
+  `;
+  drawer.querySelector("h2")?.setAttribute("id", "workspaceDrawerTitle");
+  drawer.focus({ preventScroll: true });
+}
+
+async function renderOperationsReadModelPage(config) {
+  const params = readModelQuery();
+  const [currentPayload, summary, lossesPayload, comparisonPayload] = await Promise.all([
+    requestJson(`/operations/read-model/current?${params}`),
+    requestJson(`/operations/read-model/summary?${params}`),
+    requestJson(`/operations/read-model/losses?${params}`),
+    requestJson(`/operations/read-model/comparison?${params}`),
+  ]);
+  rowsCache = [
+    ...officialFamilyRows(summary).map((item) => ({ ...item, kind: "family" })),
+    ...(lossesPayload.by_asset || []).map((item) => ({ ...item, kind: "asset" })),
+  ];
+  const totalLossDuration = (lossesPayload.by_family || []).reduce((sum, item) => sum + Number(item.total_duration_seconds || 0), 0);
+  const callouts = operationsAttention(summary, lossesPayload, comparisonPayload, currentPayload);
+  const hasOperationalData = officialEventCount(summary) > 0 || classifiedOpenEvents(currentPayload).length > 0;
+  title.textContent = "";
+  heading.textContent = "Como está sua operação?";
+  subtitle.textContent = "";
+  tableTitle.textContent = "Rastreabilidade operacional";
+  tableHint.textContent = "Cada número pode ser explicado pelos event_uuid que o formaram.";
+  primaryAction.textContent = "Atualizar";
+  primaryAction.onclick = () => loadPage(window.location.pathname);
+  filters.innerHTML = `
+    <label>Período
+      <select id="operationsPeriod">
+        <option value="day" ${operationPeriod() === "day" ? "selected" : ""}>Hoje</option>
+        <option value="turno" ${operationPeriod() === "turno" ? "selected" : ""}>Turno</option>
+        <option value="week" ${operationPeriod() === "week" ? "selected" : ""}>Semana</option>
+        <option value="month" ${operationPeriod() === "month" ? "selected" : ""}>Mês</option>
+      </select>
+    </label>
+  `;
+  const operationalHeader = `
+    <section class="cx-ops-header">
+      <div>
+        <small>Unidade</small>
+        <strong>${summary.filters?.site_id || "Todas as unidades"}</strong>
+      </div>
+      <div>
+        <small>Período</small>
+        <strong>${formatOperationsPeriod(summary.period)}</strong>
+      </div>
+      <div>
+        <small>Cobertura</small>
+        <strong>${summary.coverage?.status || "unknown"}</strong>
+      </div>
+      <div>
+        <small>Última atualização</small>
+        <strong>${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</strong>
+      </div>
+    </section>
+  `;
+  cards.innerHTML = `
+    <section class="cx-ops-page">
+      <div class="cx-ops-title">
+        <span>Operations</span>
+        <h2>Como está sua operação?</h2>
+      </div>
+      ${operationalHeader}
+      ${coverageWarning(summary.coverage)}
+      ${renderUnknownQualityNote(summary, currentPayload)}
+      <section class="cx-ops-briefing">
+        <small>Briefing operacional</small>
+        <strong>${hasOperationalData ? operationsBriefing(summary, lossesPayload) : "Sem dados operacionais suficientes neste período."}</strong>
+      </section>
+      <section class="cx-ops-grid">${renderOperationsCards(summary, currentPayload, comparisonPayload)}</section>
+      ${hasOperationalData ? `
+        <section class="cx-ops-layout">
+          <div class="cx-ops-column">
+            <section class="cx-ops-block"><h3>O que merece atenção</h3>${callouts.length ? callouts.map((item) => `<article class="cx-ops-callout"><strong>${item.title}</strong><p>${item.why}</p>${traceButton("Eventos relacionados", item.event_uuids)}</article>`).join("") : '<p class="muted">Sem destaque operacional sustentado pelos dados do período.</p>'}</section>
+            <section class="cx-ops-block"><h3>Principais perdas</h3>${renderOperationsRanking("Por ativo", lossesPayload.by_asset, totalLossDuration)}${renderOperationsRanking("Por processo", lossesPayload.by_process, totalLossDuration)}${renderOperationsRanking("Por área", lossesPayload.by_area, totalLossDuration)}</section>
+          </div>
+          <aside class="cx-ops-column">
+            <section class="cx-ops-block"><h3>Operação agora</h3>${renderOperationsCurrent(currentPayload)}</section>
+            <section class="cx-ops-block"><h3>Comparação</h3><p>Eventos: ${comparisonText(comparisonFor(comparisonPayload, "total_events"))}</p><p>Duração: ${comparisonText(comparisonFor(comparisonPayload, "total_duration_seconds"))}</p></section>
+          </aside>
+        </section>
+      ` : `
+        <section class="cx-ops-empty">
+          <strong>Sem eventos operacionais classificados suficientes neste período.</strong>
+          <p>A Campex ainda está aguardando eventos válidos de interrupção, espera, ausência ou fluxo para montar atenção, perdas e comparação.</p>
+        </section>
+      `}
+    </section>
+  `;
+  renderTabs(config);
+  head.innerHTML = `<tr>${config.columns.map((column) => `<th>${column}</th>`).join("")}</tr>`;
+  const rows = rowsCache;
+  body.innerHTML = rows.length ? rows.map((item) => `
+    <tr>
+      <td>${item.key}</td>
+      <td>${item.kind === "family" ? familyLabel(item.key) : "Ativo"}</td>
+      <td>${secondsLabel(item.total_duration_seconds)}</td>
+      <td>${item.total_events}</td>
+      <td>${traceButton("Ver eventos", item.event_uuids)}</td>
+    </tr>
+  `).join("") : `<tr><td colspan="${config.columns.length}">${emptyState({ ...config, emptyTitle: "Sem eventos no período.", emptyDescription: "A Campex ainda não registrou eventos operacionais para esta seleção." })}</td></tr>`;
+  grid.style.display = "none";
+  document.querySelector(".cx-panel")?.classList.toggle("cx-ops-hide-panel", !rows.length);
 }
 
 async function loadAlertsWorkspace() {
@@ -923,7 +1295,7 @@ function currentRouteConfig() {
 
 function activeRouteKey(path = window.location.pathname) {
   if (path === "/settings" || path.startsWith("/settings/")) return "/settings/cameras";
-  if (path === "/" || path === "/dashboard") return "/dashboard";
+  if (path === "/" || path === "/dashboard" || path === "/operations-view") return "/operations-view";
   return path;
 }
 
@@ -941,13 +1313,46 @@ function emptyState(config) {
 }
 
 function loginState(config) {
+  const next = encodeURIComponent(window.location.pathname || "/operations-view");
   return `
     <div class="cx-empty-state">
       <strong>Login necessário</strong>
       <p>Entre para carregar ${String(config.title || "esta área").toLowerCase()} e proteger os dados do cliente.</p>
-      <a class="cx-primary-action" href="/settings/cameras#login">Entrar</a>
+      <a class="cx-primary-action" href="/settings/cameras?next=${next}#login">Entrar</a>
     </div>
   `;
+}
+
+function renderOperationsAuthState() {
+  title.textContent = "";
+  heading.textContent = "";
+  subtitle.textContent = "";
+  tableTitle.textContent = "";
+  tableHint.textContent = "";
+  primaryAction.textContent = "Entrar";
+  primaryAction.onclick = () => {
+    window.location.href = "/settings/cameras?next=%2Foperations-view#login";
+  };
+  cards.innerHTML = `
+    <section class="cx-ops-page">
+      <div class="cx-ops-title">
+        <span>Operations</span>
+        <h2>Como está sua operação?</h2>
+      </div>
+      <section class="cx-ops-auth cx-ops-empty">
+        <strong>Entre para acessar os dados da operação.</strong>
+        <p>A Campex protege os dados operacionais do cliente. Faça login para carregar o Read Model desta instalação.</p>
+        <a class="cx-primary-action" href="/settings/cameras?next=%2Foperations-view#login">Entrar</a>
+      </section>
+    </section>
+  `;
+  renderTabs({ tabs: [] });
+  renderFilters({ filters: [] });
+  rowsCache = [];
+  grid.style.display = "none";
+  head.innerHTML = "";
+  body.innerHTML = "";
+  document.querySelector(".cx-panel")?.classList.add("cx-ops-hide-panel");
 }
 
 function renderRows(config) {
@@ -970,8 +1375,8 @@ function renderNotFound(path = window.location.pathname) {
     heading: "Página não encontrada",
     subtitle: "O endereço acessado não corresponde a nenhuma área da plataforma.",
     columns: ["Mensagem"],
-    action: "Voltar para a Home",
-    actionHref: "/dashboard",
+    action: "Voltar para Operations",
+    actionHref: "/operations-view",
     emptyTitle: "Página não encontrada",
     emptyDescription: "O endereço acessado não corresponde a nenhuma área da plataforma.",
   };
@@ -992,8 +1397,8 @@ function renderNotFound(path = window.location.pathname) {
   grid.style.display = "none";
   head.innerHTML = "<tr><th>Mensagem</th></tr>";
   body.innerHTML = `<tr><td>${emptyState(config)}</td></tr>`;
-  primaryAction.textContent = "Voltar para a Home";
-  primaryAction.onclick = () => { window.location.href = "/dashboard"; };
+  primaryAction.textContent = "Voltar para Operations";
+  primaryAction.onclick = () => { window.location.href = "/operations-view"; };
   document.querySelectorAll("[data-route], .cx-nav a").forEach((link) => {
     link.classList.remove("active");
     link.setAttribute("aria-current", "false");
@@ -1013,6 +1418,10 @@ async function loadPage(path = window.location.pathname) {
   if (!config) {
     renderNotFound(path);
     return;
+  }
+  document.body.classList.toggle("cx-operations-mode", path === "/operations-view");
+  if (path !== "/operations-view") {
+    document.querySelector(".cx-panel")?.classList.remove("cx-ops-hide-panel");
   }
   if (config.external) {
     window.location.href = path;
@@ -1050,7 +1459,7 @@ async function loadPage(path = window.location.pathname) {
     if (config.actionHref) window.location.href = config.actionHref;
     else openPopover(primaryAction, config.action || "Ação futura", ["Recurso futuro do piloto", "Nenhuma alteração feita"]);
   };
-  cards.innerHTML = [
+  cards.innerHTML = path === "/operations-view" ? "" : [
     `<article><strong id="workspaceCount">—</strong><span>Registros</span></article>`,
     `<article><strong>Local</strong><span>SQLite persistente</span></article>`,
     `<article><strong>Seguro</strong><span>Sem credenciais no navegador</span></article>`,
@@ -1060,11 +1469,22 @@ async function loadPage(path = window.location.pathname) {
   try {
     const auth = await authStatus();
     if (!auth.authenticated && !auth.bootstrap && config.endpoint !== "/health") {
+      if (path === "/operations-view") {
+        renderOperationsAuthState();
+        document.querySelector(".cx-main")?.scrollTo({ top: 0, behavior: "smooth" });
+        return;
+      }
       rowsCache = [];
-      document.querySelector("#workspaceCount").textContent = "—";
+      const workspaceCount = document.querySelector("#workspaceCount");
+      if (workspaceCount) workspaceCount.textContent = "—";
       head.innerHTML = `<tr>${config.columns.map((column) => `<th>${column}</th>`).join("")}</tr>`;
       body.innerHTML = `<tr><td colspan="${config.columns.length}">${loginState(config)}</td></tr>`;
       grid.style.display = "none";
+      document.querySelector(".cx-main")?.scrollTo({ top: 0, behavior: "smooth" });
+      return;
+    }
+    if (config.customRender) {
+      await config.customRender(config);
       document.querySelector(".cx-main")?.scrollTo({ top: 0, behavior: "smooth" });
       return;
     }
@@ -1101,11 +1521,31 @@ tabs.addEventListener("click", (event) => {
   tabs.querySelectorAll("button").forEach((item) => item.classList.remove("active"));
   button.classList.add("active");
   currentTab = button.dataset.tab;
+  if (currentRouteConfig().customRender) {
+    operationsSelectedPeriod = operationPeriod();
+    loadPage(window.location.pathname);
+    return;
+  }
   viewMode = currentTab === "lista" ? "list" : currentTab === "grade" ? "grid" : viewMode;
   renderRows(currentRouteConfig());
 });
 
+filters.addEventListener("change", (event) => {
+  const periodSelect = event.target.closest("#operationsPeriod");
+  if (periodSelect) {
+    operationsSelectedPeriod = periodSelect.value;
+    loadPage(window.location.pathname);
+  }
+});
+
 document.body.addEventListener("click", async (event) => {
+  const trace = event.target.closest("[data-event-uuids]");
+  if (trace) {
+    const uuids = String(trace.dataset.eventUuids || "").split(",").filter(Boolean);
+    renderTraceDrawer(uuids);
+    return;
+  }
+
   const link = event.target.closest("a[href]");
   if (link) {
     const url = new URL(link.href, window.location.origin);

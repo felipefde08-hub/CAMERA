@@ -27,7 +27,6 @@ SNAPSHOT_EVENT_STATES = {
     ("machine_state", "PARADA"),
     ("machine_state", "ATIVA"),
     ("operator_presence", "PRESENTE"),
-    ("camera_status", "offline"),
 }
 
 
@@ -162,7 +161,6 @@ class OperationsRecorder:
             people_count=int((ops_state or {}).get("people_count") or 0),
         )
         self._record_sample(snapshot, camera_status, ops_state)
-        self._transition("camera_status", snapshot.camera_status, snapshot, frame)
         if machine:
             self._transition("machine_state", snapshot.machine_state, snapshot, frame)
             self._transition("operator_presence", snapshot.operator_state, snapshot, frame)
@@ -328,7 +326,7 @@ def operations_summary(
     stopped_events = [e for e in events if e["event_type"] == "machine_state" and e["new_state"] == "PARADA"]
     stopped = sum(_overlap_seconds(e, start_dt, end_dt, now) for e in stopped_events)
     active_without_operator = sum(_overlap_seconds(e, start_dt, end_dt, now) for e in events if e["event_type"] == "active_without_operator" and e["new_state"] == "ATIVA_SEM_OPERADOR")
-    offline = sum(_overlap_seconds(e, start_dt, end_dt, now) for e in events if e["event_type"] == "camera_status" and e["new_state"] == "offline")
+    offline = _offline_seconds_from_samples(connection, start_dt, end_dt, camera_id)
     stop_durations = [_overlap_seconds(e, start_dt, end_dt, now) for e in stopped_events]
     operator_absences = [e for e in events if e["event_type"] == "operator_presence" and e["new_state"] == "AUSENTE"]
     current = current_status(connection, camera_id, machine_name)
@@ -374,7 +372,6 @@ def current_status(connection: sqlite3.Connection, camera_id: str | None = None,
     mapping = {
         "machine_state": "machine_state",
         "operator_presence": "operator_state",
-        "camera_status": "camera_status",
     }
     events = list_operational_events(connection, camera_id=camera_id, machine_name=machine_name, limit=200, offset=0)
     for event_type, key in mapping.items():
@@ -384,7 +381,58 @@ def current_status(connection: sqlite3.Connection, camera_id: str | None = None,
             status["people_count"] = max(int(status["people_count"]), int(event.get("people_count") or 0))
             status["machine_name"] = event.get("machine_name") or status["machine_name"]
             status["last_update"] = event.get("started_at")
+    sample = _latest_camera_sample(connection, camera_id)
+    if sample:
+        status["camera_status"] = "online" if sample.get("camera_online") else "offline"
+        status["last_update"] = sample.get("sample_at") or status["last_update"]
     return status
+
+
+def _latest_camera_sample(connection: sqlite3.Connection, camera_id: str | None) -> dict[str, Any] | None:
+    clauses = []
+    params: list[Any] = []
+    if camera_id:
+        clauses.append("camera_id = ?")
+        params.append(camera_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    row = connection.execute(
+        f"""
+        SELECT sample_at, camera_online, inference_fps
+        FROM operational_samples
+        {where}
+        ORDER BY sample_at DESC
+        LIMIT 1
+        """,
+        params,
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _offline_seconds_from_samples(connection: sqlite3.Connection, start_dt: datetime, end_dt: datetime, camera_id: str | None) -> float:
+    clauses = ["sample_at >= ?", "sample_at <= ?"]
+    params: list[Any] = [iso_at(start_dt), iso_at(end_dt)]
+    if camera_id:
+        clauses.append("camera_id = ?")
+        params.append(camera_id)
+    rows = connection.execute(
+        f"""
+        SELECT sample_at, camera_online
+        FROM operational_samples
+        WHERE {' AND '.join(clauses)}
+        ORDER BY sample_at ASC
+        """,
+        params,
+    ).fetchall()
+    samples = [dict(row) for row in rows]
+    if len(samples) < 2:
+        return 0.0
+    offline = 0.0
+    for previous, current in zip(samples, samples[1:]):
+        previous_at = parse_iso(previous.get("sample_at"))
+        current_at = parse_iso(current.get("sample_at"))
+        if previous_at and current_at and not previous.get("camera_online"):
+            offline += max(0.0, (current_at - previous_at).total_seconds())
+    return offline
 
 
 def operations_timeline(

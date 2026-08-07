@@ -13,7 +13,7 @@ from app import api as api_module
 from app.alerts import enqueue_event_alert
 from app.api import api
 from app.database import connect
-from app.models import criar_alert_recipient
+from app.models import criar_alert_recipient, registrar_operational_sample
 from app.operations_history import (
     OperationsRecorder,
     close_open_operational_event,
@@ -104,14 +104,28 @@ class OperationsDashboardTest(unittest.TestCase):
             connection, _ = self._db(temp_dir)
             insert_operational_event(connection, "s1", "cam1", "Extrusora", "active_without_operator", None, "ATIVA_SEM_OPERADOR", "2026-07-20T09:00:00+00:00")
             close_open_operational_event(connection, "s1", "active_without_operator", "2026-07-20T09:20:00+00:00")
-            insert_operational_event(connection, "s1", "cam1", "Extrusora", "camera_status", None, "offline", "2026-07-20T09:30:00+00:00")
-            close_open_operational_event(connection, "s1", "camera_status", "2026-07-20T10:00:00+00:00")
+            sample_base = {
+                "tenant_id": "cli",
+                "unit_id": "uni",
+                "camera_id": "cam1",
+                "machine_id": None,
+                "machine_state": None,
+                "operator_present": None,
+                "activity_score": None,
+                "confidence": None,
+                "capture_fps": 12.0,
+                "inference_fps": 5.0,
+                "frames_analyzed": 1,
+            }
+            registrar_operational_sample(connection, **sample_base, sample_uuid="sample_online", camera_online=True, sample_at="2026-07-20T09:00:00+00:00")
+            registrar_operational_sample(connection, **sample_base, sample_uuid="sample_offline", camera_online=False, sample_at="2026-07-20T09:30:00+00:00")
+            registrar_operational_sample(connection, **sample_base, sample_uuid="sample_back", camera_online=True, sample_at="2026-07-20T10:00:00+00:00")
             summary = operations_summary(connection, "2026-07-20T09:00:00+00:00", "2026-07-20T11:00:00+00:00", "cam1", "Extrusora")
 
         self.assertEqual(summary["tempo_ativa_sem_operador"], 1200.0)
         self.assertEqual(summary["disponibilidade_camera"], 75.0)
 
-    def test_recorder_does_not_duplicate_same_camera_online_state(self) -> None:
+    def test_recorder_does_not_create_camera_status_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             connection, db_path = self._db(temp_dir)
             connection.close()
@@ -123,7 +137,46 @@ class OperationsDashboardTest(unittest.TestCase):
             reopened = connect(db_path)
             events = list_operational_events(reopened)
 
-        self.assertEqual(len([event for event in events if event["event_type"] == "camera_status"]), 1)
+        self.assertEqual([event for event in events if event["event_type"] == "camera_status"], [])
+
+    def test_camera_status_insert_is_ignored_by_compat_event_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, _ = self._db(temp_dir)
+            event_id = insert_operational_event(connection, "s1", "cam1", "Extrusora", "camera_status", None, "offline", "2026-07-20T10:00:00+00:00")
+            events = list_operational_events(connection)
+            canonical_total = connection.execute("SELECT COUNT(*) AS total FROM eventos WHERE tipo = 'camera_status'").fetchone()["total"]
+
+        self.assertEqual(event_id, "")
+        self.assertEqual(events, [])
+        self.assertEqual(canonical_total, 0)
+
+    def test_cleanup_removes_only_safe_legacy_camera_status_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, _ = self._db(temp_dir)
+            connection.execute("INSERT INTO clientes (id, nome, status) VALUES ('cli', 'Cliente', 'ativo')")
+            connection.execute("INSERT INTO unidades (id, cliente_id, nome) VALUES ('uni', 'cli', 'Unidade')")
+            connection.execute("INSERT INTO cameras (id, cliente_id, unidade_id, nome) VALUES ('cam1', 'cli', 'uni', 'Camera')")
+            event_id = connection.execute(
+                """
+                INSERT INTO eventos (id, event_uuid, cliente_id, unidade_id, camera_id, tipo, inicio, status, metadata_json)
+                VALUES ('legacy_cam', 'uuid_legacy_cam', 'cli', 'uni', 'cam1', 'camera_status', '2026-07-20T10:00:00+00:00', 'open', ?)
+                RETURNING id
+                """,
+                ('{"domain":"operations_history_compat"}',),
+            ).fetchone()["id"]
+            connection.execute(
+                """
+                INSERT INTO eventos (id, event_uuid, cliente_id, unidade_id, camera_id, tipo, inicio, status, metadata_json, asset_id)
+                VALUES ('protected_cam', 'uuid_protected_cam', 'cli', 'uni', 'cam1', 'camera_status', '2026-07-20T10:00:00+00:00', 'open', ?, 'asset1')
+                """,
+                ('{"domain":"operations_history_compat"}',),
+            )
+            api_module.init_db(connection)
+            removed = connection.execute("SELECT * FROM eventos WHERE id = ?", (event_id,)).fetchone()
+            protected = connection.execute("SELECT * FROM eventos WHERE id = 'protected_cam'").fetchone()
+
+        self.assertIsNone(removed)
+        self.assertIsNotNone(protected)
 
     def test_live_view_session_does_not_become_persistent_camera_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -135,9 +188,7 @@ class OperationsDashboardTest(unittest.TestCase):
             reopened = connect(db_path)
             events = list_operational_events(reopened)
 
-        self.assertEqual(len(events), 1)
-        self.assertIsNone(events[0]["camera_id"])
-        self.assertEqual(events[0]["session_id"], "live_abc123")
+        self.assertEqual(events, [])
 
     def test_machine_not_configured_does_not_create_machine_or_camera_offline_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -156,16 +207,13 @@ class OperationsDashboardTest(unittest.TestCase):
             events = list_operational_events(reopened)
             status = current_status(reopened, "cam1")
 
-        self.assertEqual([event["event_type"] for event in events], ["camera_status"])
-        self.assertEqual(events[0]["new_state"], "online")
+        self.assertEqual(events, [])
         self.assertEqual(status["machine_state"], "NAO_CONFIGURADA")
         self.assertEqual(status["camera_status"], "online")
 
     def test_timeline_keeps_camera_availability_out_of_operational_states(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             connection, _ = self._db(temp_dir)
-            insert_operational_event(connection, "s1", "cam1", "Extrusora", "camera_status", None, "offline", "2026-07-20T08:00:00+00:00")
-            close_open_operational_event(connection, "s1", "camera_status", "2026-07-20T08:10:00+00:00")
             insert_operational_event(connection, "s1", "cam1", "Extrusora", "machine_state", None, "ATIVA", "2026-07-20T08:10:00+00:00")
             close_open_operational_event(connection, "s1", "machine_state", "2026-07-20T09:00:00+00:00")
             timeline = operations_timeline(connection, "2026-07-20T08:00:00+00:00", "2026-07-20T09:00:00+00:00", "cam1", "Extrusora")

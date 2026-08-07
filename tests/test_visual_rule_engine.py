@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 import app.alerts as alerts_module
 import app.api as api_module
 from app.database import connect, init_db
-from app.models import criar_alert_recipient, criar_camera, criar_cliente, criar_unidade, listar_alert_deliveries
+from app.models import criar_alert_recipient, criar_camera, criar_cliente, criar_regra, criar_unidade, listar_alert_deliveries
 from app.operational_rule_runtime import OperationalRuleRuntime, facts_from_stream
 from app.person_detection import Detection
 from app.visual_rule_engine import evaluate_condition
@@ -168,6 +168,31 @@ class VisualRuleEngineTest(unittest.TestCase):
             )
             self.assertEqual(result.status_code, 200)
             self.assertEqual(result.json()["action"], "opened")
+
+    def test_runtime_camera_status_does_not_create_operational_event(self) -> None:
+        _cliente_id, _unidade_id, camera_id = self.seed_camera()
+        with self.connection() as connection:
+            init_db(connection)
+            rule = criar_regra(
+                connection,
+                nome="Câmera offline técnica",
+                camera_id=camera_id,
+                tipo_evento="camera_offline",
+                tempo_minimo=0,
+                cooldown_seconds=0,
+                debounce_seconds=0,
+                condicao={"type": "camera_status", "status": "offline"},
+            )
+        runtime = OperationalRuleRuntime(camera_id)
+        with patch("app.operational_rule_runtime.connect", self.connection):
+            results = runtime.camera_status("offline")
+        with self.connection() as connection:
+            init_db(connection)
+            total = connection.execute("SELECT COUNT(*) AS total FROM eventos WHERE tipo IN ('camera_status', 'camera_offline')").fetchone()["total"]
+
+        self.assertTrue(rule)
+        self.assertEqual(results, [])
+        self.assertEqual(total, 0)
 
     def test_default_rules_endpoint_creates_pilot_rules_once(self) -> None:
         _cliente_id, _unidade_id, camera_id = self.seed_camera()
