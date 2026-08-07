@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,8 +10,10 @@ import numpy as np
 from fastapi.testclient import TestClient
 
 from app import api as api_module
+from app.alerts import enqueue_event_alert
 from app.api import api
 from app.database import connect
+from app.models import criar_alert_recipient
 from app.operations_history import (
     OperationsRecorder,
     close_open_operational_event,
@@ -38,10 +41,46 @@ class OperationsDashboardTest(unittest.TestCase):
             insert_operational_event(connection, "s1", "cam1", "Extrusora", "machine_state", None, "ATIVA", "2026-07-20T10:00:00+00:00")
             closed = close_open_operational_event(connection, "s1", "machine_state", "2026-07-20T10:05:30+00:00")
             events = list_operational_events(connection)
+            canonical_total = connection.execute("SELECT COUNT(*) AS total FROM eventos").fetchone()["total"]
+            legacy_total = connection.execute("SELECT COUNT(*) AS total FROM operational_events").fetchone()["total"]
+            outbox_total = connection.execute("SELECT COUNT(*) AS total FROM sync_outbox").fetchone()["total"]
 
         self.assertIsNotNone(closed)
         self.assertEqual(closed["duration_seconds"], 330.0)
         self.assertEqual(events[0]["ended_at"], "2026-07-20T10:05:30+00:00")
+        self.assertEqual(canonical_total, 1)
+        self.assertEqual(legacy_total, 0)
+        self.assertEqual(outbox_total, 1)
+
+    def test_canonical_event_update_evidence_alert_and_samples_remain_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, db_path = self._db(temp_dir)
+            event_id = insert_operational_event(
+                connection,
+                "s1",
+                "cam1",
+                "Extrusora",
+                "machine_state",
+                None,
+                "PARADA",
+                "2026-07-20T10:00:00+00:00",
+                confidence=0.91,
+                activity_score=2.5,
+                people_count=1,
+                snapshot_path="data/evidence/frame.jpg",
+            )
+            criar_alert_recipient(connection, "Operador", "ops@example.com", cliente_id="cli_operational_compat")
+            connection.close()
+            with patch("app.alerts.connect", lambda: connect(db_path)), patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console"}):
+                enqueue_event_alert(event_id)
+            reopened = connect(db_path)
+            event = reopened.execute("SELECT * FROM eventos WHERE id = ?", (event_id,)).fetchone()
+            deliveries = reopened.execute("SELECT COUNT(*) AS total FROM alert_deliveries WHERE evento_id = ?", (event_id,)).fetchone()["total"]
+            legacy_total = reopened.execute("SELECT COUNT(*) AS total FROM operational_events").fetchone()["total"]
+
+        self.assertEqual(event["midia_path"], "data/evidence/frame.jpg")
+        self.assertEqual(deliveries, 1)
+        self.assertEqual(legacy_total, 0)
 
     def test_summary_counts_active_stopped_and_biggest_stop(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -174,9 +213,13 @@ class OperationsDashboardTest(unittest.TestCase):
             reopened = connect(db_path)
             events = list_operational_events(reopened)
             status = current_status(reopened, "cam1", "Extrusora")
+            samples = reopened.execute("SELECT COUNT(*) AS total FROM operational_samples").fetchone()["total"]
+            legacy_total = reopened.execute("SELECT COUNT(*) AS total FROM operational_events").fetchone()["total"]
 
         self.assertGreaterEqual(len(events), 4)
         self.assertEqual(status["machine_state"], "PARADA")
+        self.assertGreaterEqual(samples, 2)
+        self.assertEqual(legacy_total, 0)
 
     def test_operations_api_endpoints(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -7,6 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 
 from app.database import connect
 from app.machine_monitoring import MachineMonitorEngine, config_from_dict
@@ -261,18 +262,23 @@ def test_vision_lab_machine_stoppage_creates_event_and_outbox_without_main_db():
             connection.commit()
             monitor = obter_machine_monitor(connection, "mach_lab")
             engine = MachineMonitorEngine(config_from_dict(monitor))
+            engine.smoothing_seconds = 0.01
+            engine.analysis_fps = 100
 
         blank = np.zeros((120, 160, 3), dtype=np.uint8)
         moving = blank.copy()
         cv2.rectangle(moving, (30, 30), (90, 90), (255, 255, 255), -1)
+        moving_next = blank.copy()
+        cv2.rectangle(moving_next, (45, 30), (105, 90), (255, 255, 255), -1)
         detection = Detection(20, 20, 80, 100, 0.9, "person", 1)
 
-        for _ in range(3):
-            engine.update(moving, [detection])
-            time.sleep(0.06)
-        for _ in range(4):
-            engine.update(blank, [])
-            time.sleep(0.06)
+        with patch("app.machine_monitoring.connect", lambda: connect(db_path)):
+            for frame in (blank, moving, moving_next, moving):
+                engine.update(frame, [detection])
+                time.sleep(0.03)
+            for _ in range(4):
+                engine.update(blank, [])
+                time.sleep(0.06)
 
         with connect(db_path) as connection:
             events = listar_eventos_filtrados(connection, camera_id=LAB_CAMERA_ID, tipo="machine_stoppage")

@@ -1809,6 +1809,20 @@ def criar_evento_machine_stoppage(
     midia_path: str | None,
     track_ids: list[int],
 ) -> str:
+    existing = connection.execute(
+        """
+        SELECT id
+        FROM eventos
+        WHERE machine_monitor_id = ?
+          AND tipo = ?
+          AND status = 'open'
+        ORDER BY inicio DESC, criado_em DESC
+        LIMIT 1
+        """,
+        (machine_monitor_id, "machine_stoppage"),
+    ).fetchone()
+    if existing:
+        return str(existing["id"])
     evento_id = new_id("evt")
     event_uuid = new_event_uuid()
     connection.execute(
@@ -1880,6 +1894,20 @@ def criar_evento_machine_operational(
     severidade: str = "medium",
     metadata: dict[str, Any] | None = None,
 ) -> str:
+    existing = connection.execute(
+        """
+        SELECT id
+        FROM eventos
+        WHERE machine_monitor_id = ?
+          AND tipo = ?
+          AND status = 'open'
+        ORDER BY inicio DESC, criado_em DESC
+        LIMIT 1
+        """,
+        (machine_monitor_id, tipo),
+    ).fetchone()
+    if existing:
+        return str(existing["id"])
     evento_id = new_id("evt")
     event_uuid = new_event_uuid()
     metadata = metadata or {}

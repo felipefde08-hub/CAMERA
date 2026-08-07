@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +13,12 @@ import numpy as np
 
 from app.config import ROOT
 from app.database import connect, init_db
+from app.operational_events import close_event as close_canonical_event
+from app.operational_events import list_events as list_canonical_events
+from app.operational_events import open_event as open_canonical_event
+from app.operational_events import resolve_event_context
+from app.models import registrar_operational_sample
+from edge_agent.sync_outbox import new_event_uuid
 from shared.schemas import now_iso
 
 LOGGER = logging.getLogger(__name__)
@@ -42,10 +47,6 @@ def iso_at(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
 
-def new_id(prefix: str) -> str:
-    return f"{prefix}_{uuid.uuid4().hex[:10]}"
-
-
 def row_to_event(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
     return data
@@ -69,32 +70,20 @@ def insert_operational_event(
     people_count: int = 0,
     snapshot_path: str | None = None,
 ) -> str:
-    event_id = new_id("op")
-    connection.execute(
-        """
-        INSERT INTO operational_events (
-            id, session_id, camera_id, machine_name, event_type, previous_state,
-            new_state, started_at, confidence, activity_score, people_count,
-            snapshot_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            event_id,
-            session_id,
-            camera_id,
-            machine_name,
-            event_type,
-            previous_state,
-            new_state,
-            started_at,
-            confidence,
-            activity_score,
-            int(people_count or 0),
-            snapshot_path,
-        ),
+    return open_canonical_event(
+        connection,
+        session_id=session_id,
+        camera_id=camera_id,
+        machine_name=machine_name,
+        event_type=event_type,
+        previous_state=previous_state,
+        new_state=new_state,
+        started_at=started_at,
+        confidence=confidence,
+        activity_score=activity_score,
+        people_count=people_count,
+        snapshot_path=snapshot_path,
     )
-    connection.commit()
-    return event_id
 
 
 def close_open_operational_event(
@@ -103,34 +92,7 @@ def close_open_operational_event(
     event_type: str,
     ended_at: str,
 ) -> dict[str, Any] | None:
-    row = connection.execute(
-        """
-        SELECT *
-        FROM operational_events
-        WHERE session_id = ? AND event_type = ? AND ended_at IS NULL
-        ORDER BY started_at DESC
-        LIMIT 1
-        """,
-        (session_id, event_type),
-    ).fetchone()
-    if row is None:
-        return None
-    started = parse_iso(row["started_at"])
-    ended = parse_iso(ended_at)
-    duration = max(0.0, (ended - started).total_seconds()) if started and ended else None
-    connection.execute(
-        """
-        UPDATE operational_events
-        SET ended_at = ?, duration_seconds = ?
-        WHERE id = ?
-        """,
-        (ended_at, duration, row["id"]),
-    )
-    connection.commit()
-    updated = dict(row)
-    updated["ended_at"] = ended_at
-    updated["duration_seconds"] = duration
-    return updated
+    return close_canonical_event(connection, session_id=session_id, event_type=event_type, ended_at=ended_at)
 
 
 def list_operational_events(
@@ -142,32 +104,15 @@ def list_operational_events(
     limit: int = 50,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
-    clauses: list[str] = []
-    values: list[Any] = []
-    if start:
-        clauses.append("COALESCE(ended_at, ?) >= ?")
-        values.extend([now_iso(), start])
-    if end:
-        clauses.append("started_at <= ?")
-        values.append(end)
-    if camera_id:
-        clauses.append("camera_id = ?")
-        values.append(camera_id)
-    if machine_name:
-        clauses.append("machine_name = ?")
-        values.append(machine_name)
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    rows = connection.execute(
-        f"""
-        SELECT *
-        FROM operational_events
-        {where}
-        ORDER BY started_at DESC, created_at DESC, rowid DESC
-        LIMIT ? OFFSET ?
-        """,
-        [*values, max(1, min(limit, 200)), max(0, offset)],
-    ).fetchall()
-    return [row_to_event(row) for row in rows]
+    return list_canonical_events(
+        connection,
+        start=start,
+        end=end,
+        camera_id=camera_id,
+        machine_name=machine_name,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @dataclass
@@ -216,6 +161,7 @@ class OperationsRecorder:
             activity_score=(ops_state or {}).get("machine_motion"),
             people_count=int((ops_state or {}).get("people_count") or 0),
         )
+        self._record_sample(snapshot, camera_status, ops_state)
         self._transition("camera_status", snapshot.camera_status, snapshot, frame)
         if machine:
             self._transition("machine_state", snapshot.machine_state, snapshot, frame)
@@ -223,6 +169,35 @@ class OperationsRecorder:
             self._transition("calibration", snapshot.calibration_status, snapshot, frame)
             relation_state = "ATIVA_SEM_OPERADOR" if snapshot.machine_state == "ATIVA" and snapshot.operator_state == "AUSENTE" else "NORMAL"
             self._transition("active_without_operator", relation_state, snapshot, frame)
+
+    def _record_sample(self, snapshot: OperationalSnapshot, camera_status: str, ops_state: dict[str, Any] | None) -> None:
+        if not ops_state:
+            return
+        try:
+            with connect() as connection:
+                init_operations_db(connection)
+                client_id, unit_id, canonical_camera_id, _source_camera_id = resolve_event_context(connection, self.camera_id, self.session_id)
+                machine = ops_state.get("machine") if ops_state else None
+                registrar_operational_sample(
+                    connection,
+                    sample_uuid=new_event_uuid(),
+                    tenant_id=client_id,
+                    unit_id=unit_id,
+                    camera_id=canonical_camera_id,
+                    machine_id=str(machine.get("id")) if isinstance(machine, dict) and machine.get("id") else None,
+                    machine_state=snapshot.machine_state if snapshot.machine_state in {"ACTIVE", "STOPPED", "UNKNOWN"} else None,
+                    operator_present=snapshot.operator_state == "PRESENTE",
+                    activity_score=snapshot.activity_score,
+                    confidence=snapshot.confidence,
+                    capture_fps=(ops_state or {}).get("capture_fps"),
+                    inference_fps=(ops_state or {}).get("inference_fps"),
+                    frames_analyzed=int((ops_state or {}).get("frames_analyzed") or 0),
+                    camera_online=camera_status == "online",
+                    sample_at=now_iso(),
+                    metadata={"people_count": snapshot.people_count, "session_id": self.session_id},
+                )
+        except Exception:
+            LOGGER.exception("Falha ao registrar amostra operacional.")
 
     def _transition(
         self,
@@ -268,13 +243,15 @@ class OperationsRecorder:
     def _is_redundant_open_event(self, connection: sqlite3.Connection, event_type: str, new_state: str) -> bool:
         row = connection.execute(
             """
-            SELECT new_state
-            FROM operational_events
-            WHERE session_id = ? AND event_type = ? AND ended_at IS NULL
-            ORDER BY started_at DESC, created_at DESC, rowid DESC
+            SELECT json_extract(metadata_json, '$.new_state') AS new_state
+            FROM eventos
+            WHERE status = 'open'
+              AND tipo = ?
+              AND json_extract(metadata_json, '$.session_id') = ?
+            ORDER BY inicio DESC, criado_em DESC, rowid DESC
             LIMIT 1
             """,
-            (self.session_id, event_type),
+            (event_type, self.session_id),
         ).fetchone()
         return bool(row and row["new_state"] == new_state)
 
@@ -284,13 +261,14 @@ class OperationsRecorder:
                 init_operations_db(connection)
                 row = connection.execute(
                     """
-                    SELECT new_state
-                    FROM operational_events
-                    WHERE session_id = ? AND event_type = ?
-                    ORDER BY started_at DESC, created_at DESC, rowid DESC
+                    SELECT json_extract(metadata_json, '$.new_state') AS new_state
+                    FROM eventos
+                    WHERE tipo = ?
+                      AND json_extract(metadata_json, '$.session_id') = ?
+                    ORDER BY inicio DESC, criado_em DESC, rowid DESC
                     LIMIT 1
                     """,
-                    (self.session_id, event_type),
+                    (event_type, self.session_id),
                 ).fetchone()
                 return str(row["new_state"]) if row else None
         except Exception:
@@ -377,31 +355,14 @@ def _older_open_events(
     camera_id: str | None,
     machine_name: str | None,
 ) -> list[dict[str, Any]]:
-    clauses = ["started_at < ?", "ended_at IS NULL"]
-    values: list[Any] = [iso_at(start_dt)]
-    if camera_id:
-        clauses.append("camera_id = ?")
-        values.append(camera_id)
-    if machine_name:
-        clauses.append("machine_name = ?")
-        values.append(machine_name)
-    rows = connection.execute(
-        f"SELECT * FROM operational_events WHERE {' AND '.join(clauses)}",
-        values,
-    ).fetchall()
-    return [row_to_event(row) for row in rows]
+    return [
+        event
+        for event in list_operational_events(connection, None, iso_at(start_dt), camera_id, machine_name, limit=200, offset=0)
+        if event.get("ended_at") is None and parse_iso(event.get("started_at")) and parse_iso(event.get("started_at")) < start_dt
+    ]
 
 
 def current_status(connection: sqlite3.Connection, camera_id: str | None = None, machine_name: str | None = None) -> dict[str, Any]:
-    clauses: list[str] = []
-    values: list[Any] = []
-    if camera_id:
-        clauses.append("camera_id = ?")
-        values.append(camera_id)
-    if machine_name:
-        clauses.append("machine_name = ?")
-        values.append(machine_name)
-    where = f"AND {' AND '.join(clauses)}" if clauses else ""
     status: dict[str, Any] = {
         "machine_state": "NAO_CONFIGURADA",
         "operator_state": "AUSENTE",
@@ -415,22 +376,14 @@ def current_status(connection: sqlite3.Connection, camera_id: str | None = None,
         "operator_presence": "operator_state",
         "camera_status": "camera_status",
     }
+    events = list_operational_events(connection, camera_id=camera_id, machine_name=machine_name, limit=200, offset=0)
     for event_type, key in mapping.items():
-        row = connection.execute(
-            f"""
-            SELECT *
-            FROM operational_events
-            WHERE event_type = ? {where}
-            ORDER BY started_at DESC, created_at DESC, rowid DESC
-            LIMIT 1
-            """,
-            [event_type, *values],
-        ).fetchone()
-        if row:
-            status[key] = row["new_state"]
-            status["people_count"] = max(int(status["people_count"]), int(row["people_count"] or 0))
-            status["machine_name"] = row["machine_name"] or status["machine_name"]
-            status["last_update"] = row["started_at"]
+        event = next((item for item in events if item.get("event_type") == event_type), None)
+        if event:
+            status[key] = event["new_state"]
+            status["people_count"] = max(int(status["people_count"]), int(event.get("people_count") or 0))
+            status["machine_name"] = event.get("machine_name") or status["machine_name"]
+            status["last_update"] = event.get("started_at")
     return status
 
 
