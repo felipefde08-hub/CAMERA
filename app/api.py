@@ -2199,6 +2199,7 @@ def get_eventos(
     area_id: Optional[str] = None,
     status: Optional[str] = None,
     tipo: Optional[str] = None,
+    event_family: Optional[str] = None,
     data_inicio: Optional[str] = None,
     data_fim: Optional[str] = None,
 ) -> list[dict[str, Any]]:
@@ -2206,9 +2207,9 @@ def get_eventos(
         init_db(connection)
         user = require_user(request, connection)
         if tenant_filter(user):
-            events = listar_eventos_filtrados(connection, camera_id, area_id, status, tipo, data_inicio, data_fim)
+            events = listar_eventos_filtrados(connection, camera_id, area_id, status, tipo, data_inicio, data_fim, event_family=event_family)
             return [event for event in events if event.get("cliente_id") == tenant_filter(user)]
-        return listar_eventos_filtrados(connection, camera_id, area_id, status, tipo, data_inicio, data_fim)
+        return listar_eventos_filtrados(connection, camera_id, area_id, status, tipo, data_inicio, data_fim, event_family=event_family)
 
 
 @api.get("/eventos/{evento_id}")
@@ -2441,6 +2442,7 @@ def get_analytics_summary(
     end: Optional[str] = None,
     aggregation: str = "hour",
     camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
 ) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
@@ -2451,8 +2453,8 @@ def get_analytics_summary(
         if end:
             end_dt = parse_dt(end)
         if machine_id:
-            return aggregate_period(connection, machine_id=machine_id, start=start_dt, end=end_dt, aggregation=aggregation, camera_id=camera_id)
-        return compute_summary(connection, machine_id=None, start=start_dt, end=end_dt, camera_id=camera_id)
+            return aggregate_period(connection, machine_id=machine_id, start=start_dt, end=end_dt, aggregation=aggregation, camera_id=camera_id, event_family=event_family)
+        return compute_summary(connection, machine_id=None, start=start_dt, end=end_dt, camera_id=camera_id, event_family=event_family)
 
 
 @api.get("/analytics/timeline")
@@ -2462,13 +2464,14 @@ def get_analytics_timeline(
     start: Optional[str] = None,
     end: Optional[str] = None,
     camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
 ) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
         require_camera_access(connection, require_user(request, connection), camera_id)
         start_dt = parse_dt(start) if start else current_period_range("day")[0]
         end_dt = parse_dt(end) if end else current_period_range("day")[1]
-        return timeline(connection, machine_id=machine_id, start=start_dt, end=end_dt, camera_id=camera_id)
+        return timeline(connection, machine_id=machine_id, start=start_dt, end=end_dt, camera_id=camera_id, event_family=event_family)
 
 
 @api.get("/analytics/insights")

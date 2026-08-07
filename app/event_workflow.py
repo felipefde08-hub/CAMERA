@@ -158,6 +158,22 @@ def event_detail(connection: sqlite3.Connection, event_id: str) -> dict[str, Any
         return None
     return {
         **event,
+        "technical_type": event.get("tipo"),
+        "business_taxonomy": {
+            "event_family": event.get("event_family") or "unknown",
+            "event_subtype": event.get("event_subtype"),
+        },
+        "physical_context": {
+            "cliente_id": event.get("cliente_id"),
+            "unidade_id": event.get("unidade_id"),
+            "site_id": event.get("site_id"),
+            "area_context_id": event.get("area_context_id"),
+            "process_id": event.get("process_id"),
+            "asset_id": event.get("asset_id"),
+            "camera_id": event.get("camera_id"),
+            "machine_monitor_id": event.get("machine_monitor_id"),
+            "area_id": event.get("area_id"),
+        },
         "physical_status": event.get("status"),
         "workflow_status": event.get("workflow_status") or WORKFLOW_NEW,
         "observed_context": observed_context(event),

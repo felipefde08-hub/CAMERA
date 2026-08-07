@@ -6,6 +6,7 @@ import os
 import uuid
 from typing import Any
 
+from app.event_taxonomy import classify_event_type
 from app.security import decrypt_secret, encrypt_secret
 from edge_agent.camera_connector import safe_source_ref
 from edge_agent.sync_outbox import enqueue_sync_event, new_event_uuid, refresh_sync_event
@@ -323,12 +324,13 @@ def registrar_evento(
     item_id = new_id("evt")
     event_uuid = event_uuid or new_event_uuid()
     inicio = inicio or now_iso()
+    taxonomy = classify_event_type(tipo)
     connection.execute(
         """
         INSERT INTO eventos (
             id, event_uuid, cliente_id, unidade_id, camera_id, tipo, inicio, fim, duracao,
-            operador_presente, confianca, midia_path
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            operador_presente, confianca, midia_path, event_family, event_subtype
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             item_id,
@@ -343,6 +345,8 @@ def registrar_evento(
             None if operador_presente is None else int(operador_presente),
             confianca,
             midia_path,
+            taxonomy.event_family,
+            taxonomy.event_subtype,
         ),
     )
     connection.commit()
@@ -369,6 +373,7 @@ def _enqueue_evento_cloud(
     midia_path: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    taxonomy = classify_event_type(tipo)
     payload = {
         "event_uuid": event_uuid,
         "tenant_id": cliente_id,
@@ -376,6 +381,8 @@ def _enqueue_evento_cloud(
         "unidade_id": unidade_id,
         "camera_id": camera_id,
         "tipo": tipo,
+        "event_family": taxonomy.event_family,
+        "event_subtype": taxonomy.event_subtype,
         "inicio": inicio,
         "fim": fim,
         "duracao": duracao,
@@ -411,6 +418,8 @@ def atualizar_outbox_evento(connection: sqlite3.Connection, evento_id: str) -> N
         "unidade_id": row["unidade_id"],
         "camera_id": row["camera_id"],
         "tipo": row["tipo"],
+        "event_family": row["event_family"] if "event_family" in row.keys() else None,
+        "event_subtype": row["event_subtype"] if "event_subtype" in row.keys() else None,
         "inicio": row["inicio"],
         "fim": row["fim"],
         "duracao": row["duracao"],
@@ -463,14 +472,15 @@ def criar_ocorrencia_area_restrita(
     evento_id = new_id("evt")
     event_uuid = new_event_uuid()
     track_ids_json = json.dumps(sorted(set(track_ids)))
+    taxonomy = classify_event_type("restricted_area_occupied")
     connection.execute(
         """
         INSERT INTO eventos (
             id, event_uuid, cliente_id, unidade_id, camera_id, area_id, regra_id, tipo,
             severidade, status, inicio, quantidade_inicial, quantidade_atual,
             quantidade_maxima, track_ids_json, confianca, midia_path,
-            ultimo_ocupado_em, evidence_error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ultimo_ocupado_em, evidence_error, event_family, event_subtype
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             evento_id,
@@ -492,6 +502,8 @@ def criar_ocorrencia_area_restrita(
             midia_path,
             inicio,
             evidence_error,
+            taxonomy.event_family,
+            taxonomy.event_subtype,
         ),
     )
     from app.operational_context import apply_context_to_event
@@ -538,14 +550,15 @@ def criar_ocorrencia_zona(
     event_uuid = new_event_uuid()
     track_ids_json = json.dumps(sorted(set(track_ids)))
     metadata = {**(metadata or {}), "area_id": area_id, "regra_id": regra_id, "track_ids": sorted(set(track_ids))}
+    taxonomy = classify_event_type(tipo)
     connection.execute(
         """
         INSERT INTO eventos (
             id, event_uuid, cliente_id, unidade_id, camera_id, area_id, regra_id, tipo,
             severidade, status, inicio, quantidade_inicial, quantidade_atual,
             quantidade_maxima, track_ids_json, confianca, midia_path,
-            ultimo_ocupado_em, metadata_json, evidence_error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ultimo_ocupado_em, metadata_json, evidence_error, event_family, event_subtype
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             evento_id,
@@ -568,6 +581,8 @@ def criar_ocorrencia_zona(
             inicio,
             json.dumps(metadata),
             evidence_error,
+            taxonomy.event_family,
+            taxonomy.event_subtype,
         ),
     )
     from app.operational_context import apply_context_to_event
@@ -683,6 +698,7 @@ def listar_eventos_filtrados(
     area_context_id: str | None = None,
     process_id: str | None = None,
     asset_id: str | None = None,
+    event_family: str | None = None,
 ) -> list[dict[str, Any]]:
     clauses: list[str] = []
     values: list[Any] = []
@@ -695,6 +711,7 @@ def listar_eventos_filtrados(
         "area_context_id": area_context_id,
         "process_id": process_id,
         "asset_id": asset_id,
+        "event_family": event_family,
     }
     for column, value in filters.items():
         if value:
@@ -1921,14 +1938,15 @@ def criar_evento_machine_stoppage(
         return str(existing["id"])
     evento_id = new_id("evt")
     event_uuid = new_event_uuid()
+    taxonomy = classify_event_type("machine_stoppage")
     connection.execute(
         """
         INSERT INTO eventos (
             id, event_uuid, cliente_id, unidade_id, camera_id, machine_monitor_id, tipo,
             severidade, status, inicio, motion_level, operator_present_start,
             operador_presente, confianca, midia_path, track_ids_json,
-            operator_present_seconds, operator_absent_seconds, max_people
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            operator_present_seconds, operator_absent_seconds, max_people, event_family, event_subtype
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             evento_id,
@@ -1950,6 +1968,8 @@ def criar_evento_machine_stoppage(
             0.0,
             0.0,
             len(set(track_ids)),
+            taxonomy.event_family,
+            taxonomy.event_subtype,
         ),
     )
     from app.operational_context import apply_context_to_event
@@ -2011,14 +2031,16 @@ def criar_evento_machine_operational(
     evento_id = new_id("evt")
     event_uuid = new_event_uuid()
     metadata = metadata or {}
+    taxonomy = classify_event_type(tipo)
     connection.execute(
         """
         INSERT INTO eventos (
             id, event_uuid, cliente_id, unidade_id, camera_id, machine_monitor_id, tipo,
             severidade, status, inicio, motion_level, operator_present_start,
             operador_presente, confianca, midia_path, track_ids_json,
-            operator_present_seconds, operator_absent_seconds, max_people, metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            operator_present_seconds, operator_absent_seconds, max_people, metadata_json,
+            event_family, event_subtype
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             evento_id,
@@ -2041,6 +2063,8 @@ def criar_evento_machine_operational(
             0.0,
             len(set(track_ids)),
             json.dumps(metadata, ensure_ascii=False),
+            taxonomy.event_family,
+            taxonomy.event_subtype,
         ),
     )
     from app.operational_context import apply_context_to_event

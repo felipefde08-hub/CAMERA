@@ -604,6 +604,8 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "eventos", "confirmed_cause", "TEXT")
     _ensure_column(connection, "eventos", "action_taken", "TEXT")
     _ensure_column(connection, "eventos", "human_notes", "TEXT")
+    _ensure_column(connection, "eventos", "event_family", "TEXT")
+    _ensure_column(connection, "eventos", "event_subtype", "TEXT")
     _ensure_column(connection, "eventos", "ultimo_ocupado_em", "TEXT")
     _ensure_column(connection, "eventos", "evidence_error", "TEXT")
     _ensure_column(connection, "eventos", "atualizado_em", "TEXT")
@@ -682,6 +684,7 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "operational_samples", "asset_id", "TEXT")
     _backfill_operational_context(connection)
     _backfill_event_workflow(connection)
+    _backfill_event_taxonomy(connection)
     connection.commit()
 
 
@@ -709,3 +712,27 @@ def _backfill_event_workflow(connection: sqlite3.Connection) -> None:
         """
     )
     connection.execute("UPDATE eventos SET workflow_status = COALESCE(workflow_status, 'new')")
+
+
+def _backfill_event_taxonomy(connection: sqlite3.Connection) -> None:
+    from app.event_taxonomy import EVENT_TAXONOMY
+
+    connection.execute(
+        """
+        UPDATE eventos
+        SET event_family = NULL,
+            event_subtype = NULL
+        WHERE tipo IN ('restricted_area_occupied', 'restricted_zone_occupied')
+          AND event_family = 'flow'
+        """
+    )
+    for event_type, taxonomy in EVENT_TAXONOMY.items():
+        connection.execute(
+            """
+            UPDATE eventos
+            SET event_family = COALESCE(event_family, ?),
+                event_subtype = COALESCE(event_subtype, ?)
+            WHERE tipo = ?
+            """,
+            (taxonomy.event_family, taxonomy.event_subtype, event_type),
+        )

@@ -57,7 +57,18 @@ def load_shift_config() -> list[dict[str, str]]:
     ]
 
 
-def list_events(connection, machine_id: str | None, start: datetime, end: datetime, camera_id: str | None = None) -> list[dict[str, Any]]:
+def list_events(
+    connection,
+    machine_id: str | None,
+    start: datetime,
+    end: datetime,
+    camera_id: str | None = None,
+    event_family: str | None = None,
+    area_context_id: str | None = None,
+    process_id: str | None = None,
+    asset_id: str | None = None,
+    confirmed_cause: str | None = None,
+) -> list[dict[str, Any]]:
     clauses = ["inicio <= ?", "COALESCE(fim, ?) >= ?"]
     params: list[Any] = [iso(end), iso(end), iso(start)]
     if machine_id:
@@ -66,6 +77,21 @@ def list_events(connection, machine_id: str | None, start: datetime, end: dateti
     if camera_id:
         clauses.append("camera_id = ?")
         params.append(camera_id)
+    if event_family:
+        clauses.append("event_family = ?")
+        params.append(event_family)
+    if area_context_id:
+        clauses.append("area_context_id = ?")
+        params.append(area_context_id)
+    if process_id:
+        clauses.append("process_id = ?")
+        params.append(process_id)
+    if asset_id:
+        clauses.append("asset_id = ?")
+        params.append(asset_id)
+    if confirmed_cause:
+        clauses.append("COALESCE(confirmed_cause, cause_category) = ?")
+        params.append(confirmed_cause)
     rows = connection.execute(
         f"""
         SELECT *
@@ -106,11 +132,28 @@ def compute_summary(
     start: datetime,
     end: datetime,
     camera_id: str | None = None,
+    event_family: str | None = None,
+    area_context_id: str | None = None,
+    process_id: str | None = None,
+    asset_id: str | None = None,
+    confirmed_cause: str | None = None,
 ) -> dict[str, Any]:
     total = max(0.0, (end - start).total_seconds())
-    events = list_events(connection, machine_id, start, end, camera_id)
+    events = list_events(
+        connection,
+        machine_id,
+        start,
+        end,
+        camera_id,
+        event_family=event_family,
+        area_context_id=area_context_id,
+        process_id=process_id,
+        asset_id=asset_id,
+        confirmed_cause=confirmed_cause,
+    )
     samples = list_samples(connection, machine_id, start, end, camera_id)
     event_counts = Counter(event["tipo"] for event in events)
+    family_counts = Counter((event.get("event_family") or "unknown") for event in events)
 
     stopped = 0.0
     running_without_operator = 0.0
@@ -177,6 +220,7 @@ def compute_summary(
         "stopped_with_operator_seconds": round(stopped_with_operator, 3),
         "stopped_without_operator_seconds": round(max(0.0, stopped - stopped_with_operator), 3),
         "events_by_type": dict(event_counts),
+        "events_by_family": dict(family_counts),
         "alerts": {
             "sent": int(alert_counts.get("sent", 0)),
             "pending": int(alert_counts.get("pending", 0)),
@@ -190,8 +234,16 @@ def compute_summary(
     }
 
 
-def timeline(connection, *, machine_id: str | None, start: datetime, end: datetime, camera_id: str | None = None) -> dict[str, Any]:
-    events = list_events(connection, machine_id, start, end, camera_id)
+def timeline(
+    connection,
+    *,
+    machine_id: str | None,
+    start: datetime,
+    end: datetime,
+    camera_id: str | None = None,
+    event_family: str | None = None,
+) -> dict[str, Any]:
+    events = list_events(connection, machine_id, start, end, camera_id, event_family=event_family)
     return {
         "start": iso(start),
         "end": iso(end),
@@ -199,6 +251,8 @@ def timeline(connection, *, machine_id: str | None, start: datetime, end: dateti
             {
                 "event_id": event["id"],
                 "type": event["tipo"],
+                "event_family": event.get("event_family") or "unknown",
+                "event_subtype": event.get("event_subtype"),
                 "state": event.get("status"),
                 "start": event["inicio"],
                 "end": event.get("fim"),
@@ -304,7 +358,15 @@ def generate_insights(connection, *, machine_id: str | None, start: datetime, en
     return insights
 
 
-def confirmed_cause_summary(connection, *, start: datetime, end: datetime, machine_id: str | None = None, camera_id: str | None = None) -> list[dict[str, Any]]:
+def confirmed_cause_summary(
+    connection,
+    *,
+    start: datetime,
+    end: datetime,
+    machine_id: str | None = None,
+    camera_id: str | None = None,
+    event_family: str | None = None,
+) -> list[dict[str, Any]]:
     clauses = ["inicio <= ?", "COALESCE(fim, ?) >= ?"]
     params: list[Any] = [iso(end), iso(end), iso(start)]
     if machine_id:
@@ -313,6 +375,9 @@ def confirmed_cause_summary(connection, *, start: datetime, end: datetime, machi
     if camera_id:
         clauses.append("camera_id = ?")
         params.append(camera_id)
+    if event_family:
+        clauses.append("event_family = ?")
+        params.append(event_family)
     rows = connection.execute(
         f"""
         SELECT COALESCE(confirmed_cause, cause_category, 'sem causa confirmada') AS confirmed_cause,
@@ -390,8 +455,18 @@ def persist_insights(connection, machine_id: str | None, camera_id: str | None, 
     connection.commit()
 
 
-def aggregate_period(connection, *, machine_id: str, start: datetime, end: datetime, aggregation: str, camera_id: str | None = None, timezone_name: str = DEFAULT_TIMEZONE) -> dict[str, Any]:
-    metrics = compute_summary(connection, machine_id=machine_id, start=start, end=end, camera_id=camera_id)
+def aggregate_period(
+    connection,
+    *,
+    machine_id: str,
+    start: datetime,
+    end: datetime,
+    aggregation: str,
+    camera_id: str | None = None,
+    timezone_name: str = DEFAULT_TIMEZONE,
+    event_family: str | None = None,
+) -> dict[str, Any]:
+    metrics = compute_summary(connection, machine_id=machine_id, start=start, end=end, camera_id=camera_id, event_family=event_family)
     table = {"hour": "hourly_machine_metrics", "day": "daily_machine_metrics", "shift": "shift_machine_metrics"}.get(aggregation)
     if table:
         persist_aggregation(connection, table, machine_id, camera_id, start, end, timezone_name, metrics, shift_name="custom" if aggregation == "shift" else None)
