@@ -71,3 +71,19 @@ def test_events_v0_removes_technical_shell_cards_from_events() -> None:
     assert 'path === "/operations-view" || path === "/events" || path === "/insights"' in script
     assert "cx-events-mode" in script
     assert "cx-event-card" in Path(ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
+
+
+def test_events_v0_uses_product_empty_state_and_known_filter_controls() -> None:
+    script = _workspace_script()
+    start = script.index('"/events":')
+    end = script.index('"/alerts":')
+    route_block = script[start:end]
+
+    assert "Os acontecimentos monitorados pela Campex aparecerão aqui." in route_block
+    assert "eventos canônicos" not in route_block
+    assert 'type="date"' in script
+    assert '<select data-filter="familia">' in script
+    assert '<select data-filter="estado_fisico">' in script
+    assert '<select data-filter="workflow">' in script
+    assert "Identificador do evento" in script
+    assert "<dt>event_uuid</dt>" not in script

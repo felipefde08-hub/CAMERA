@@ -49,3 +49,18 @@ def test_intelligence_explains_and_traces_insights_without_legacy_loader() -> No
     assert "Observações da câmera não viram causa automaticamente." in render_block
     assert "traceButton(\"Investigar\"" in script
     assert "loadInsightsWorkspace" not in script
+
+
+def test_intelligence_uses_product_language_and_responsive_layout() -> None:
+    script = _workspace_script()
+    styles = Path(ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
+    render_start = script.index("async function renderIntelligencePage")
+    render_end = script.index("async function loadAlertsWorkspace")
+    render_block = script[render_start:render_end]
+
+    assert "eventos canônicos" not in render_block
+    assert "Operational Read Model" not in render_block
+    assert "Cada insight lista os event_uuid" not in render_block
+    assert "eventos operacionais do período" in render_block
+    assert "repeat(auto-fit, minmax(180px, 1fr))" in styles
+    assert "minmax(520px, 1.35fr)" in styles

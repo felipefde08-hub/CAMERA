@@ -16,6 +16,10 @@ def test_operations_view_route_serves_workspace_shell() -> None:
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "workspace.js" in response.text
+    assert "campex-v0-audit-20260810" in response.text
+    assert "SQLite persistente" not in response.text
+    assert "Sem credenciais no navegador" not in response.text
+    assert "<h2 id=\"workspaceTableTitle\">Registros</h2>" not in response.text
 
 
 def test_operations_view_uses_read_model_endpoints_for_aggregations() -> None:

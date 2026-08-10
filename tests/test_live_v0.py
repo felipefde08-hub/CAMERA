@@ -96,6 +96,9 @@ def test_live_v0_frontend_uses_context_and_hides_technical_priority() -> None:
     assert "current_event" in grid_script
     assert "Ver evento" in grid_script
     assert "Camera ID" not in grid_script
+    assert "hasOperationalContext" in grid_script
+    assert "A Live oficial mostra setores monitorados" in grid_script
+    assert "diagnóstico técnico no Setup" in grid_script
     assert "liveViewAsset" in view_script
     assert "liveCurrentEventLink" in view_script
     assert "Modo configuração" in view_html

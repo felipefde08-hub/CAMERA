@@ -1661,6 +1661,7 @@ button[type="button"] {
 .cx-intel-kpis {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .cx-intel-briefing,
@@ -1695,12 +1696,13 @@ button[type="button"] {
 }
 
 .cx-intel-kpis {
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .cx-intel-kpis article {
   position: relative;
   padding: 16px;
+  min-width: 0;
 }
 
 .cx-intel-kpis button {
@@ -1727,10 +1729,11 @@ button[type="button"] {
   color: var(--campex-text);
   font-size: 20px;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 
 .cx-intel-layout {
-  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.8fr);
+  grid-template-columns: minmax(520px, 1.35fr) minmax(360px, 0.8fr);
   align-items: start;
 }
 
@@ -1739,6 +1742,7 @@ button[type="button"] {
   display: grid;
   gap: 10px;
   padding: 14px;
+  min-width: 0;
 }
 
 .cx-intel-card div {
@@ -1758,6 +1762,19 @@ button[type="button"] {
   margin: 0;
   color: var(--campex-muted);
   line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.cx-intel-page .cx-ops-header {
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.cx-intel-page .cx-ops-block {
+  min-width: 0;
+}
+
+.cx-intelligence-mode .cx-main {
+  overflow-x: hidden;
 }
 
 .cx-intelligence-mode .cx-panel {
@@ -4351,6 +4368,43 @@ label {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.cx-live-config-note,
+.cx-live-technical-list {
+  width: 100%;
+  border: 1px solid var(--cx-border);
+  border-radius: 12px;
+  background: var(--cx-surface);
+  padding: 14px;
+}
+
+.cx-live-config-note {
+  display: grid;
+  gap: 8px;
+}
+
+.cx-live-config-note strong {
+  color: var(--cx-text);
+}
+
+.cx-live-config-note span,
+.cx-live-technical-list {
+  color: var(--cx-muted);
+}
+
+.cx-live-technical-list summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.cx-live-technical-list span {
+  display: inline-block;
+  margin: 8px 8px 0 0;
+  border-radius: 999px;
+  background: var(--cx-bg);
+  padding: 5px 8px;
+  font-size: 12px;
 }
 
 .cx-grid-picker-item {

@@ -68,28 +68,61 @@ function connectionClass(status) {
   return "offline";
 }
 
+function hasOperationalContext(camera) {
+  const context = camera.context || {};
+  return Boolean(context.asset_id || context.process_id || context.area_id || context.machine_monitor_id);
+}
+
+function displayCameraName(camera) {
+  return camera.context?.primary_label || camera.nome || "Setor em configuração";
+}
+
+function displayCameraPath(camera) {
+  return camera.context?.path_label || "Contexto operacional pendente";
+}
+
 function renderPicker() {
   const rows = Array.from(cameras.values());
+  const operationalRows = rows.filter(hasOperationalContext);
+  const technicalRows = rows.filter((camera) => !hasOperationalContext(camera));
   if (!rows.length) {
     picker.innerHTML = "";
     message.textContent = "Nenhuma câmera cadastrada. Cadastre uma câmera em Configurações > Câmeras.";
     return;
   }
-  picker.innerHTML = rows.map((camera) => {
+  if (!operationalRows.length) {
+    picker.innerHTML = `
+      <section class="cx-live-config-note">
+        <strong>Nenhum setor monitorado configurado.</strong>
+        <span>Associe câmera, área, processo e ativo no Setup para a Live priorizar a operação.</span>
+        <a class="button-link" href="/settings/cameras">Abrir Setup</a>
+      </section>
+      ${technicalRows.length ? `<details class="cx-live-technical-list"><summary>Câmeras sem contexto operacional (${technicalRows.length})</summary>${technicalRows.map((camera) => `<span>${camera.nome || camera.id}</span>`).join("")}</details>` : ""}
+    `;
+    grid.innerHTML = "";
+    message.textContent = "A Live oficial mostra setores monitorados, não câmeras técnicas soltas.";
+    return;
+  }
+  picker.innerHTML = operationalRows.map((camera) => {
     const checked = selected.has(camera.id) ? "checked" : "";
     return `
       <label class="cx-grid-picker-item">
         <input type="checkbox" data-camera-id="${camera.id}" ${checked} />
         <span>
-          <strong>${camera.context?.primary_label || camera.nome}</strong>
-          <small>${camera.context?.path_label || camera.nome || "Contexto em configuração"}</small>
+          <strong>${displayCameraName(camera)}</strong>
+          <small>${displayCameraPath(camera)}</small>
         </span>
       </label>
     `;
-  }).join("");
+  }).join("") + (technicalRows.length ? `
+    <details class="cx-live-technical-list">
+      <summary>${technicalRows.length} câmera(s) aguardando Setup</summary>
+      ${technicalRows.map((camera) => `<span>${camera.nome || camera.id}</span>`).join("")}
+    </details>
+  ` : "");
   message.textContent = selected.size
-    ? `${selected.size} câmera(s) em monitoramento.`
-    : "Selecione ao menos duas câmeras para validar operação simultânea.";
+    ? `${selected.size} setor(es) em monitoramento.`
+    : "Selecione setores configurados para acompanhar a operação.";
 }
 
 function renderGrid() {
@@ -101,14 +134,14 @@ function renderGrid() {
     <article class="cx-live-grid-card" data-camera-id="${item.camera.id}">
       <header>
         <div>
-          <h3>${item.status?.context?.primary_label || item.camera.context?.primary_label || item.camera.nome}</h3>
-          <p>${item.status?.context?.path_label || item.camera.context?.path_label || "Contexto operacional em configuração"}</p>
+          <h3>${item.status?.context?.primary_label || displayCameraName(item.camera)}</h3>
+          <p>${item.status?.context?.path_label || displayCameraPath(item.camera)}</p>
         </div>
         <span class="badge ${item.status?.context?.current_event ? "danger" : connectionClass(item.status?.status)}">${operationalStatusLabel(item.status?.context?.operational_status, item.status?.context?.current_event)}</span>
       </header>
       <div class="cx-live-grid-frame">
-        <img src="${item.streamUrl}" alt="Transmissão ${item.camera.nome}" />
-        <a class="cx-live-grid-hit" href="/live-view?camera_id=${encodeURIComponent(item.camera.id)}&nome=${encodeURIComponent(item.camera.nome)}" aria-label="Abrir ${item.status?.context?.primary_label || item.camera.nome}"></a>
+        <img src="${item.streamUrl}" alt="Transmissão ${displayCameraName(item.camera)}" />
+        <a class="cx-live-grid-hit" href="/live-view?camera_id=${encodeURIComponent(item.camera.id)}&nome=${encodeURIComponent(item.camera.nome)}" aria-label="Abrir ${item.status?.context?.primary_label || displayCameraName(item.camera)}"></a>
         <span class="cx-live-grid-overlay">${item.status?.status === "reconectando" ? "Tentando reconectar" : item.status?.context?.current_event ? eventLabel(item.status.context.current_event) : ""}</span>
       </div>
       <section class="cx-live-operational-summary">
@@ -169,7 +202,7 @@ async function refreshStatuses() {
       }
     });
     const resource = overview.resources || {};
-    resources.textContent = `CPU ${Math.round(resource.cpu_percent || 0)}% · Memória ${Math.round(resource.memory_percent || 0)}% · Streams ${resource.active_streams || 0}`;
+    resources.textContent = `${rowsWithContextLabel()} · diagnóstico técnico no Setup`;
   } catch (error) {
     resources.textContent = "Recursos indisponíveis";
     await Promise.all(Array.from(selected.keys()).map(async (cameraId) => {
@@ -221,12 +254,17 @@ async function boot() {
   const rows = overview.cameras.map((entry) => ({ ...entry.camera, context: entry.status?.context }));
   rows.forEach((camera) => cameras.set(camera.id, camera));
   renderPicker();
-  const auto = rows.slice(0, 2);
+  const auto = rows.filter(hasOperationalContext).slice(0, 2);
   for (const camera of auto) {
     await startCamera(camera.id).catch((error) => { message.textContent = error.message; });
   }
   await refreshStatuses();
   statusTimer = setInterval(refreshStatuses, 2000);
+}
+
+function rowsWithContextLabel() {
+  const total = Array.from(cameras.values()).filter(hasOperationalContext).length;
+  return `${total} setor(es) configurado(s)`;
 }
 
 window.addEventListener("beforeunload", () => {

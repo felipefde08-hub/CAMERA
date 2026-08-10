@@ -555,8 +555,12 @@ def home_page() -> RedirectResponse:
     return RedirectResponse(url="/operations-view", status_code=307)
 
 
+@api.get("/dashboard")
+def dashboard_page() -> RedirectResponse:
+    return RedirectResponse(url="/operations-view", status_code=307)
+
+
 INTERNAL_ROUTE_FILES = {
-    "/dashboard": "dashboard.html",
     "/overview": "dashboard.html",
     "/operations-view": "workspace.html",
     "/cameras": "workspace.html",

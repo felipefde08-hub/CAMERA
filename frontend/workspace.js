@@ -81,7 +81,7 @@ const routes = {
     endpoint: "/eventos",
     action: "Atualizar",
     emptyTitle: "Nenhum evento operacional registrado neste período.",
-    emptyDescription: "A memória operacional será preenchida quando regras reais criarem eventos canônicos.",
+    emptyDescription: "Os acontecimentos monitorados pela Campex aparecerão aqui.",
     tabs: ["Todos", "Abertos", "Encerrados", "Novo", "Reconhecido", "Resolvido", "Não classificados", "Com evidência"],
     filters: ["Período", "Unidade", "Área", "Processo", "Ativo", "Família", "Estado físico", "Workflow"],
     columns: ["Evento", "Contexto", "Horário", "Duração", "Workflow", "Evidência", "Ação"],
@@ -639,9 +639,9 @@ function renderTraceDrawer(uuids) {
   drawer.setAttribute("aria-hidden", "false");
   drawerContent.innerHTML = `
     <h2>Eventos que explicam o número</h2>
-    <p>Esta métrica foi composta pelos seguintes event_uuid:</p>
-    <ul class="cx-trace-list">${uuids.map((uuid) => `<li><a class="cx-link" href="/events?event_uuid=${encodeURIComponent(uuid)}"><code>${uuid}</code></a></li>`).join("")}</ul>
-    <p class="muted">Use esses UUIDs para consultar os eventos na aba Eventos ou pela API.</p>
+    <p>Esta métrica foi composta pelos eventos abaixo.</p>
+    <ul class="cx-trace-list">${uuids.map((uuid, index) => `<li><a class="cx-link" href="/events?event_uuid=${encodeURIComponent(uuid)}">Abrir evento ${index + 1}</a></li>`).join("")}</ul>
+    <p class="muted">Cada item leva ao registro operacional que originou o número.</p>
   `;
   drawer.querySelector("h2")?.setAttribute("id", "workspaceDrawerTitle");
   drawer.focus({ preventScroll: true });
@@ -666,7 +666,7 @@ async function renderOperationsReadModelPage(config) {
   heading.textContent = "Como está sua operação?";
   subtitle.textContent = "";
   tableTitle.textContent = "Rastreabilidade operacional";
-  tableHint.textContent = "Cada número pode ser explicado pelos event_uuid que o formaram.";
+  tableHint.textContent = "Cada número pode ser explicado pelos eventos que o formaram.";
   primaryAction.textContent = "Atualizar";
   primaryAction.onclick = () => loadPage(window.location.pathname);
   filters.innerHTML = `
@@ -767,7 +767,7 @@ function renderInsightCard(item) {
         <strong>${item.statement}</strong>
         <span>${item.number || "—"}</span>
       </div>
-      <p><b>Por que a Campex está destacando isso?</b> ${item.why || "Insight gerado por regra determinística do Read Model."}</p>
+      <p><b>Por que a Campex está destacando isso?</b> ${item.why || "Insight gerado por regra determinística a partir dos eventos do período."}</p>
       ${traceButton("Investigar", item.event_uuids)}
     </article>
   `;
@@ -796,9 +796,9 @@ async function renderIntelligencePage(config) {
   rowsCache = allInsights;
   title.textContent = "Intelligence";
   heading.textContent = "O que a Campex entendeu sobre a operação?";
-  subtitle.textContent = "Insights determinísticos gerados a partir dos eventos canônicos e do Operational Read Model.";
+  subtitle.textContent = "Insights determinísticos gerados a partir dos eventos operacionais do período.";
   tableTitle.textContent = "Rastreabilidade dos insights";
-  tableHint.textContent = "Cada insight lista os event_uuid que sustentam a constatação.";
+  tableHint.textContent = "Cada insight pode ser rastreado até os eventos que o originaram.";
   primaryAction.textContent = "Atualizar";
   primaryAction.onclick = () => loadPage(window.location.pathname);
   filters.innerHTML = `
@@ -1211,7 +1211,7 @@ function eventDetail(event) {
       <div><dt>Status físico</dt><dd>${eventStatusLabel(eventPhysicalStatus(event))}</dd></div>
       <div><dt>Workflow</dt><dd>${workflowLabel(workflow)}</dd></div>
       <div><dt>Severidade</dt><dd>${eventSeverity(event)}</dd></div>
-      <div><dt>event_uuid</dt><dd><code>${event.event_uuid || "—"}</code></dd></div>
+      <div><dt>Identificador do evento</dt><dd>${event.event_uuid ? "Disponível" : "—"}</dd></div>
     </dl>
     <h3>Evidência</h3>
     <div class="cx-detail-frame">${evidence ? `<img src="/eventos/${event.id}/evidence" alt="Frame da ocorrência" />` : "Este evento não possui evidência visual disponível."}</div>
@@ -1450,6 +1450,42 @@ function renderTabs(config) {
 }
 
 function renderFilters(config) {
+  if (config.title === "Events") {
+    filters.innerHTML = `
+      <label>Período inicial<input type="date" data-filter="period_start" /></label>
+      <label>Período final<input type="date" data-filter="period_end" /></label>
+      <label>Unidade<input placeholder="Unidade" data-filter="unidade" /></label>
+      <label>Área<input placeholder="Área" data-filter="area" /></label>
+      <label>Processo<input placeholder="Processo" data-filter="processo" /></label>
+      <label>Ativo<input placeholder="Ativo" data-filter="ativo" /></label>
+      <label>Família
+        <select data-filter="familia">
+          <option value="">Todas</option>
+          <option value="interruption">Interrupção</option>
+          <option value="wait">Espera</option>
+          <option value="flow">Fluxo</option>
+          <option value="absence">Ausência</option>
+          <option value="unknown">Não classificados</option>
+        </select>
+      </label>
+      <label>Estado físico
+        <select data-filter="estado_fisico">
+          <option value="">Todos</option>
+          <option value="open">Aberto</option>
+          <option value="closed">Encerrado</option>
+        </select>
+      </label>
+      <label>Workflow
+        <select data-filter="workflow">
+          <option value="">Todos</option>
+          <option value="new">Novo</option>
+          <option value="acknowledged">Reconhecido</option>
+          <option value="resolved">Resolvido</option>
+        </select>
+      </label>
+    `;
+    return;
+  }
   filters.innerHTML = (config.filters || []).map((label) => `
     <label>${label}<input placeholder="${label}" data-filter="${label}" /></label>
   `).join("");
@@ -1511,7 +1547,7 @@ function renderOperationsAuthState() {
       </div>
       <section class="cx-ops-auth cx-ops-empty">
         <strong>Entre para acessar os dados da operação.</strong>
-        <p>A Campex protege os dados operacionais do cliente. Faça login para carregar o Read Model desta instalação.</p>
+        <p>A Campex protege os dados operacionais do cliente. Faça login para carregar esta instalação.</p>
         <a class="cx-primary-action" href="/settings/cameras?next=%2Foperations-view#login">Entrar</a>
       </section>
     </section>
@@ -1632,10 +1668,10 @@ async function loadPage(path = window.location.pathname) {
     link.setAttribute("aria-label", label);
   });
   document.title = `${config.title} | Campex`;
-  title.textContent = config.title;
+  title.textContent = path === "/events" ? "Memória operacional" : config.title;
   heading.textContent = config.heading;
   subtitle.textContent = config.subtitle;
-  tableTitle.textContent = config.title;
+  tableTitle.textContent = path === "/events" ? "Eventos registrados" : config.title;
   tableHint.textContent = config.subtitle;
   primaryAction.textContent = config.action || "Nova ação";
   primaryAction.onclick = () => {

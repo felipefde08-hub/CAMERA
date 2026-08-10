@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import time
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import cv2
 import numpy as np
 
+from app import api as api_module
+from app.database import connect
 from app.live_stream import LiveStreamManager
 from app.person_detection import Detection, PersonAnalysisEngine, detector_cache_size, get_yolo_detector
 from edge_agent.camera_connector import CameraSource
@@ -73,6 +78,18 @@ class FailingDetector:
 
 
 class PersonDetectionStage3Test(unittest.TestCase):
+    def setUp(self) -> None:
+        self._ops_temp_dir = tempfile.TemporaryDirectory()
+        self._ops_db_path = Path(self._ops_temp_dir.name) / "person-detection.sqlite3"
+        with connect(self._ops_db_path) as connection:
+            api_module.init_db(connection)
+        self._ops_connect_patch = patch("app.operations_history.connect", lambda: connect(self._ops_db_path))
+        self._ops_connect_patch.start()
+
+    def tearDown(self) -> None:
+        self._ops_connect_patch.stop()
+        self._ops_temp_dir.cleanup()
+
     def test_analysis_filters_people_and_tracks_ids(self) -> None:
         engine = PersonAnalysisEngine(detector=FakeDetector(), analysis_fps=30, tracking_enabled=True)
         frame = np.zeros((48, 64, 3), dtype=np.uint8)

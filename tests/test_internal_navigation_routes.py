@@ -13,7 +13,6 @@ from app.config import ROOT
 
 
 INTERNAL_ROUTES = [
-    "/dashboard",
     "/overview",
     "/operations-view",
     "/cameras",
@@ -62,6 +61,15 @@ def test_internal_navigation_routes_return_html() -> None:
         response = client.get(route, follow_redirects=True)
 
         assert_shell_response(route, response)
+
+
+def test_dashboard_redirects_to_operations_view() -> None:
+    client = TestClient(api)
+
+    response = client.get("/dashboard", follow_redirects=False)
+
+    assert response.status_code == 307
+    assert response.headers["location"] == "/operations-view"
 
 
 def test_sidebar_links_are_registered_internal_routes() -> None:

@@ -96,8 +96,18 @@ class FailingDetector:
 
 
 class LiveStreamStage2Test(unittest.TestCase):
+    def setUp(self) -> None:
+        self._ops_temp_dir = tempfile.TemporaryDirectory()
+        self._ops_db_path = Path(self._ops_temp_dir.name) / "operations-history.sqlite3"
+        with connect(self._ops_db_path) as connection:
+            api_module.init_db(connection)
+        self._ops_connect_patch = patch("app.operations_history.connect", lambda: connect(self._ops_db_path))
+        self._ops_connect_patch.start()
+
     def tearDown(self) -> None:
         live_streams.stop_all()
+        self._ops_connect_patch.stop()
+        self._ops_temp_dir.cleanup()
 
     def test_live_stream_reuses_one_connection_for_same_camera(self) -> None:
         FakeConnector.opened = 0
@@ -352,7 +362,7 @@ class LiveStreamStage2Test(unittest.TestCase):
                         rtsp_username="admin",
                         rtsp_password="segredo",
                     )
-                with patch("app.api.connect", lambda: connect(db_path)):
+                with patch("app.api.connect", lambda: connect(db_path)), patch("app.operations_history.connect", lambda: connect(db_path)):
                     client = TestClient(api)
                     started = client.post("/live-view/start", json={"camera_id": camera_id, "nome": "Camera registrada"})
                     session_id = started.json()["session_id"]
@@ -434,7 +444,7 @@ class LiveStreamStage2Test(unittest.TestCase):
                         tipo="workstation",
                         absence_tolerance_seconds=0,
                     )
-                with patch("app.api.connect", lambda: connect(db_path)):
+                with patch("app.api.connect", lambda: connect(db_path)), patch("app.operations_history.connect", lambda: connect(db_path)):
                     client = TestClient(api)
                     started = client.post("/live-view/start", json={"camera_id": camera_id})
                     session_id = started.json()["session_id"]
