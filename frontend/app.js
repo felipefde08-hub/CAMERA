@@ -1,5 +1,6 @@
 const form = document.querySelector("#cameraForm");
 const loginForm = document.querySelector("#loginForm");
+const loginHeader = document.querySelector("#loginHeader");
 const loginStatus = document.querySelector("#loginStatus");
 const testButton = document.querySelector("#testButton");
 const liveViewButton = document.querySelector("#liveViewButton");
@@ -82,6 +83,7 @@ const alertSetupStatus = document.querySelector("#alertSetupStatus");
 const firstRunPanel = document.querySelector("#firstRunPanel");
 const firstRunForm = document.querySelector("#firstRunForm");
 const firstRunStatus = document.querySelector("#firstRunStatus");
+const firstRunAdminEmail = firstRunForm?.querySelector("input[name='admin_email']");
 
 let currentCameraId = null;
 let currentCameraName = null;
@@ -285,11 +287,30 @@ async function checkFirstRun() {
   if (!firstRunPanel) return;
   try {
     const status = await requestJson("/first-run/status");
-    firstRunPanel.hidden = !status.available;
+    const available = Boolean(status.available);
+    setFirstRunMode(available);
     if (firstRunStatus) firstRunStatus.textContent = status.message;
+    if (available) {
+      if (loginStatus) {
+        loginStatus.textContent = "Instalação nova: crie o primeiro administrador antes de entrar.";
+      }
+      firstRunPanel.scrollIntoView({ behavior: "smooth", block: "start" });
+      window.setTimeout(() => firstRunAdminEmail?.focus({ preventScroll: true }), 250);
+    }
   } catch (error) {
-    firstRunPanel.hidden = true;
+    setFirstRunMode(false);
     if (firstRunStatus) firstRunStatus.textContent = `First Run indisponível: ${error.message}`;
+  }
+}
+
+function setFirstRunMode(enabled) {
+  firstRunPanel.hidden = !enabled;
+  if (loginHeader) loginHeader.hidden = enabled;
+  if (loginForm) {
+    loginForm.hidden = enabled;
+    loginForm.querySelectorAll("input, button").forEach((control) => {
+      control.disabled = enabled;
+    });
   }
 }
 
@@ -303,7 +324,7 @@ async function completeFirstRun(event) {
       body: JSON.stringify(formPayload(firstRunForm)),
     });
     firstRunStatus.textContent = `Instalação criada. Administrador: ${payload.user?.email || "criado"}.`;
-    firstRunPanel.hidden = true;
+    setFirstRunMode(false);
     loginStatus.textContent = `Logado como ${payload.user?.email || "primeiro administrador"}`;
     firstRunForm.reset();
     await Promise.all([loadConfigData(), loadCameras(), loadSetupOperation(), loadRecipients(), loadDeliveries()]);

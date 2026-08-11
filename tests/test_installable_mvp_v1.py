@@ -58,6 +58,31 @@ def test_first_run_creates_admin_company_and_unit_on_empty_installation(tmp_path
 
         locked = client.get("/first-run/status")
         assert locked.json()["available"] is False
+        assert locked.json()["locked"] is True
+
+        authenticated = client.get("/auth/status")
+        assert authenticated.status_code == 200
+        assert authenticated.json()["authenticated"] is True
+
+        logout = client.post("/auth/logout")
+        assert logout.status_code == 200
+
+        login = client.post("/auth/login", json={"email": "admin@cliente.test", "senha": "senha-segura"})
+        assert login.status_code == 200
+        assert login.json()["user"]["email"] == "admin@cliente.test"
+        assert login.cookies.get("campex_session")
+
+        blocked_retry = client.post(
+            "/first-run/complete",
+            json={
+                "admin_nome": "Admin 2",
+                "admin_email": "admin2@cliente.test",
+                "admin_senha": "senha-segura",
+                "empresa_nome": "Outro Cliente",
+                "unidade_nome": "Outra Unidade",
+            },
+        )
+        assert blocked_retry.status_code == 403
 
         with connect(db_path) as connection:
             assert connection.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1
@@ -258,3 +283,18 @@ def test_setup_frontend_uses_assisted_calibration_flow() -> None:
     assert "/calibration/${phase}/start" in script
     assert "/calibration/status" in script
     assert "Movimento com máquina funcionando" not in script
+
+
+def test_setup_frontend_shows_single_auth_path_during_first_run() -> None:
+    html = Path("frontend/index.html").read_text(encoding="utf-8")
+    script = Path("frontend/app.js").read_text(encoding="utf-8")
+
+    assert 'id="loginHeader"' in html
+    assert 'id="loginForm"' in html
+    assert 'id="firstRunPanel"' in html
+    assert "function setFirstRunMode" in script
+    assert "loginHeader.hidden = enabled" in script
+    assert "loginForm.hidden = enabled" in script
+    assert "control.disabled = enabled" in script
+    assert "setFirstRunMode(available)" in script
+    assert "setFirstRunMode(false)" in script
