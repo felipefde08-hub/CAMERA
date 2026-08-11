@@ -10,10 +10,10 @@ from pathlib import Path
 
 import uvicorn
 
-from app.alerts import resume_pending_deliveries
-from app.api import api, bootstrap_production_streams, live_streams
+import app.alerts as alerts_module
+import app.api as api_module
 from app.config import API_HOST, API_PORT
-from app.database import connect, init_db
+from app.database import connect as db_connect, init_db
 from app.models import atualizar_camera_operacao, registrar_edge_heartbeat
 from edge_agent.health import mark_edge_contact
 from edge_agent.sync_outbox import flush_sync_outbox, pending_sync_count
@@ -44,7 +44,7 @@ class ProductionEdgeRuntime:
         self.threads: list[threading.Thread] = []
 
     def _run_api(self) -> None:
-        config = uvicorn.Config(api, host=self.host, port=self.port, log_level=os.getenv("CAMPEX_LOG_LEVEL", "info").lower())
+        config = uvicorn.Config(api_module.api, host=self.host, port=self.port, log_level=os.getenv("CAMPEX_LOG_LEVEL", "info").lower())
         self.server = uvicorn.Server(config)
         self.server.run()
 
@@ -52,7 +52,7 @@ class ProductionEdgeRuntime:
         backoff = 1.0
         while not self.stop_event.is_set():
             try:
-                result = bootstrap_production_streams()
+                result = api_module.bootstrap_production_streams()
                 failed = result.get("failed") or []
                 if failed:
                     logger.warning("Bootstrap de cameras com falhas: %s", failed)
@@ -66,8 +66,8 @@ class ProductionEdgeRuntime:
             self.stop_event.wait(max(self.heartbeat_seconds, backoff))
 
     def _record_runtime_heartbeat(self) -> None:
-        streams = live_streams.statuses()
-        with connect(self.db_path) as connection:
+        streams = api_module.live_streams.statuses()
+        with db_connect(self.db_path) as connection:
             init_db(connection)
             mark_edge_contact(connection, self.edge_id, "online")
             pending = pending_sync_count(connection)
@@ -120,21 +120,38 @@ class ProductionEdgeRuntime:
             return
         while not self.stop_event.is_set():
             try:
-                with connect(self.db_path) as connection:
+                with db_connect(self.db_path) as connection:
                     init_db(connection)
                     flush_sync_outbox(connection, cloud_url, self.edge_id, edge_secret)
             except Exception as exc:
                 logger.warning("Falha temporaria ao sincronizar outbox: %s", exc)
             self.stop_event.wait(self.sync_seconds)
 
+    def _run_alert_delivery_resume(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                alerts_module.resume_pending_deliveries()
+            except Exception as exc:
+                logger.warning("Falha temporaria ao retomar entregas de alerta: %s", exc)
+            self.stop_event.wait(self.sync_seconds)
+
+    def _bind_runtime_database(self) -> None:
+        def runtime_connect(_path: str | Path | None = None):
+            return db_connect(self.db_path)
+
+        api_module.connect = runtime_connect
+        alerts_module.connect = runtime_connect
+
     def start(self) -> None:
-        with connect(self.db_path) as connection:
+        self._bind_runtime_database()
+        with db_connect(self.db_path) as connection:
             init_db(connection)
-        resume_pending_deliveries()
+        alerts_module.resume_pending_deliveries()
         jobs = [
             ("campex-api", self._run_api),
             ("campex-camera-runtime", self._run_camera_runtime),
             ("campex-outbox-sync", self._run_outbox_sync),
+            ("campex-alert-delivery-resume", self._run_alert_delivery_resume),
         ]
         for name, target in jobs:
             thread = threading.Thread(target=target, name=name, daemon=True)
@@ -154,7 +171,7 @@ class ProductionEdgeRuntime:
             return
         logger.info("Encerrando Campex Edge com graceful shutdown.")
         self.stop_event.set()
-        live_streams.stop_all()
+        api_module.live_streams.stop_all()
         if self.server:
             self.server.should_exit = True
         for thread in self.threads:

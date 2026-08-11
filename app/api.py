@@ -1995,6 +1995,13 @@ def bootstrap_production_streams() -> dict[str, object]:
             ORDER BY nome
             """
         ).fetchall()
+        inactive_rows = connection.execute("SELECT id, nome FROM cameras WHERE ativa = 0").fetchall()
+    for row in inactive_rows:
+        camera_id = str(row["id"])
+        current_stream = live_streams.get(camera_id) if hasattr(live_streams, "get") else None
+        if current_stream:
+            live_streams.stop(camera_id)
+            logger.info("Bootstrap Edge: câmera desativada parada (%s).", camera_id)
     for row in rows:
         camera_id = str(row["id"])
         try:
@@ -2989,12 +2996,15 @@ def post_evento_resolve(evento_id: str, payload: EventResolveIn, request: Reques
 
 
 @api.get("/eventos/{evento_id}/evidence")
-def get_evento_evidence(evento_id: str) -> FileResponse:
+def get_evento_evidence(evento_id: str, request: Request) -> FileResponse:
     with connect() as connection:
         init_db(connection)
+        user = require_user(request, connection)
         event = obter_evento(connection, evento_id)
     if event is None:
         raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+    if tenant_filter(user) and event.get("cliente_id") != tenant_filter(user):
+        raise HTTPException(status_code=403, detail="Evento de outro cliente.")
     midia_path = event.get("midia_path")
     if not midia_path:
         raise HTTPException(status_code=404, detail="Evidencia nao encontrada.")

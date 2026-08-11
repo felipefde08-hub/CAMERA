@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+import app.alerts as alerts_module
+from app import edge_runtime as edge_runtime_module
 from app import api as api_module
 from app.analytics import aggregate_period, compute_summary, data_quality, generate_insights, parse_dt
 from app.api import api
@@ -69,6 +71,12 @@ class FakeLiveStreams:
 
     def statuses(self) -> list[dict[str, object]]:
         return [stream.public_status() for stream in self.streams.values()]
+
+    def get(self, camera_id: str) -> FakeStream | None:
+        return self.streams.get(camera_id)
+
+    def stop(self, camera_id: str) -> bool:
+        return self.streams.pop(camera_id, None) is not None
 
     def stop_all(self) -> None:
         self.streams.clear()
@@ -242,6 +250,97 @@ class Edge24x7AnalyticsTest(unittest.TestCase):
         self.assertEqual(len(fake_streams.streams), 1)
         self.assertEqual(fake_streams.streams[camera_id].start_count, 2)
         self.assertTrue(fake_streams.streams[camera_id].analysis_enabled)
+
+    def test_production_bootstrap_stops_deactivated_camera_stream(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, db_path, _cliente_id, _unidade_id, camera_id, _machine_id = self.make_db(temp_dir)
+            connection.execute("UPDATE cameras SET config_ref = ?, ativa = 0 WHERE id = ?", ("teste_maquina.mp4", camera_id))
+            connection.commit()
+            fake_streams = FakeLiveStreams()
+            fake_streams.streams[camera_id] = FakeStream(camera_id, "teste_maquina.mp4")
+            fake_streams.streams[camera_id].start()
+
+            def patched_connect(_path=None):
+                return connect(db_path)
+
+            with patch.object(api_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
+                result = api_module.bootstrap_production_streams()
+
+        self.assertEqual(result["started"], [])
+        self.assertNotIn(camera_id, fake_streams.streams)
+
+    def test_production_runtime_binds_api_and_alerts_to_requested_database(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime_db = Path(temp_dir) / "runtime.sqlite3"
+            other_db = Path(temp_dir) / "other.sqlite3"
+            with connect(runtime_db) as connection:
+                init_db(connection)
+                cliente_id = criar_cliente(connection, "Cliente Runtime")
+                criar_unidade(connection, cliente_id, "Unidade Runtime")
+            with connect(other_db) as connection:
+                init_db(connection)
+
+            runtime = edge_runtime_module.ProductionEdgeRuntime(edge_id="edge_test", db_path=runtime_db)
+            original_api_connect = api_module.connect
+            original_alerts_connect = alerts_module.connect
+            try:
+                runtime._bind_runtime_database()
+                with api_module.connect() as connection:
+                    runtime_clients = connection.execute("SELECT COUNT(*) AS total FROM clientes").fetchone()["total"]
+                with alerts_module.connect() as connection:
+                    alert_clients = connection.execute("SELECT COUNT(*) AS total FROM clientes").fetchone()["total"]
+                with connect(other_db) as connection:
+                    other_clients = connection.execute("SELECT COUNT(*) AS total FROM clientes").fetchone()["total"]
+            finally:
+                api_module.connect = original_api_connect
+                alerts_module.connect = original_alerts_connect
+
+        self.assertEqual(runtime_clients, 1)
+        self.assertEqual(alert_clients, 1)
+        self.assertEqual(other_clients, 0)
+
+    def test_production_runtime_starts_api_camera_outbox_alert_and_heartbeat_workers(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = edge_runtime_module.ProductionEdgeRuntime(
+                edge_id="edge_test",
+                db_path=Path(temp_dir) / "runtime.sqlite3",
+                heartbeat_seconds=0.1,
+                sync_seconds=0.1,
+            )
+            started_jobs: list[str] = []
+
+            class ImmediateThread:
+                def __init__(self, target, name, daemon):
+                    self.target = target
+                    self.name = name
+                    self.daemon = daemon
+                    started_jobs.append(name)
+
+                def start(self):
+                    return None
+
+                def join(self, timeout=None):
+                    return None
+
+            original_api_connect = api_module.connect
+            original_alerts_connect = alerts_module.connect
+            try:
+                with patch.object(edge_runtime_module.threading, "Thread", ImmediateThread), patch.object(alerts_module, "resume_pending_deliveries"):
+                    runtime.start()
+                    runtime.shutdown()
+            finally:
+                api_module.connect = original_api_connect
+                alerts_module.connect = original_alerts_connect
+
+        self.assertEqual(
+            started_jobs,
+            [
+                "campex-api",
+                "campex-camera-runtime",
+                "campex-outbox-sync",
+                "campex-alert-delivery-resume",
+            ],
+        )
 
     def test_ready_ignores_old_database_online_status_without_runtime_stream(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
