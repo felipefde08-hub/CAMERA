@@ -4872,6 +4872,53 @@ label {
   gap: 14px;
 }
 
+.setup-journey {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.setup-stage {
+  display: grid;
+  gap: 10px;
+}
+
+.setup-summary-row {
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid #edf0f5;
+  padding: 10px 0;
+}
+
+.setup-summary-row:first-child {
+  border-top: 0;
+}
+
+.setup-summary-row span {
+  color: #697180;
+  font-size: 13px;
+}
+
+.setup-summary-row a {
+  color: #2454f4;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.setup-advanced summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.setup-advanced label {
+  margin-top: 10px;
+}
+
+.campex-dashboard[data-setup-has-asset="false"] #cameras,
+.campex-dashboard[data-setup-has-asset="false"] #cameraForm {
+  display: none;
+}
+
 .setup-v0-panel h3 {
   margin: 0 0 10px;
   font-size: 16px;
@@ -4912,6 +4959,10 @@ label {
 
   .setup-v0-grid {
     grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+
+  .setup-journey {
+    grid-template-columns: 1fr;
   }
 }
 

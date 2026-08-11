@@ -83,7 +83,7 @@
           </div>
         </div>
 
-        <form id="loginForm" class="form compact-form">
+        <form id="loginForm" class="form compact-form" method="post" autocomplete="on">
           <div class="grid">
             <label>
               E-mail
@@ -107,7 +107,7 @@
             Use este fluxo somente no primeiro uso do computador Edge. Depois que o primeiro administrador for criado,
             esta etapa fica bloqueada automaticamente.
           </p>
-          <form id="firstRunForm" class="form">
+          <form id="firstRunForm" class="form" method="post" action="/first-run/complete" autocomplete="off">
             <div class="grid">
               <label>
                 Nome do administrador
@@ -157,10 +157,28 @@
           <div class="setup-v0-header">
             <div>
               <p class="eyebrow">Setup</p>
-              <h2>Estrutura da operação</h2>
-              <p>Organize a operação em unidade, área, processo, ativo e câmera. A Campex usa esse contexto para gerar eventos e métricas.</p>
+              <h2>Implantação guiada</h2>
+              <p>Estrutura da operação: configure empresa, operação, câmera, monitoramento, calibração e alertas em uma sequência segura.</p>
             </div>
             <span id="setupSaveStatus" class="badge">Carregando configuração</span>
+          </div>
+
+          <div class="setup-journey">
+            <article class="compact-card setup-stage">
+              <span class="badge">1. Empresa</span>
+              <h3>Empresa e unidade</h3>
+              <div id="setupCompanySummary" class="compact-list">Carregando empresa...</div>
+            </article>
+            <article class="compact-card setup-stage">
+              <span class="badge">2. Operação</span>
+              <h3>Área → processo → ativo</h3>
+              <div id="setupOperationSummary" class="compact-list">Carregando operação...</div>
+            </article>
+            <article class="compact-card setup-stage">
+              <span class="badge">3. Câmera</span>
+              <h3>Sensor associado ao ativo</h3>
+              <div id="setupCameraGate" class="compact-list">Crie um ativo para liberar cadastro de câmera.</div>
+            </article>
           </div>
 
           <div class="setup-v0-grid">
@@ -242,24 +260,30 @@
 
           <div class="settings-grid">
             <section class="compact-card">
+              <span class="badge">4. Monitoramento</span>
               <h3>O que a Campex deve observar?</h3>
+              <p class="muted">Capacidades configuráveis nesta versão: paradas/interrupções e ausência de operador.</p>
               <div id="setupCapabilities" class="compact-list">Carregando capacidades...</div>
             </section>
 
             <section class="compact-card">
+              <span class="badge">7. Pronto para operar</span>
               <h3>Status de configuração</h3>
               <div id="setupReadiness" class="compact-list">Carregando status...</div>
             </section>
           </div>
 
           <section class="compact-card">
-            <h3>Checklist de implantação</h3>
+            <span class="badge">Checklist final</span>
+            <h3>Pronto para operar</h3>
             <p class="muted">A Campex só marca pronto quando existe comprovação real no banco e no runtime.</p>
             <div id="setupInstallChecklist" class="compact-list">Carregando checklist...</div>
+            <div id="setupReadinessConclusion" class="result muted">Calculando conclusão...</div>
           </section>
 
           <section class="compact-card">
-            <h3>Zonas, tolerâncias e monitor</h3>
+            <span class="badge">5. Calibração</span>
+            <h3>Monitoramento e calibração</h3>
             <p class="muted">
               Desenhe a região da máquina e a zona do operador na câmera aberta abaixo. Depois salve o monitor com tempos em linguagem operacional.
             </p>
@@ -273,18 +297,21 @@
                   Nome da máquina/posto
                   <input name="nome" required placeholder="Ex.: A6" />
                 </label>
-                <label>
-                  Considere parada após
-                  <input name="stop_seconds" type="number" min="1" value="30" />
-                </label>
-                <label>
-                  Considere ausência após
-                  <input name="operator_absence_seconds" type="number" min="1" value="300" />
-                </label>
-                <label>
-                  Parada com operador após
-                  <input name="stopped_with_operator_seconds" type="number" min="1" value="120" />
-                </label>
+                <details class="setup-advanced">
+                  <summary>Configurações avançadas de tempo</summary>
+                  <label>
+                    Considerar parada após
+                    <input name="stop_seconds" type="number" min="1" value="30" />
+                  </label>
+                  <label>
+                    Considere ausência após
+                    <input name="operator_absence_seconds" type="number" min="1" value="300" />
+                  </label>
+                  <label>
+                    Parada com operador após
+                    <input name="stopped_with_operator_seconds" type="number" min="1" value="120" />
+                  </label>
+                </details>
               </div>
               <div class="actions">
                 <button type="button" id="setupOpenCameraButton">Abrir câmera para desenhar zonas</button>
@@ -292,6 +319,11 @@
               </div>
             </form>
           </section>
+
+          <details class="compact-card setup-advanced">
+            <summary>Diagnóstico técnico</summary>
+            <p class="muted">IDs, runtime, câmera, listas técnicas e saúde continuam disponíveis abaixo para suporte.</p>
+          </details>
         </section>
 
         <div class="settings-grid">

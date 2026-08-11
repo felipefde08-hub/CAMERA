@@ -80,6 +80,10 @@ const setupCapabilities = document.querySelector("#setupCapabilities");
 const setupReadiness = document.querySelector("#setupReadiness");
 const setupInstallChecklist = document.querySelector("#setupInstallChecklist");
 const alertSetupStatus = document.querySelector("#alertSetupStatus");
+const setupCompanySummary = document.querySelector("#setupCompanySummary");
+const setupOperationSummary = document.querySelector("#setupOperationSummary");
+const setupCameraGate = document.querySelector("#setupCameraGate");
+const setupReadinessConclusion = document.querySelector("#setupReadinessConclusion");
 const firstRunPanel = document.querySelector("#firstRunPanel");
 const firstRunForm = document.querySelector("#firstRunForm");
 const firstRunStatus = document.querySelector("#firstRunStatus");
@@ -115,6 +119,27 @@ let setupOperation = {
   monitored_areas: [],
   machine_monitors: [],
 };
+
+stripSensitiveQueryString();
+
+function stripSensitiveQueryString() {
+  const sensitiveKeys = [
+    "senha",
+    "admin_senha",
+    "password",
+    "smtp_password",
+    "rtsp_url",
+    "usuario",
+    "token",
+    "secret",
+  ];
+  const url = new URL(window.location.href);
+  const hasSensitiveValue = sensitiveKeys.some((key) => url.searchParams.has(key));
+  if (!hasSensitiveValue) return;
+  sensitiveKeys.forEach((key) => url.searchParams.delete(key));
+  const clean = `${url.pathname}${url.search}${url.hash}`;
+  window.history.replaceState({}, document.title, clean);
+}
 
 function formPayload(targetForm) {
   const data = new FormData(targetForm);
@@ -262,6 +287,59 @@ function renderInstallChecklist(readiness) {
     alertSetupStatus.textContent = alertCheck ? `${alertCheck.status}: ${alertCheck.detail}` : "Alertas ainda não verificados.";
     alertSetupStatus.classList.toggle("offline", alertCheck?.status !== "PASS");
   }
+  renderSetupReadinessConclusion(checks);
+}
+
+function renderSetupReadinessConclusion(checks) {
+  if (!setupReadinessConclusion) return;
+  const pending = checks.filter((item) => item.status !== "PASS");
+  if (!checks.length) {
+    setupReadinessConclusion.textContent = "FALTAM ETAPAS: checklist indisponível.";
+    setupReadinessConclusion.classList.add("offline");
+    return;
+  }
+  if (!pending.length) {
+    setupReadinessConclusion.textContent = "CAMPEX PRONTA PARA OPERAR";
+    setupReadinessConclusion.classList.remove("offline");
+    return;
+  }
+  setupReadinessConclusion.textContent = `FALTAM ${pending.length} ETAPA${pending.length === 1 ? "" : "S"}: ${pending.map((item) => item.label).join(", ")}.`;
+  setupReadinessConclusion.classList.add("offline");
+}
+
+function renderSetupJourney() {
+  if (setupCompanySummary) {
+    const client = knownClients[0];
+    const unit = knownUnits[0];
+    setupCompanySummary.innerHTML = client && unit
+      ? `<article class="setup-summary-row"><strong>${safeText(client.nome)}</strong><span>${safeText(unit.nome)} · ${safeText(unit.timezone || "America/Sao_Paulo")}</span><a href="#cliente">Editar</a></article>`
+      : '<div class="muted">Crie empresa e unidade no First Run ou na criação adicional abaixo.</div>';
+  }
+  if (setupOperationSummary) {
+    if (!setupOperation.assets.length) {
+      setupOperationSummary.innerHTML = '<div class="muted">Crie a sequência Área → Processo → Ativo para liberar câmera e monitoramento.</div>';
+    } else {
+      setupOperationSummary.innerHTML = setupOperation.assets.map((asset) => {
+        const { process, area, unit } = contextForAsset(asset.id);
+        return `
+          <article class="setup-summary-row">
+            <strong>${safeText(asset.nome)}</strong>
+            <span>${safeText(unit?.nome || "Unidade")} → ${safeText(area?.nome || "Área")} → ${safeText(process?.nome || "Processo")}</span>
+          </article>
+        `;
+      }).join("");
+    }
+  }
+  if (setupCameraGate) {
+    const hasAsset = setupOperation.assets.length > 0;
+    const linked = knownCameras.filter((camera) => camera.asset_id);
+    setupCameraGate.innerHTML = hasAsset
+      ? linked.length
+        ? linked.map((camera) => `<article class="setup-summary-row"><strong>${safeText(camera.nome)}</strong><span>${camera.status || "status técnico indisponível"} · associada ao ativo</span><a href="#cameras">Editar</a></article>`).join("")
+        : '<div class="muted">Ativo criado. Cadastre ou associe uma câmera abaixo.</div>'
+      : '<div class="muted">Crie um ativo antes de cadastrar câmera na jornada principal.</div>';
+  }
+  document.body.dataset.setupHasAsset = setupOperation.assets.length ? "true" : "false";
 }
 
 async function loadSetupOperation() {
@@ -277,6 +355,7 @@ async function loadSetupOperation() {
     renderSetupCapabilities();
     renderSetupReadiness();
     renderInstallChecklist(setupOperation.readiness);
+    renderSetupJourney();
     setSetupStatus("Configuração carregada");
   } catch (error) {
     setSetupStatus(`Setup indisponível: ${error.message}`, true);
@@ -326,6 +405,7 @@ async function completeFirstRun(event) {
     firstRunStatus.textContent = `Instalação criada. Administrador: ${payload.user?.email || "criado"}.`;
     setFirstRunMode(false);
     loginStatus.textContent = `Logado como ${payload.user?.email || "primeiro administrador"}`;
+    window.history.replaceState({}, document.title, window.location.pathname);
     firstRunForm.reset();
     await Promise.all([loadConfigData(), loadCameras(), loadSetupOperation(), loadRecipients(), loadDeliveries()]);
   } catch (error) {
@@ -587,6 +667,7 @@ async function loadCameras() {
   renderCameras(cameras);
   fillSelect(machineCameraSelect, cameras, "Selecione uma câmera");
   fillSetupSelects();
+  renderSetupJourney();
   if (cameras.length === 1 && !currentCameraId) {
     openCamera(cameras[0].id, cameras[0].nome).catch(() => {});
   }
@@ -622,6 +703,7 @@ async function loadConfigData() {
       <span>${user.email} · ${user.role} · ${user.ativo ? "ativo" : "inativo"}</span>
     </article>
   `).join("") : '<div class="muted">Nenhum usuário cadastrado.</div>';
+  renderSetupJourney();
 }
 
 function setViewerMessage(text, status = "offline") {

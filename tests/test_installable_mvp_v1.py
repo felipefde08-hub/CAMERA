@@ -290,11 +290,35 @@ def test_setup_frontend_shows_single_auth_path_during_first_run() -> None:
     script = Path("frontend/app.js").read_text(encoding="utf-8")
 
     assert 'id="loginHeader"' in html
-    assert 'id="loginForm"' in html
+    assert 'id="loginForm" class="form compact-form" method="post"' in html
     assert 'id="firstRunPanel"' in html
+    assert 'id="firstRunForm" class="form" method="post" action="/first-run/complete" autocomplete="off"' in html
     assert "function setFirstRunMode" in script
     assert "loginHeader.hidden = enabled" in script
     assert "loginForm.hidden = enabled" in script
     assert "control.disabled = enabled" in script
     assert "setFirstRunMode(available)" in script
     assert "setFirstRunMode(false)" in script
+    assert "stripSensitiveQueryString();" in script
+    assert '"admin_senha"' in script
+    assert '"rtsp_url"' in script
+    assert "window.history.replaceState" in script
+
+
+def test_setup_frontend_exposes_guided_implantation_journey() -> None:
+    html = Path("frontend/index.html").read_text(encoding="utf-8")
+    script = Path("frontend/app.js").read_text(encoding="utf-8")
+    styles = Path("frontend/styles.css").read_text(encoding="utf-8")
+
+    assert "Implantação guiada" in html
+    assert "1. Empresa" in html
+    assert "2. Operação" in html
+    assert "3. Câmera" in html
+    assert "4. Monitoramento" in html
+    assert "5. Calibração" in html
+    assert "Pronto para operar" in html
+    assert "Configurações avançadas de tempo" in html
+    assert "Diagnóstico técnico" in html
+    assert "Paradas / interrupções" not in html  # capabilities come from backend, not hardcoded as fake options.
+    assert "renderSetupJourney" in script
+    assert "data-setup-has-asset" in styles
