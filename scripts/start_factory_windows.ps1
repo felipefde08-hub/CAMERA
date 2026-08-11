@@ -67,6 +67,19 @@ if ($Port -le 0) {
 $env:API_HOST = $HostAddress
 $env:API_PORT = [string]$Port
 if (!$env:DATABASE_PATH) { $env:DATABASE_PATH = "data/visual_ops_product.sqlite3" }
+if (!$env:CAMPEX_EDGE_ID) {
+    $EdgeIdFile = Join-Path $Root "data\edge_id.txt"
+    if (Test-Path $EdgeIdFile) {
+        $env:CAMPEX_EDGE_ID = (Get-Content $EdgeIdFile -ErrorAction Stop | Select-Object -First 1).Trim()
+    } else {
+        if (!(Test-Path "data")) {
+            New-Item -ItemType Directory -Path "data" | Out-Null
+        }
+        $generatedEdgeId = "edge_" + ([guid]::NewGuid().ToString("N").Substring(0, 12))
+        Set-Content -Path $EdgeIdFile -Value $generatedEdgeId -Encoding ASCII
+        $env:CAMPEX_EDGE_ID = $generatedEdgeId
+    }
+}
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $LogFile = Join-Path $Root "logs\campex-$timestamp.log"
@@ -76,6 +89,7 @@ Write-Host ""
 Write-Host "Campex iniciando..." -ForegroundColor Cyan
 Write-Host "Localhost: http://127.0.0.1:$Port"
 Write-Host "Rede local: http://$LocalIp`:$Port"
+Write-Host "Edge ID: $env:CAMPEX_EDGE_ID"
 Write-Host "Log: $LogFile"
 Write-Host ""
 Write-Host "Nao exponha esta porta na internet. Use apenas na rede local da fabrica." -ForegroundColor Yellow
@@ -85,7 +99,7 @@ Write-Host ""
 Set-Content -Path $PidFile -Value $PID -Encoding ASCII
 
 try {
-    & $VenvPython -m app.main 2>&1 | Tee-Object -FilePath $LogFile -Append
+    & $VenvPython manage.py run-edge-production --edge-id $env:CAMPEX_EDGE_ID --host $HostAddress --port $Port 2>&1 | Tee-Object -FilePath $LogFile -Append
     exit $LASTEXITCODE
 }
 finally {

@@ -15,7 +15,7 @@
   <body class="campex-dashboard">
     <aside class="cx-sidebar">
       <div class="cx-sidebar-top">
-        <a class="cx-logo" href="/dashboard" aria-label="Campex">
+        <a class="cx-logo" href="/operations-view" aria-label="Campex">
           <img src="/static/campex-logo-oficial.png" alt="Campex" />
           <strong>Campex</strong>
         </a>
@@ -100,6 +100,58 @@
           </div>
           <div id="loginStatus" class="muted">Sem login ou em modo configuração inicial.</div>
         </form>
+
+        <section id="firstRunPanel" class="compact-card" hidden>
+          <h3>Primeira instalação da Campex</h3>
+          <p class="muted">
+            Use este fluxo somente no primeiro uso do computador Edge. Depois que o primeiro administrador for criado,
+            esta etapa fica bloqueada automaticamente.
+          </p>
+          <form id="firstRunForm" class="form">
+            <div class="grid">
+              <label>
+                Nome do administrador
+                <input name="admin_nome" required placeholder="Ex.: Felipe" />
+              </label>
+              <label>
+                E-mail do administrador
+                <input name="admin_email" type="email" required autocomplete="username" />
+              </label>
+              <label>
+                Senha
+                <input name="admin_senha" type="password" required minlength="8" autocomplete="new-password" />
+              </label>
+            </div>
+            <div class="grid">
+              <label>
+                Empresa
+                <input name="empresa_nome" required placeholder="Ex.: Cliente Industrial" />
+              </label>
+              <label>
+                Documento opcional
+                <input name="empresa_documento" placeholder="CNPJ ou documento" />
+              </label>
+              <label>
+                Unidade inicial
+                <input name="unidade_nome" required placeholder="Ex.: Fábrica principal" />
+              </label>
+            </div>
+            <div class="grid">
+              <label>
+                Localização opcional
+                <input name="unidade_localizacao" placeholder="Cidade, UF" />
+              </label>
+              <label>
+                Timezone
+                <input name="timezone" value="America/Sao_Paulo" />
+              </label>
+            </div>
+            <div class="actions">
+              <button type="submit">Criar primeira instalação</button>
+            </div>
+            <div id="firstRunStatus" class="muted">Verificando disponibilidade do First Run...</div>
+          </form>
+        </section>
 
         <section id="setup-operacao" class="setup-v0-panel">
           <div class="setup-v0-header">
@@ -199,6 +251,12 @@
               <div id="setupReadiness" class="compact-list">Carregando status...</div>
             </section>
           </div>
+
+          <section class="compact-card">
+            <h3>Checklist de implantação</h3>
+            <p class="muted">A Campex só marca pronto quando existe comprovação real no banco e no runtime.</p>
+            <div id="setupInstallChecklist" class="compact-list">Carregando checklist...</div>
+          </section>
 
           <section class="compact-card">
             <h3>Zonas, tolerâncias e monitor</h3>
@@ -372,6 +430,10 @@
             <button type="button" id="liveViewButton">Abrir Live View</button>
             <button type="submit">Cadastrar câmera</button>
           </div>
+          <label class="sound-toggle">
+            <input name="ativa" type="checkbox" checked />
+            Ativar câmera no Edge após salvar
+          </label>
         </form>
       </section>
 
@@ -460,6 +522,7 @@
 
       <section id="destinatarios" class="panel">
         <h2>Responsáveis por alertas</h2>
+        <div id="alertSetupStatus" class="result muted">Verificando configuração de alertas...</div>
         <form id="recipientForm" class="form">
           <div class="grid">
             <label>

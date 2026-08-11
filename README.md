@@ -16,6 +16,14 @@ A direção, as decisões e a execução atual da Campex são registradas em:
 - [Documento Mestre](docs/CAMPEX_MASTER.md)
 - [Semana Atual](docs/SEMANA_ATUAL.md)
 
+## Instalação Oficial Do MVP Atual
+
+Para instalar a Campex em uma indústria nova, use o guia oficial atual:
+
+- [Campex MVP Instalável V1](docs/INSTALL_MVP.md)
+
+As seções antigas deste README permanecem como histórico técnico do desenvolvimento.
+
 O código e os testes continuam sendo a fonte oficial sobre o estado técnico do produto.
 
 ## 1. Instalar no Mac

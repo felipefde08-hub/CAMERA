@@ -77,6 +77,11 @@ const setupHierarchy = document.querySelector("#setupHierarchy");
 const setupCameraLinks = document.querySelector("#setupCameraLinks");
 const setupCapabilities = document.querySelector("#setupCapabilities");
 const setupReadiness = document.querySelector("#setupReadiness");
+const setupInstallChecklist = document.querySelector("#setupInstallChecklist");
+const alertSetupStatus = document.querySelector("#alertSetupStatus");
+const firstRunPanel = document.querySelector("#firstRunPanel");
+const firstRunForm = document.querySelector("#firstRunForm");
+const firstRunStatus = document.querySelector("#firstRunStatus");
 
 let currentCameraId = null;
 let currentCameraName = null;
@@ -116,6 +121,9 @@ function formPayload(targetForm) {
     const text = String(value).trim();
     if (text) payload[key] = text;
   }
+  targetForm.querySelectorAll("input[type='checkbox'][name]").forEach((input) => {
+    payload[input.name] = input.checked;
+  });
   return payload;
 }
 
@@ -234,6 +242,26 @@ function renderSetupReadiness() {
   `).join("");
 }
 
+function renderInstallChecklist(readiness) {
+  if (!setupInstallChecklist) return;
+  const checks = readiness?.checks || [];
+  if (!checks.length) {
+    setupInstallChecklist.innerHTML = '<div class="muted">Checklist indisponível.</div>';
+    return;
+  }
+  setupInstallChecklist.innerHTML = checks.map((item) => `
+    <article class="compact-card">
+      <strong>${safeText(item.label)}</strong>
+      <span>${safeText(item.status)} · ${safeText(item.detail)}</span>
+    </article>
+  `).join("");
+  if (alertSetupStatus) {
+    const alertCheck = checks.find((item) => item.label === "Alertas");
+    alertSetupStatus.textContent = alertCheck ? `${alertCheck.status}: ${alertCheck.detail}` : "Alertas ainda não verificados.";
+    alertSetupStatus.classList.toggle("offline", alertCheck?.status !== "PASS");
+  }
+}
+
 async function loadSetupOperation() {
   if (!setupHierarchy) return;
   try {
@@ -246,9 +274,41 @@ async function loadSetupOperation() {
     renderSetupCameraLinks();
     renderSetupCapabilities();
     renderSetupReadiness();
+    renderInstallChecklist(setupOperation.readiness);
     setSetupStatus("Configuração carregada");
   } catch (error) {
     setSetupStatus(`Setup indisponível: ${error.message}`, true);
+  }
+}
+
+async function checkFirstRun() {
+  if (!firstRunPanel) return;
+  try {
+    const status = await requestJson("/first-run/status");
+    firstRunPanel.hidden = !status.available;
+    if (firstRunStatus) firstRunStatus.textContent = status.message;
+  } catch (error) {
+    firstRunPanel.hidden = true;
+    if (firstRunStatus) firstRunStatus.textContent = `First Run indisponível: ${error.message}`;
+  }
+}
+
+async function completeFirstRun(event) {
+  event.preventDefault();
+  if (!firstRunForm || !firstRunStatus) return;
+  firstRunStatus.textContent = "Criando primeira instalação...";
+  try {
+    const payload = await requestJson("/first-run/complete", {
+      method: "POST",
+      body: JSON.stringify(formPayload(firstRunForm)),
+    });
+    firstRunStatus.textContent = `Instalação criada. Administrador: ${payload.user?.email || "criado"}.`;
+    firstRunPanel.hidden = true;
+    loginStatus.textContent = `Logado como ${payload.user?.email || "primeiro administrador"}`;
+    firstRunForm.reset();
+    await Promise.all([loadConfigData(), loadCameras(), loadSetupOperation(), loadRecipients(), loadDeliveries()]);
+  } catch (error) {
+    firstRunStatus.textContent = `Erro no First Run: ${error.message}`;
   }
 }
 
@@ -379,6 +439,7 @@ function cleanPayload(includeIdentity) {
   if (includeIdentity) {
     delete payload.cliente_id;
     delete payload.edge_id;
+    payload.ativa = Boolean(payload.ativa);
   }
   return payload;
 }
@@ -485,11 +546,15 @@ function renderCameras(cameras) {
       <div>Host: ${camera.rtsp_host || camera.secure_ref || "não informado"}</div>
       <div>Resolução: ${camera.resolucao || "indisponível"}</div>
       <div>FPS: ${camera.fps ?? "indisponível"}</div>
+      <div>Edge: ${camera.ativa ? "ativa no runtime" : "desativada"}</div>
       <div>Última atualização: ${camera.ultimo_frame || camera.criado_em || "nunca"}</div>
       <div class="camera-actions">
         <button type="button" data-action="open" data-camera-id="${camera.id}" data-camera-name="${camera.nome}">Abrir câmera</button>
         <button type="button" data-action="live-view" data-camera-id="${camera.id}" data-camera-name="${camera.nome}">Live View</button>
         <button type="button" data-action="stop" data-camera-id="${camera.id}">Parar</button>
+        <button type="button" data-action="toggle-active" data-camera-id="${camera.id}" data-active="${camera.ativa}">
+          ${camera.ativa ? "Desativar no Edge" : "Ativar no Edge"}
+        </button>
       </div>
     </article>
   `).join("");
@@ -722,9 +787,13 @@ function renderMachines() {
       <div>Movimento: ${machine.current_motion ?? "-"}</div>
       <div>Limite: ${machine.motion_threshold ?? machine.motion_sensitivity}</div>
       <div>Calibração: ${machine.calibration_status}</div>
+      <div>Resultado: ${machine.calibration_result || "INVALID"}</div>
+      <div>Separação: ${machine.separation_score ?? "-"}</div>
       <div>Status: ${machine.ativo ? "ativa" : "inativa"}</div>
       <div class="actions">
-        <button type="button" data-machine-action="calibrate" data-machine-id="${machine.id}">Calibrar</button>
+        <button type="button" data-machine-action="calibrate-active" data-machine-id="${machine.id}">Calibrar ativa</button>
+        <button type="button" data-machine-action="calibrate-stopped" data-machine-id="${machine.id}">Calibrar parada</button>
+        <button type="button" data-machine-action="calibration-status" data-machine-id="${machine.id}">Ver calibração</button>
         <button type="button" data-machine-action="${machine.ativo ? "deactivate" : "activate"}" data-machine-id="${machine.id}">
           ${machine.ativo ? "Desativar" : "Ativar"}
         </button>
@@ -1162,6 +1231,7 @@ async function loadSystemHealth() {
 testButton.addEventListener("click", testConnection);
 liveViewButton.addEventListener("click", openLiveView);
 loginForm.addEventListener("submit", login);
+firstRunForm?.addEventListener("submit", completeFirstRun);
 clientForm.addEventListener("submit", (event) => {
   saveClient(event).catch((error) => {
     clientList.innerHTML = `<div class="muted">Erro ao salvar cliente: ${error.message}</div>`;
@@ -1218,6 +1288,14 @@ cameraList.addEventListener("click", async (event) => {
   try {
     if (button.dataset.action === "stop") {
       await stopCamera(cameraId);
+      return;
+    }
+    if (button.dataset.action === "toggle-active") {
+      await requestJson(`/cameras/${cameraId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ativa: button.dataset.active !== "true" }),
+      });
+      await Promise.all([loadCameras(), loadSetupOperation()]);
       return;
     }
     if (button.dataset.action === "live-view") {
@@ -1284,13 +1362,22 @@ machineList.addEventListener("click", async (event) => {
   const action = button.dataset.machineAction;
   if (action === "delete") {
     await fetch(`/machine-monitors/${machineId}`, { method: "DELETE" });
-  } else if (action === "calibrate") {
-    const running = Number(window.prompt("Movimento com máquina funcionando", "20"));
-    const stopped = Number(window.prompt("Movimento com máquina parada", "4"));
-    await requestJson(`/machine-monitors/${machineId}/calibrate`, {
+  } else if (action === "calibrate-active" || action === "calibrate-stopped") {
+    const phase = action === "calibrate-active" ? "active" : "stopped";
+    const message = phase === "active"
+      ? "Calibrando máquina funcionando. Mantenha a máquina em operação durante a captura."
+      : "Calibrando máquina parada. Mantenha a máquina parada durante a captura.";
+    setViewerMessage(message, "online");
+    const payload = await requestJson(`/machine-monitors/${machineId}/calibration/${phase}/start`, {
       method: "POST",
-      body: JSON.stringify({ running_motion: running, stopped_motion: stopped }),
+      body: JSON.stringify({ duration_seconds: 30 }),
     });
+    result.className = "result";
+    result.textContent = JSON.stringify(payload, null, 2);
+  } else if (action === "calibration-status") {
+    const payload = await requestJson(`/machine-monitors/${machineId}/calibration/status`);
+    result.className = "result";
+    result.textContent = JSON.stringify(payload, null, 2);
   } else {
     await requestJson(`/machine-monitors/${machineId}/${action}`, { method: "POST" });
   }
@@ -1404,6 +1491,7 @@ deliveryList.addEventListener("click", async (event) => {
 window.addEventListener("resize", drawAreaCanvas);
 window.addEventListener("hashchange", focusLoginFromHash);
 checkApi();
+checkFirstRun();
 loadConfigData().then(loadSetupOperation).catch(() => {});
 loadCameras().then(() => Promise.all([loadMachineConfigList(), loadSetupOperation()])).catch(() => renderCameras([]));
 loadEvents().catch(() => renderEvents([]));

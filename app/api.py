@@ -78,8 +78,10 @@ from app.models import (
     registrar_audit_log,
     atualizar_regra,
     ultimo_edge_heartbeat,
+    new_id,
 )
 from app.pilot import acceptance_checklist, health_snapshot
+from app.security import hash_password
 from app.machine_monitoring import baseline_stats, calibrate_threshold
 from app.operations_history import (
     current_status,
@@ -164,6 +166,11 @@ class CameraRtspIn(BaseModel):
     testar_conexao: bool = True
     canal: Optional[str] = None
     ativa: bool = True
+
+
+class CameraPatchIn(BaseModel):
+    ativa: Optional[bool] = None
+    nome: Optional[str] = None
 
 
 class CameraRtspTestIn(BaseModel):
@@ -360,6 +367,17 @@ class UserIn(BaseModel):
 class ResetPasswordIn(BaseModel):
     email: str
     nova_senha: str
+
+
+class FirstRunIn(BaseModel):
+    admin_nome: str
+    admin_email: str
+    admin_senha: str
+    empresa_nome: str
+    empresa_documento: Optional[str] = None
+    unidade_nome: str
+    unidade_localizacao: Optional[str] = None
+    timezone: str = "America/Sao_Paulo"
 
 
 class CameraPasswordIn(BaseModel):
@@ -813,6 +831,76 @@ def get_auth_status(request: Request) -> dict[str, object]:
     return {"authenticated": False, "bootstrap": not has_users, "user": None}
 
 
+@api.get("/first-run/status")
+def get_first_run_status() -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        locked = users_exist(connection)
+    return {
+        "available": not locked,
+        "locked": locked,
+        "message": "First Run disponível." if not locked else "First Run bloqueado: já existe usuário administrador.",
+    }
+
+
+@api.post("/first-run/complete", status_code=status.HTTP_201_CREATED)
+def post_first_run_complete(payload: FirstRunIn, response: Response) -> dict[str, object]:
+    if len(payload.admin_senha) < 8:
+        raise HTTPException(status_code=400, detail="A senha do primeiro administrador deve ter pelo menos 8 caracteres.")
+    with connect() as connection:
+        init_db(connection)
+        if users_exist(connection):
+            raise HTTPException(status_code=403, detail="First Run bloqueado: já existe usuário cadastrado.")
+        try:
+            connection.execute("BEGIN")
+            cliente_id = new_id("cli")
+            unidade_id = new_id("uni")
+            user_id = new_id("usr")
+            connection.execute(
+                "INSERT INTO clientes (id, nome, documento, status) VALUES (?, ?, ?, 'ativo')",
+                (cliente_id, payload.empresa_nome, payload.empresa_documento),
+            )
+            connection.execute(
+                "INSERT INTO unidades (id, cliente_id, nome, localizacao, timezone) VALUES (?, ?, ?, ?, ?)",
+                (unidade_id, cliente_id, payload.unidade_nome, payload.unidade_localizacao, payload.timezone),
+            )
+            connection.execute(
+                """
+                INSERT INTO users (id, cliente_id, nome, email, password_hash, role)
+                VALUES (?, ?, ?, ?, ?, 'admin_campex')
+                """,
+                (
+                    user_id,
+                    cliente_id,
+                    payload.admin_nome,
+                    payload.admin_email.lower().strip(),
+                    hash_password(payload.admin_senha),
+                ),
+            )
+            connection.commit()
+            token = create_session(connection, user_id)
+            user = authenticate(connection, payload.admin_email, payload.admin_senha)
+            registrar_audit_log(
+                connection,
+                action="install.first_run.complete",
+                actor=user,
+                entity_type="cliente",
+                entity_id=cliente_id,
+                tenant_id=cliente_id,
+                metadata={"unidade_id": unidade_id},
+            )
+        except Exception:
+            connection.rollback()
+            raise
+    response.set_cookie("campex_session", token, httponly=True, samesite="lax")
+    return {
+        "cliente_id": cliente_id,
+        "unidade_id": unidade_id,
+        "user": user,
+        "next": "/settings/cameras",
+    }
+
+
 @api.post("/auth/users")
 def post_user(payload: UserIn, request: Request) -> dict[str, str]:
     with connect() as connection:
@@ -982,6 +1070,96 @@ def _setup_asset_status(asset: dict[str, Any], cameras: list[dict[str, Any]], ar
     }
 
 
+def _check_item(status_value: str, label: str, detail: str) -> dict[str, str]:
+    return {"status": status_value, "label": label, "detail": detail}
+
+
+def _setup_installation_readiness(
+    *,
+    clientes: list[dict[str, Any]],
+    unidades: list[dict[str, Any]],
+    areas: list[dict[str, Any]],
+    processes: list[dict[str, Any]],
+    assets: list[dict[str, Any]],
+    cameras: list[dict[str, Any]],
+    monitored_areas: list[dict[str, Any]],
+    monitors: list[dict[str, Any]],
+) -> dict[str, Any]:
+    stream_by_camera = {stream.get("camera_id"): stream for stream in live_streams.statuses()}
+    active_cameras = [camera for camera in cameras if camera.get("ativa", True)]
+    online_streams = [
+        stream for stream in stream_by_camera.values()
+        if stream.get("status") == "online" and _recent_iso(stream.get("last_frame_at"))
+    ]
+    inference_streams = [
+        stream for stream in stream_by_camera.values()
+        if (float(stream.get("analysis_fps") or 0) > 0 or int(stream.get("analysis_frames") or 0) > 0)
+        and _recent_iso(stream.get("last_analysis_at"))
+    ]
+    machine_regions = [area for area in monitored_areas if area.get("ativa") and area.get("tipo") == "machine_region"]
+    operator_zones = [
+        area for area in monitored_areas
+        if area.get("ativa") and area.get("tipo") in {"operator_zone", "workstation", "work_area"}
+    ]
+    active_monitors = [monitor for monitor in monitors if monitor.get("ativo")]
+    ready_monitors = [monitor for monitor in active_monitors if monitor.get("calibration_result") == "READY"]
+    smtp_mode = os.getenv("CAMPEX_EMAIL_MODE", "").strip().lower()
+    smtp_configured = smtp_mode == "console" or (
+        smtp_mode == "smtp"
+        and all(os.getenv(name) for name in ("CAMPEX_SMTP_HOST", "CAMPEX_SMTP_USERNAME", "CAMPEX_SMTP_PASSWORD"))
+    )
+    with connect() as connection:
+        init_db(connection)
+        recipients = connection.execute("SELECT COUNT(*) AS total FROM alert_recipients WHERE ativo = 1").fetchone()["total"]
+        outbox_pending = connection.execute("SELECT COUNT(*) AS total FROM sync_outbox WHERE status IN ('pending', 'failed')").fetchone()["total"]
+        heartbeat = ultimo_edge_heartbeat(connection, os.getenv("CAMPEX_EDGE_ID"))
+    checks = [
+        _check_item("PASS" if clientes else "FAIL", "Empresa", f"{len(clientes)} empresa(s) cadastrada(s)"),
+        _check_item("PASS" if unidades else "FAIL", "Unidade", f"{len(unidades)} unidade(s) cadastrada(s)"),
+        _check_item(
+            "PASS" if areas and processes and assets else "FAIL",
+            "Contexto operacional",
+            f"áreas={len(areas)}, processos={len(processes)}, ativos={len(assets)}",
+        ),
+        _check_item("PASS" if cameras else "FAIL", "Câmera cadastrada", f"{len(cameras)} câmera(s)"),
+        _check_item(
+            "PASS" if online_streams else "PENDING",
+            "Câmera online",
+            "frame recente comprovado" if online_streams else "Pendente: câmera precisa estar online",
+        ),
+        _check_item("PASS" if machine_regions else "FAIL", "Machine region", f"{len(machine_regions)} região(ões)"),
+        _check_item("PASS" if operator_zones else "FAIL", "Operator zone", f"{len(operator_zones)} zona(s)"),
+        _check_item("PASS" if active_monitors else "FAIL", "Monitor", f"{len(active_monitors)} monitor(es) ativo(s)"),
+        _check_item(
+            "PASS" if ready_monitors else "PENDING",
+            "Calibração",
+            "monitor READY" if ready_monitors else "Pendente: câmera precisa estar online para calibrar",
+        ),
+        _check_item(
+            "PASS" if recipients and smtp_configured else "FAIL",
+            "Alertas",
+            f"destinatários={recipients}, modo={smtp_mode or 'não configurado'}",
+        ),
+        _check_item("PASS" if heartbeat else "PENDING", "Edge", "heartbeat recebido" if heartbeat else "Edge ainda não registrou heartbeat"),
+        _check_item(
+            "PASS" if inference_streams else "PENDING",
+            "Inference",
+            "inferência ativa com frame recente" if inference_streams else "Pendente: stream e análise precisam estar ativos",
+        ),
+    ]
+    return {
+        "checks": checks,
+        "ready": all(item["status"] == "PASS" for item in checks),
+        "summary": {
+            "active_cameras": len(active_cameras),
+            "online_streams": len(online_streams),
+            "inference_streams": len(inference_streams),
+            "ready_monitors": len(ready_monitors),
+            "outbox_pending": outbox_pending,
+        },
+    }
+
+
 @api.get("/setup/operation")
 def get_setup_operation(request: Request) -> dict[str, Any]:
     with connect() as connection:
@@ -1010,7 +1188,23 @@ def get_setup_operation(request: Request) -> dict[str, Any]:
             "machine_monitors": monitors,
             "capabilities": SETUP_CAPABILITIES,
             "asset_status": [_setup_asset_status(asset, cameras, monitored_areas, monitors) for asset in assets],
+            "readiness": _setup_installation_readiness(
+                clientes=clientes,
+                unidades=unidades,
+                areas=areas,
+                processes=processes,
+                assets=assets,
+                cameras=cameras,
+                monitored_areas=monitored_areas,
+                monitors=monitors,
+            ),
         }
+
+
+@api.get("/setup/readiness")
+def get_setup_readiness(request: Request) -> dict[str, Any]:
+    payload = get_setup_operation(request)
+    return payload["readiness"]
 
 
 @api.post("/setup/areas", status_code=status.HTTP_201_CREATED)
@@ -1256,6 +1450,43 @@ def post_camera_rtsp(payload: CameraRtspIn, request: Request) -> dict[str, objec
         )
         camera = obter_camera(connection, camera_id)
     return {"id": camera_id, "camera": camera, "teste": test_result}
+
+
+@api.patch("/cameras/{camera_id}")
+def patch_camera(camera_id: str, payload: CameraPatchIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        camera = obter_camera(connection, camera_id)
+        if camera is None:
+            raise HTTPException(status_code=404, detail="Camera nao encontrada.")
+        if tenant_filter(user) and camera.get("cliente_id") != tenant_filter(user):
+            raise HTTPException(status_code=403, detail="Camera de outro cliente.")
+        updates = []
+        values: list[Any] = []
+        if payload.nome is not None:
+            updates.append("nome = ?")
+            values.append(payload.nome)
+        if payload.ativa is not None:
+            updates.append("ativa = ?")
+            values.append(1 if payload.ativa else 0)
+        if updates:
+            values.append(camera_id)
+            connection.execute(f"UPDATE cameras SET {', '.join(updates)} WHERE id = ?", tuple(values))
+            registrar_audit_log(
+                connection,
+                action="config.camera.update",
+                actor=user,
+                entity_type="camera",
+                entity_id=camera_id,
+                tenant_id=camera.get("cliente_id"),
+                metadata={"ativa": payload.ativa} if payload.ativa is not None else {},
+            )
+        updated_camera = obter_camera(connection, camera_id) or camera
+        if "ativa" in updated_camera:
+            updated_camera["ativa"] = bool(updated_camera["ativa"])
+        return updated_camera
 
 
 @api.post("/cameras/test-connection")
@@ -3397,6 +3628,9 @@ def get_camera_estado(request: Request) -> list[dict[str, Any]]:
                 camera.pop("rtsp_port", None)
                 camera.pop("rtsp_path", None)
                 camera.pop("config_ref", None)
+        for camera in cameras:
+            if "ativa" in camera:
+                camera["ativa"] = bool(camera["ativa"])
         return cameras
 
 
