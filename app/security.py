@@ -5,6 +5,17 @@ import hashlib
 import hmac
 import os
 import secrets
+from pathlib import Path
+
+from app.config import ROOT
+
+
+PLACEHOLDER_KEYS = {
+    "campex-dev-change-me",
+    "troque-antes-do-piloto",
+    "troque-por-uma-chave-grande-antes-do-piloto",
+    "troque-por-outra-chave-grande-se-desejar",
+}
 
 
 def hash_password(password: str, salt: str | None = None) -> str:
@@ -25,8 +36,36 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def _configured_key() -> str | None:
+    raw = os.getenv("CAMPEX_CREDENTIAL_KEY") or os.getenv("CAMPEX_SECRET_KEY")
+    return raw.strip() if raw else None
+
+
+def require_configured_credential_key() -> None:
+    raw = _configured_key()
+    if not raw or raw in PLACEHOLDER_KEYS or len(raw) < 24:
+        raise RuntimeError("Configure CAMPEX_CREDENTIAL_KEY com uma chave segura antes de iniciar em produção.")
+
+
 def _key() -> bytes:
-    raw = os.getenv("CAMPEX_SECRET_KEY") or os.getenv("CAMPEX_CREDENTIAL_KEY") or "campex-dev-change-me"
+    raw = _configured_key()
+    if not raw:
+        if os.getenv("CAMPEX_ENV", "development").lower() == "production":
+            require_configured_credential_key()
+        local_key = ROOT / "data" / "credential_key"
+        local_key.parent.mkdir(parents=True, exist_ok=True)
+        if local_key.exists():
+            raw = local_key.read_text(encoding="utf-8").strip()
+        else:
+            raw = secrets.token_urlsafe(48)
+            local_key.write_text(raw, encoding="utf-8")
+            try:
+                local_key.chmod(0o600)
+            except OSError:
+                pass
+    if raw in PLACEHOLDER_KEYS:
+        if os.getenv("CAMPEX_ENV", "development").lower() == "production":
+            require_configured_credential_key()
     return hashlib.sha256(raw.encode()).digest()
 
 

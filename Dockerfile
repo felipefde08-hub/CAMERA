@@ -21,6 +21,6 @@ RUN mkdir -p /app/data /app/data/evidence /app/logs
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8000/ready || exit 1
+    CMD curl -fsS http://127.0.0.1:8000/health || exit 1
 
 CMD ["python", "manage.py", "run-edge-production"]

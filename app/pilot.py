@@ -84,7 +84,7 @@ def create_backup(output_dir: Path, db_path: Path | None = None) -> Path:
     with tarfile.open(archive, "w:gz") as tar:
         if db.exists():
             tar.add(db, arcname="data/visual_ops_product.sqlite3")
-        for name in (".env", ".env.example"):
+        for name in (".env.example",):
             path = ROOT / name
             if path.exists():
                 tar.add(path, arcname=name)

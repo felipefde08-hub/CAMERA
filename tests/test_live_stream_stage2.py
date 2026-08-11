@@ -164,8 +164,9 @@ class LiveStreamStage2Test(unittest.TestCase):
             stream = api_module.live_streams.get_or_create("cam_resources", "rtsp://user:pass@camera/stream")
             stream.start()
             time.sleep(0.15)
-            client = TestClient(api)
-            response = client.get("/live-streams/status")
+            with tempfile.TemporaryDirectory() as temp_dir, patch("app.api.connect", lambda: connect(Path(temp_dir) / "live-status.sqlite3")):
+                client = TestClient(api)
+                response = client.get("/live-streams/status")
         finally:
             api_module.live_streams.stop_all()
             api_module.live_streams = original_manager
@@ -293,33 +294,34 @@ class LiveStreamStage2Test(unittest.TestCase):
         try:
             api_module.live_streams = LiveStreamManager(connector_factory=lambda camera: FakeConnector(camera))
             api_module.live_view_sessions.clear()
-            client = TestClient(api)
-            response = client.post(
-                "/live-view/start",
-                json={
-                    "nome": "Intelbras Operacional",
-                    "host": "192.168.15.2",
-                    "usuario": "admin",
-                    "senha": "segredo",
-                    "caminho_rtsp": "/cam/realmonitor",
-                },
-            )
-            session_id = response.json()["session_id"]
-            ai = client.post(f"/live-view/{session_id}/ai/start")
-            machine = client.post(
-                f"/live-view/{session_id}/machine",
-                json={
-                    "nome": "Extrusora principal",
-                    "machine_polygon": [
-                        {"x": 0.2, "y": 0.2},
-                        {"x": 0.8, "y": 0.2},
-                        {"x": 0.8, "y": 0.8},
-                        {"x": 0.2, "y": 0.8},
-                    ],
-                },
-            )
-            calibration = client.post(f"/live-view/{session_id}/machine/calibrate-active")
-            status = client.get(f"/live-view/{session_id}/status")
+            with tempfile.TemporaryDirectory() as temp_dir, patch("app.api.connect", lambda: connect(Path(temp_dir) / "live-view.sqlite3")):
+                client = TestClient(api)
+                response = client.post(
+                    "/live-view/start",
+                    json={
+                        "nome": "Intelbras Operacional",
+                        "host": "192.168.15.2",
+                        "usuario": "admin",
+                        "senha": "segredo",
+                        "caminho_rtsp": "/cam/realmonitor",
+                    },
+                )
+                session_id = response.json()["session_id"]
+                ai = client.post(f"/live-view/{session_id}/ai/start")
+                machine = client.post(
+                    f"/live-view/{session_id}/machine",
+                    json={
+                        "nome": "Extrusora principal",
+                        "machine_polygon": [
+                            {"x": 0.2, "y": 0.2},
+                            {"x": 0.8, "y": 0.2},
+                            {"x": 0.8, "y": 0.8},
+                            {"x": 0.2, "y": 0.8},
+                        ],
+                    },
+                )
+                calibration = client.post(f"/live-view/{session_id}/machine/calibrate-active")
+                status = client.get(f"/live-view/{session_id}/status")
         finally:
             api_module.live_streams.stop_all()
             api_module.live_streams = original_manager

@@ -33,15 +33,30 @@ from app.reports import save_daily_report
 from app.pilot import acceptance_checklist, create_backup, health_snapshot, prune_old_evidence, restore_backup
 from app.machine_replay import run_machine_replay
 from app.edge_runtime import run_production_edge
+from app.security import require_configured_credential_key
 from edge_agent.camera_connector import detect_source_type, safe_source_ref
 from edge_agent.camera_check import check_camera
 from edge_agent.service import EdgeSupervisor, edge_status
 from edge_agent.sync_outbox import flush_sync_outbox, pending_sync_count, run_sync_loop
 
 
+def load_env_file(path: Path = Path(".env")) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Comandos locais do MVP de produto.")
-    parser.add_argument("--db", default="data/visual_ops_product.sqlite3")
+    parser.add_argument("--db", default=os.getenv("DATABASE_PATH", "data/visual_ops_product.sqlite3"))
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init-db")
 
@@ -451,6 +466,7 @@ def run_send_test_email(db_path: Path, email: str, nome: str, timeout: float) ->
 
 
 def main() -> int:
+    load_env_file()
     args = build_parser().parse_args()
     if args.command == "factory-preflight":
         return run_factory_preflight(Path(args.db), args.api_url, args.camera_id, args.timeout, args.min_free_gb)
@@ -554,6 +570,10 @@ def main() -> int:
         elif args.command == "run-edge-production":
             if not args.edge_id:
                 raise SystemExit("Configure CAMPEX_EDGE_ID ou informe --edge-id.")
+            try:
+                require_configured_credential_key()
+            except RuntimeError as exc:
+                raise SystemExit(str(exc)) from exc
             logging.basicConfig(
                 level=os.getenv("CAMPEX_LOG_LEVEL", "INFO"),
                 format="%(asctime)s %(levelname)s %(name)s: %(message)s",

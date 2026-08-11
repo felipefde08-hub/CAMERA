@@ -24,6 +24,7 @@ from app.models import (
     criar_evento_machine_stoppage,
     fechar_evento_machine_stoppage,
     new_id,
+    obter_evento,
     registrar_evidence_index,
     registrar_operational_sample,
 )
@@ -384,6 +385,22 @@ class MachineMonitorEngine:
                 )
             if error:
                 atualizar_evento_replay(connection, event_id, replay_error=error)
+            if image_path:
+                event = obter_evento(connection, event_id)
+                registrar_evidence_index(
+                    connection,
+                    evidence_id=new_id("evd"),
+                    event_id=event_id,
+                    event_uuid=event.get("event_uuid") if event else None,
+                    tenant_id=self.config.client_id,
+                    unit_id=self.config.unit_id,
+                    camera_id=self.config.camera_id,
+                    machine_id=self.config.id,
+                    path=image_path,
+                    media_type="image",
+                    size_bytes=(ROOT / image_path).stat().st_size if (ROOT / image_path).exists() else None,
+                    metadata={"source": "machine_monitoring"},
+                )
         self.state.active_events[canonical_type] = event_id
         self.state.active_event_opened[canonical_type] = now
         self.state.active_event_condition_started[canonical_type] = condition_started
@@ -636,25 +653,6 @@ def save_machine_evidence(frame: np.ndarray, config: MachineMonitorConfig, state
         if not cv2.imwrite(str(path), annotated):
             return None, "Falha ao gravar evidencia da parada."
         relative_path = str(path.relative_to(ROOT))
-        try:
-            with connect() as connection:
-                init_db(connection)
-                registrar_evidence_index(
-                    connection,
-                    evidence_id=new_id("evd"),
-                    event_id=state.event_id,
-                    event_uuid=None,
-                    tenant_id=config.client_id,
-                    unit_id=config.unit_id,
-                    camera_id=config.camera_id,
-                    machine_id=config.id,
-                    path=relative_path,
-                    media_type="image",
-                    size_bytes=path.stat().st_size,
-                    metadata={"source": "machine_monitoring"},
-                )
-        except Exception:
-            pass
         return relative_path, None
     except Exception as exc:
         return None, mask_sensitive_error(str(exc))

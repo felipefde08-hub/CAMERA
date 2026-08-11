@@ -18,6 +18,9 @@ from app.models import (
     criar_ocorrencia_zona,
     fechar_ocorrencia_area,
     listar_regras,
+    new_id,
+    obter_evento,
+    registrar_evidence_index,
 )
 from app.person_detection import Detection
 from app.restricted_area import AreaPresence, AreaPresenceTracker, area_from_dict, draw_area_overlay, evaluate_area
@@ -269,6 +272,22 @@ class PeopleZonesEngine:
                     metadata=metadata,
                     evidence_error=evidence_error,
                 )
+                if evidence_path:
+                    event = obter_evento(connection, event_id)
+                    registrar_evidence_index(
+                        connection,
+                        evidence_id=new_id("evd"),
+                        event_id=event_id,
+                        event_uuid=event.get("event_uuid") if event else None,
+                        tenant_id=cliente_id,
+                        unit_id=unidade_id,
+                        camera_id=self.camera_id,
+                        machine_id=area.get("machine_id"),
+                        path=evidence_path,
+                        media_type="image",
+                        size_bytes=(ROOT / evidence_path).stat().st_size if (ROOT / evidence_path).exists() else None,
+                        metadata={"source": "people_zones", "area_id": str(area["id"]), "event_type": config.event_type},
+                    )
         except Exception:
             return
         self._open[(str(area["id"]), config.event_type)] = OpenZoneEvent(

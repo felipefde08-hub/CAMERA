@@ -576,6 +576,29 @@ def require_alert_delivery_access(connection, user: dict[str, Any], delivery_id:
     return delivery
 
 
+def require_area_access(connection, user: dict[str, Any], area_id: str) -> dict[str, Any]:
+    row = connection.execute("SELECT * FROM monitored_areas WHERE id = ?", (area_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Area nao encontrada.")
+    area = dict(row)
+    require_camera_access(connection, user, area.get("camera_id"))
+    return area
+
+
+def require_live_view_session_access(connection, request: Request, session_id: str) -> dict[str, Any]:
+    session = live_view_sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Live View não encontrada.")
+    user = require_user(request, connection)
+    camera_id = session.get("camera_id")
+    if camera_id:
+        require_camera_access(connection, user, str(camera_id))
+    session_tenant = session.get("cliente_id")
+    if session_tenant:
+        require_same_tenant(user, str(session_tenant), "Live View de outro cliente.")
+    return session
+
+
 @api.on_event("startup")
 def startup() -> None:
     with connect() as connection:
@@ -946,12 +969,18 @@ def post_reset_password(payload: ResetPasswordIn, request: Request) -> dict[str,
 
 
 @api.get("/system/health")
-def get_system_health() -> dict[str, object]:
+def get_system_health(request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_user(request, connection)
     return health_snapshot()
 
 
 @api.get("/pilot/checklist")
-def get_pilot_checklist() -> dict[str, object]:
+def get_pilot_checklist(request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_user(request, connection)
     return acceptance_checklist()
 
 
@@ -1388,17 +1417,24 @@ def get_users(request: Request) -> list[dict[str, Any]]:
 
 
 @api.post("/dispositivos")
-def post_dispositivo(payload: DispositivoIn) -> dict[str, str]:
+def post_dispositivo(payload: DispositivoIn, request: Request) -> dict[str, str]:
     with connect() as connection:
         init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        cliente_id = resolve_unidade_cliente(connection, payload.unidade_id)
+        require_same_tenant(user, cliente_id, "Unidade de outro cliente.")
         return {"id": criar_dispositivo(connection, payload.unidade_id, payload.nome, payload.status)}
 
 
 @api.post("/cameras")
-def post_camera(payload: CameraIn) -> dict[str, str]:
+def post_camera(payload: CameraIn, request: Request) -> dict[str, str]:
     with connect() as connection:
         init_db(connection)
-        cliente_id, unidade_id = default_cliente_unidade(connection, payload.cliente_id, payload.unidade_id)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        cliente_hint = payload.cliente_id if user["role"] == "admin_campex" else user.get("cliente_id")
+        cliente_id, unidade_id = default_cliente_unidade(connection, cliente_hint, payload.unidade_id)
         return {"id": criar_camera(
             connection,
             unidade_id,
@@ -1433,7 +1469,8 @@ def post_camera_rtsp(payload: CameraRtspIn, request: Request) -> dict[str, objec
         status = "online" if test_result["compativel"] else "offline"
     with connect() as connection:
         init_db(connection)
-        user = get_request_user(request, connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
         cliente_hint = payload.cliente_id
         if user and user["role"] != "admin_campex":
             cliente_hint = user.get("cliente_id")
@@ -1515,7 +1552,10 @@ def patch_camera(camera_id: str, payload: CameraPatchIn, request: Request) -> di
 
 
 @api.post("/cameras/test-connection")
-def post_camera_test_connection(payload: CameraRtspTestIn) -> dict[str, object]:
+def post_camera_test_connection(payload: CameraRtspTestIn, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_user(request, connection)
     try:
         rtsp = build_rtsp_url(
             host=payload.host,
@@ -1531,12 +1571,17 @@ def post_camera_test_connection(payload: CameraRtspTestIn) -> dict[str, object]:
 
 
 @api.post("/live-view/start")
-def post_live_view_start(payload: LiveViewStartIn) -> dict[str, object]:
+def post_live_view_start(payload: LiveViewStartIn, request: Request) -> dict[str, object]:
     camera_id = payload.camera_id
     camera_name = payload.nome
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        user_tenant = tenant_filter(user)
     if camera_id and not payload.rtsp_url and not payload.host:
         with connect() as connection:
             init_db(connection)
+            require_camera_access(connection, user, camera_id)
             camera = obter_camera(connection, camera_id, include_secret=True)
         if camera is None:
             raise HTTPException(status_code=404, detail="Câmera não encontrada.")
@@ -1570,6 +1615,8 @@ def post_live_view_start(payload: LiveViewStartIn) -> dict[str, object]:
         "source": rtsp.url,
         "safe_url": rtsp.safe_url,
         "camera_id": camera_id,
+        "cliente_id": camera.get("cliente_id") if camera_id and "camera" in locals() else user_tenant,
+        "user_id": user.get("id"),
         "stream_id": camera_id or session_id,
         "created_at": time.time(),
     }
@@ -1593,10 +1640,10 @@ def live_view_stream_id(session_id: str) -> str:
 
 
 @api.get("/live-view/{session_id}/status")
-def get_live_view_status(session_id: str) -> dict[str, object]:
-    session = live_view_sessions.get(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Live View não encontrada.")
+def get_live_view_status(session_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        session = require_live_view_session_access(connection, request, session_id)
     stream = live_streams.get(live_view_stream_id(session_id))
     status = stream.public_status() if stream else {"status": "offline", "width": None, "height": None, "fps": None}
     ops = live_view_official_ops(session, stream)
@@ -1611,10 +1658,10 @@ def get_live_view_status(session_id: str) -> dict[str, object]:
 
 
 @api.get("/live-view/{session_id}/stream")
-def get_live_view_stream(session_id: str) -> StreamingResponse:
-    session = live_view_sessions.get(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Live View não encontrada.")
+def get_live_view_stream(session_id: str, request: Request) -> StreamingResponse:
+    with connect() as connection:
+        init_db(connection)
+        session = require_live_view_session_access(connection, request, session_id)
     stream = live_streams.get_or_create(live_view_stream_id(session_id), str(session["source"]))
     stream.start()
     return StreamingResponse(stream.frames(), media_type="multipart/x-mixed-replace; boundary=frame")
@@ -1850,21 +1897,30 @@ def persist_live_view_machine_config(session_id: str, machine: dict[str, object]
 
 
 @api.post("/live-view/{session_id}/ai/start")
-def post_live_view_ai_start(session_id: str) -> dict[str, object]:
+def post_live_view_ai_start(session_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_live_view_session_access(connection, request, session_id)
     session, stream = live_view_stream_for(session_id)
     stream.set_analysis(True)
     return {"ai_enabled": True, **live_view_official_ops(session, stream)}
 
 
 @api.post("/live-view/{session_id}/ai/stop")
-def post_live_view_ai_stop(session_id: str) -> dict[str, object]:
+def post_live_view_ai_stop(session_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_live_view_session_access(connection, request, session_id)
     session, stream = live_view_stream_for(session_id)
     stream.set_analysis(False)
     return {"ai_enabled": False, **live_view_official_ops(session, stream)}
 
 
 @api.post("/live-view/{session_id}/machine")
-def post_live_view_machine(session_id: str, payload: LiveViewMachineIn) -> dict[str, object]:
+def post_live_view_machine(session_id: str, payload: LiveViewMachineIn, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_live_view_session_access(connection, request, session_id)
     session, stream = live_view_stream_for(session_id)
     machine_polygon = normalize_points([point.model_dump() for point in payload.machine_polygon])
     operator_polygon = normalize_points([point.model_dump() for point in payload.operator_polygon]) if payload.operator_polygon else expanded_live_view_polygon(machine_polygon)
@@ -1890,7 +1946,10 @@ def post_live_view_machine(session_id: str, payload: LiveViewMachineIn) -> dict[
 
 
 @api.post("/live-view/{session_id}/operator-zone")
-def post_live_view_operator_zone(session_id: str, payload: LiveViewOperatorZoneIn) -> dict[str, object]:
+def post_live_view_operator_zone(session_id: str, payload: LiveViewOperatorZoneIn, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_live_view_session_access(connection, request, session_id)
     session, stream = live_view_stream_for(session_id)
     camera_id = session.get("camera_id") if session else None
     if not camera_id:
@@ -1907,7 +1966,10 @@ def post_live_view_operator_zone(session_id: str, payload: LiveViewOperatorZoneI
 
 
 @api.post("/live-view/{session_id}/machine/calibrate-active")
-def post_live_view_machine_calibrate_active(session_id: str) -> dict[str, object]:
+def post_live_view_machine_calibrate_active(session_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_live_view_session_access(connection, request, session_id)
     session, stream = live_view_stream_for(session_id)
     state = live_view_official_ops(session, stream)
     state["calibration_status"] = "use_assisted_calibration_endpoint"
@@ -1916,8 +1978,10 @@ def post_live_view_machine_calibrate_active(session_id: str) -> dict[str, object
 
 
 @api.delete("/live-view/{session_id}/machine")
-def delete_live_view_machine(session_id: str) -> dict[str, object]:
-    session = live_view_sessions.get(session_id)
+def delete_live_view_machine(session_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        session = require_live_view_session_access(connection, request, session_id)
     camera_id = session.get("camera_id") if session else None
     if camera_id:
         with connect() as connection:
@@ -1931,7 +1995,10 @@ def delete_live_view_machine(session_id: str) -> dict[str, object]:
 
 
 @api.post("/live-view/{session_id}/stop")
-def post_live_view_stop(session_id: str) -> dict[str, object]:
+def post_live_view_stop(session_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_live_view_session_access(connection, request, session_id)
     session = live_view_sessions.pop(session_id, None)
     stream_id = str(session.get("stream_id") or session_id) if session else session_id
     stopped = False if session and session.get("camera_id") else live_streams.stop(stream_id)
@@ -2087,7 +2154,7 @@ def get_camera_live_status(camera_id: str, request: Request) -> dict[str, object
 def get_live_overview(request: Request) -> dict[str, object]:
     with connect() as connection:
         init_db(connection)
-        user = get_request_user(request, connection)
+        user = require_user(request, connection)
         cameras = listar(connection, "cameras")
         if user and tenant_filter(user):
             cameras = [camera for camera in cameras if camera.get("cliente_id") == tenant_filter(user)]
@@ -2104,7 +2171,10 @@ def get_live_overview(request: Request) -> dict[str, object]:
 
 
 @api.get("/live-streams/status")
-def get_live_streams_status() -> dict[str, object]:
+def get_live_streams_status(request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_user(request, connection)
     streams = live_streams.statuses()
     return {
         "active_streams": len(streams),
@@ -2115,11 +2185,15 @@ def get_live_streams_status() -> dict[str, object]:
 
 
 @api.get("/people-zones/summary")
-def get_people_zones_summary(camera_id: Optional[str] = None) -> dict[str, object]:
+def get_people_zones_summary(request: Request, camera_id: Optional[str] = None) -> dict[str, object]:
     with connect() as connection:
         init_db(connection)
+        user = require_user(request, connection)
         cameras = listar(connection, "cameras")
+        if tenant_filter(user):
+            cameras = [camera for camera in cameras if camera.get("cliente_id") == tenant_filter(user)]
         if camera_id:
+            require_camera_access(connection, user, camera_id)
             cameras = [camera for camera in cameras if camera["id"] == camera_id]
         camera_ids = {camera["id"] for camera in cameras}
         zones = []
@@ -2174,10 +2248,11 @@ def get_people_zones_summary(camera_id: Optional[str] = None) -> dict[str, objec
 
 
 @api.get("/local-diagnostics")
-def get_local_diagnostics() -> dict[str, object]:
+def get_local_diagnostics(request: Request) -> dict[str, object]:
     disk = psutil.disk_usage(str(ROOT))
     with connect() as connection:
         init_db(connection)
+        require_user(request, connection)
         zones = connection.execute("SELECT COUNT(*) AS total FROM monitored_areas WHERE ativa = 1").fetchone()["total"]
         rules = connection.execute("SELECT COUNT(*) AS total FROM regras WHERE ativo = 1").fetchone()["total"]
         open_events = connection.execute("SELECT COUNT(*) AS total FROM eventos WHERE status = 'open'").fetchone()["total"]
@@ -2219,17 +2294,19 @@ def create_test_evidence(camera_id: str, area_id: str, event_type: str) -> str:
 
 
 @api.post("/dev/test-event")
-def post_dev_test_event(payload: DevTestEventIn) -> dict[str, object]:
+def post_dev_test_event(payload: DevTestEventIn, request: Request) -> dict[str, object]:
     if not test_events_enabled():
         raise HTTPException(status_code=404, detail="Ocorrencia de teste indisponivel neste ambiente.")
     with connect() as connection:
         init_db(connection)
+        user = require_user(request, connection)
         camera = obter_camera(connection, payload.camera_id) if payload.camera_id else None
         if camera is None:
             cameras = listar(connection, "cameras")
             camera = cameras[0] if cameras else None
         if camera is None:
             raise HTTPException(status_code=400, detail="Cadastre uma camera antes de gerar ocorrencia de teste.")
+        require_camera_access(connection, user, camera["id"])
         areas = listar_areas_camera(connection, camera["id"])
         area = next((item for item in areas if item["id"] == payload.area_id), None) if payload.area_id else (areas[0] if areas else None)
         if area is None:
@@ -2298,7 +2375,7 @@ def get_camera_areas(camera_id: str, request: Request) -> list[dict[str, Any]]:
 
 
 @api.post("/cameras/{camera_id}/areas", status_code=status.HTTP_201_CREATED)
-def post_camera_area(camera_id: str, payload: AreaIn) -> dict[str, Any]:
+def post_camera_area(camera_id: str, payload: AreaIn, request: Request) -> dict[str, Any]:
     try:
         zone_name = payload.resolved_name()
         zone_type = payload.resolved_type()
@@ -2312,6 +2389,8 @@ def post_camera_area(camera_id: str, payload: AreaIn) -> dict[str, Any]:
     try:
         with connect() as connection:
             init_db(connection)
+            user = require_user(request, connection)
+            require_camera_access(connection, user, camera_id)
             camera = obter_camera(connection, camera_id)
             if camera is None:
                 raise HTTPException(status_code=404, detail="Camera nao encontrada.")
@@ -2375,7 +2454,7 @@ def post_camera_area(camera_id: str, payload: AreaIn) -> dict[str, Any]:
 
 
 @api.patch("/areas/{area_id}")
-def patch_area(area_id: str, payload: AreaPatchIn) -> dict[str, Any]:
+def patch_area(area_id: str, payload: AreaPatchIn, request: Request) -> dict[str, Any]:
     points = None
     if payload.pontos is not None:
         try:
@@ -2384,6 +2463,7 @@ def patch_area(area_id: str, payload: AreaPatchIn) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
     with connect() as connection:
         init_db(connection)
+        require_area_access(connection, require_user(request, connection), area_id)
         area = atualizar_area_monitorada(
             connection,
             area_id,
@@ -2406,9 +2486,10 @@ def patch_area(area_id: str, payload: AreaPatchIn) -> dict[str, Any]:
 
 
 @api.delete("/areas/{area_id}")
-def delete_area(area_id: str) -> dict[str, object]:
+def delete_area(area_id: str, request: Request) -> dict[str, object]:
     with connect() as connection:
         init_db(connection)
+        require_area_access(connection, require_user(request, connection), area_id)
         deleted = excluir_area_monitorada(connection, area_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Area nao encontrada.")
@@ -2416,9 +2497,10 @@ def delete_area(area_id: str) -> dict[str, object]:
 
 
 @api.post("/areas/{area_id}/activate")
-def post_area_activate(area_id: str) -> dict[str, Any]:
+def post_area_activate(area_id: str, request: Request) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
+        require_area_access(connection, require_user(request, connection), area_id)
         area = atualizar_area_monitorada(connection, area_id, ativa=True)
     if area is None:
         raise HTTPException(status_code=404, detail="Area nao encontrada.")
@@ -2426,9 +2508,10 @@ def post_area_activate(area_id: str) -> dict[str, Any]:
 
 
 @api.post("/areas/{area_id}/deactivate")
-def post_area_deactivate(area_id: str) -> dict[str, Any]:
+def post_area_deactivate(area_id: str, request: Request) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
+        require_area_access(connection, require_user(request, connection), area_id)
         area = atualizar_area_monitorada(connection, area_id, ativa=False)
     if area is None:
         raise HTTPException(status_code=404, detail="Area nao encontrada.")

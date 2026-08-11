@@ -96,19 +96,26 @@ Write-Step "Criando diretorios persistentes"
 
 Write-Step "Verificando .env"
 if (!(Test-Path ".env")) {
+    $bytes = New-Object byte[] 48
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $credentialKey = [Convert]::ToBase64String($bytes)
     if (Test-Path ".env.example") {
         Copy-Item ".env.example" ".env"
-        Write-Host ".env criado a partir de .env.example. Edite as chaves e credenciais antes do piloto." -ForegroundColor Yellow
+        (Get-Content ".env") `
+            -replace '^CAMPEX_CREDENTIAL_KEY=.*$', "CAMPEX_CREDENTIAL_KEY=$credentialKey" `
+            -replace '^CAMPEX_SECRET_KEY=.*$', "CAMPEX_SECRET_KEY=$credentialKey" |
+            Set-Content -Encoding UTF8 ".env"
+        Write-Host ".env criado a partir de .env.example com chave local gerada. Edite credenciais antes do piloto." -ForegroundColor Yellow
     } else {
         @"
 DATABASE_PATH=data/visual_ops_product.sqlite3
 API_HOST=0.0.0.0
 API_PORT=8000
-CAMPEX_SECRET_KEY=troque-antes-do-piloto
-CAMPEX_CREDENTIAL_KEY=troque-antes-do-piloto
+CAMPEX_SECRET_KEY=$credentialKey
+CAMPEX_CREDENTIAL_KEY=$credentialKey
 CAMPEX_EMAIL_MODE=console
 "@ | Set-Content -Encoding UTF8 ".env"
-        Write-Host ".env criado com valores locais basicos. Edite antes do piloto." -ForegroundColor Yellow
+        Write-Host ".env criado com chave local gerada. Edite credenciais antes do piloto." -ForegroundColor Yellow
     }
 } else {
     Write-Host ".env ja existe. Nao foi sobrescrito." -ForegroundColor Green

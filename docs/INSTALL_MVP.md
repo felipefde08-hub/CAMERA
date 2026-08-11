@@ -41,8 +41,11 @@ DATABASE_PATH=data/visual_ops_product.sqlite3
 API_HOST=0.0.0.0
 API_PORT=8000
 CAMPEX_EDGE_ID=edge_cliente_01
+CAMPEX_CREDENTIAL_KEY=gere-uma-chave-longa-e-unica-para-esta-instalacao
 CAMPEX_EMAIL_MODE=console
 ```
+
+O comando oficial `python manage.py run-edge-production` carrega o `.env` local automaticamente. Em produção, `CAMPEX_CREDENTIAL_KEY` precisa estar configurada com uma chave segura; placeholders do `.env.example` não são aceitos para iniciar o Edge.
 
 Para e-mail real por SMTP:
 
@@ -57,6 +60,7 @@ CAMPEX_EMAIL_FROM=seu-email
 ```
 
 Não coloque RTSP, senha de câmera ou SMTP no Git.
+O backup operacional padrão não inclui `.env`; guarde segredos em um local seguro separado.
 
 ## 3. Iniciar A Campex Edge
 
