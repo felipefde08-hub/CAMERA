@@ -551,6 +551,31 @@ def require_camera_access(connection, user: dict[str, Any], camera_id: str | Non
     require_same_tenant(user, camera.get("cliente_id"), "Camera de outro cliente.")
 
 
+def require_event_access(connection, user: dict[str, Any], evento_id: str) -> dict[str, Any]:
+    event = obter_evento(connection, evento_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+    require_same_tenant(user, event.get("cliente_id"), "Evento de outro cliente.")
+    return event
+
+
+def require_alert_delivery_access(connection, user: dict[str, Any], delivery_id: str) -> dict[str, Any]:
+    delivery = obter_alert_delivery(connection, delivery_id)
+    if delivery is None:
+        raise HTTPException(status_code=404, detail="Entrega nao encontrada.")
+    event_id = delivery.get("evento_id")
+    if event_id:
+        require_event_access(connection, user, str(event_id))
+        return delivery
+    recipient_id = delivery.get("recipient_id")
+    if recipient_id:
+        recipient = obter_alert_recipient(connection, str(recipient_id))
+        if recipient is None:
+            raise HTTPException(status_code=404, detail="Responsavel nao encontrado.")
+        require_same_tenant(user, recipient.get("cliente_id"), "Entrega de outro cliente.")
+    return delivery
+
+
 @api.on_event("startup")
 def startup() -> None:
     with connect() as connection:
@@ -1914,9 +1939,10 @@ def post_live_view_stop(session_id: str) -> dict[str, object]:
 
 
 @api.post("/cameras/{camera_id}/test-connection")
-def post_existing_camera_test_connection(camera_id: str) -> dict[str, object]:
+def post_existing_camera_test_connection(camera_id: str, request: Request) -> dict[str, object]:
     with connect() as connection:
         init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
         camera = obter_camera(connection, camera_id, include_secret=True)
     if camera is None:
         return {"compativel": False, "motivo_erro": "Camera nao encontrada."}
@@ -2015,18 +2041,27 @@ def bootstrap_production_streams() -> dict[str, object]:
 
 
 @api.post("/cameras/{camera_id}/start")
-def post_camera_start(camera_id: str) -> dict[str, object]:
+def post_camera_start(camera_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
     return start_camera_runtime(camera_id, enable_analysis=False)
 
 
 @api.post("/cameras/{camera_id}/stop")
-def post_camera_stop(camera_id: str) -> dict[str, object]:
+def post_camera_stop(camera_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
     stopped = live_streams.stop(camera_id)
     return {"camera_id": camera_id, "status": "offline", "stopped": stopped}
 
 
 @api.get("/cameras/{camera_id}/stream")
-def get_camera_stream(camera_id: str) -> StreamingResponse:
+def get_camera_stream(camera_id: str, request: Request) -> StreamingResponse:
+    with connect() as connection:
+        init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
     _camera, source = load_camera_source(camera_id)
     stream = live_streams.get_or_create(camera_id, source)
     stream.start()
@@ -2037,9 +2072,11 @@ def get_camera_stream(camera_id: str) -> StreamingResponse:
 
 
 @api.get("/cameras/{camera_id}/status")
-def get_camera_live_status(camera_id: str) -> dict[str, object]:
+def get_camera_live_status(camera_id: str, request: Request) -> dict[str, object]:
     with connect() as connection:
         init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
         camera = obter_camera(connection, camera_id)
         if camera is None:
             raise HTTPException(status_code=404, detail="Camera nao encontrada.")
@@ -2222,14 +2259,20 @@ def post_dev_test_event(payload: DevTestEventIn) -> dict[str, object]:
 
 
 @api.post("/cameras/{camera_id}/analysis/start")
-def post_camera_analysis_start(camera_id: str) -> dict[str, object]:
+def post_camera_analysis_start(camera_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
     start_camera_runtime(camera_id, enable_analysis=True)
     stream = live_streams.get(camera_id)
     return stream.public_status() if stream else {"camera_id": camera_id, "status": "offline"}
 
 
 @api.post("/cameras/{camera_id}/analysis/stop")
-def post_camera_analysis_stop(camera_id: str) -> dict[str, object]:
+def post_camera_analysis_stop(camera_id: str, request: Request) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        require_camera_access(connection, require_user(request, connection), camera_id)
     stream = live_streams.get(camera_id)
     if stream is None:
         return {
@@ -2845,16 +2888,20 @@ def post_camera_visual_rule_defaults(camera_id: str, payload: VisualRuleDefaults
 
 
 @api.post("/eventos")
-def post_evento(payload: EventoIn) -> dict[str, str]:
+def post_evento(payload: EventoIn, request: Request) -> dict[str, str]:
     with connect() as connection:
         init_db(connection)
+        user = require_user(request, connection)
+        require_same_tenant(user, payload.cliente_id, "Evento de outro cliente.")
+        require_camera_access(connection, user, payload.camera_id)
         return {"id": registrar_evento(connection, **payload.model_dump())}
 
 
 @api.patch("/eventos/{evento_id}")
-def patch_evento(evento_id: str, payload: EventoUpdateIn) -> dict[str, object]:
+def patch_evento(evento_id: str, payload: EventoUpdateIn, request: Request) -> dict[str, object]:
     with connect() as connection:
         init_db(connection)
+        require_event_access(connection, require_user(request, connection), evento_id)
         if payload.status == "acknowledged":
             event = reconhecer_ocorrencia(
                 connection,
@@ -2902,13 +2949,10 @@ def get_eventos(
 
 
 @api.get("/eventos/{evento_id}")
-def get_evento(evento_id: str) -> dict[str, Any]:
+def get_evento(evento_id: str, request: Request) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
-        event = obter_evento(connection, evento_id)
-    if event is None:
-        raise HTTPException(status_code=404, detail="Evento nao encontrado.")
-    return event
+        return require_event_access(connection, require_user(request, connection), evento_id)
 
 
 @api.get("/eventos/{evento_id}/detail")
@@ -3018,12 +3062,10 @@ def get_evento_evidence(evento_id: str, request: Request) -> FileResponse:
 
 
 @api.get("/eventos/{evento_id}/replay")
-def get_evento_replay(evento_id: str) -> FileResponse:
+def get_evento_replay(evento_id: str, request: Request) -> FileResponse:
     with connect() as connection:
         init_db(connection)
-        event = obter_evento(connection, evento_id)
-    if event is None:
-        raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+        event = require_event_access(connection, require_user(request, connection), evento_id)
     replay_path = event.get("replay_path")
     if not replay_path:
         raise HTTPException(status_code=404, detail="Replay nao encontrado.")
@@ -3604,17 +3646,17 @@ def get_alert_deliveries(
 
 
 @api.get("/alert-deliveries/{delivery_id}")
-def get_alert_delivery(delivery_id: str) -> dict[str, Any]:
+def get_alert_delivery(delivery_id: str, request: Request) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
-        delivery = obter_alert_delivery(connection, delivery_id)
-    if delivery is None:
-        raise HTTPException(status_code=404, detail="Entrega nao encontrada.")
-    return delivery
+        return require_alert_delivery_access(connection, require_user(request, connection), delivery_id)
 
 
 @api.post("/alert-deliveries/{delivery_id}/retry")
-def post_alert_delivery_retry(delivery_id: str) -> dict[str, Any]:
+def post_alert_delivery_retry(delivery_id: str, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        require_alert_delivery_access(connection, require_user(request, connection), delivery_id)
     delivery = retry_delivery(delivery_id)
     if delivery is None:
         raise HTTPException(status_code=404, detail="Entrega nao encontrada.")

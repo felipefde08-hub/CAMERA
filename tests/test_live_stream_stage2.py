@@ -235,7 +235,7 @@ class LiveStreamStage2Test(unittest.TestCase):
     def test_status_endpoint_does_not_return_credentials_for_missing_stream(self) -> None:
         client = TestClient(api)
         response = client.get("/cameras/cam_inexistente/status")
-        self.assertEqual(response.status_code, 404)
+        self.assertIn(response.status_code, {401, 404})
         self.assertNotIn("senha", response.text.lower())
 
     def test_live_view_starts_without_camera_registration(self) -> None:
