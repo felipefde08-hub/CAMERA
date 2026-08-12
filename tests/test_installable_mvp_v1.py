@@ -190,6 +190,29 @@ def test_empty_installation_smoke_reaches_configured_monitor_without_physical_re
         with connect(db_path) as connection:
             assert connection.execute("SELECT COUNT(*) FROM machine_monitors").fetchone()[0] == 1
             assert connection.execute("SELECT COUNT(*) FROM monitored_areas").fetchone()[0] == 2
+
+        restarted_client = TestClient(api)
+        restarted_client.post("/auth/login", json={"email": "instalador@cliente.test", "senha": "senha-segura"})
+        restarted_operation = restarted_client.get("/setup/operation")
+        assert restarted_operation.status_code == 200
+        restarted_payload = restarted_operation.json()
+        restarted_camera = next(item for item in restarted_payload["cameras"] if item["id"] == camera["id"])
+        restarted_monitor = next(item for item in restarted_payload["machine_monitors"] if item["camera_id"] == camera["id"])
+        restarted_zones = [item for item in restarted_payload["monitored_areas"] if item["camera_id"] == camera["id"]]
+        assert restarted_camera["area_context_id"] == area["id"]
+        assert restarted_camera["process_id"] == process["id"]
+        assert restarted_camera["asset_id"] == asset["id"]
+        assert restarted_monitor["nome"] == "A6"
+        assert restarted_monitor["ativo"] is True
+        assert restarted_monitor["stop_seconds"] == 20
+        assert restarted_monitor["operator_absence_seconds"] == 60
+        assert restarted_monitor["stopped_with_operator_seconds"] == 90
+        assert {zone["tipo"] for zone in restarted_zones} == {"machine_region", "operator_zone"}
+        assert restarted_monitor["calibration_result"] != "READY"
+
+        calibration_status = restarted_client.get(f"/machine-monitors/{restarted_monitor['id']}/calibration/status")
+        assert calibration_status.status_code == 200
+        assert calibration_status.json()["stream"]["status"] == "idle"
     finally:
         patcher.stop()
 

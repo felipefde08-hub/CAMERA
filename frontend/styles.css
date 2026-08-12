@@ -4818,6 +4818,66 @@ label {
   line-height: 1.4;
 }
 
+.live-monitor-wizard {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  border-color: #c8d7ff;
+  background: #f8fbff;
+}
+
+.live-monitor-wizard > .primary {
+  justify-content: center;
+  width: 100%;
+}
+
+.live-wizard-body {
+  display: grid;
+  gap: 12px;
+}
+
+.live-wizard-step {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #e3e6eb;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.live-wizard-step small {
+  color: #2454f4;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.live-wizard-step strong {
+  color: #111318;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.live-wizard-step span {
+  color: #697180;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.live-wizard-step button {
+  width: 100%;
+}
+
+.cx-check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.cx-check-row input {
+  width: auto;
+}
+
 .technical-details {
   margin-top: 12px;
   border-top: 1px solid #e3e6eb;

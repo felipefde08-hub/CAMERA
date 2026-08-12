@@ -73,6 +73,35 @@ const saveDraw = document.querySelector("#saveDraw");
 const monitorConfigCard = document.querySelector("#monitorConfigCard");
 const monitorConfigTitle = document.querySelector("#monitorConfigTitle");
 const monitorConfigText = document.querySelector("#monitorConfigText");
+const openMonitorWizard = document.querySelector("#openMonitorWizard");
+const monitorWizardBody = document.querySelector("#monitorWizardBody");
+const wizardSummary = document.querySelector("#wizardSummary");
+const wizardUnitSelect = document.querySelector("#wizardUnitSelect");
+const wizardAreaName = document.querySelector("#wizardAreaName");
+const wizardAreaSelect = document.querySelector("#wizardAreaSelect");
+const wizardProcessName = document.querySelector("#wizardProcessName");
+const wizardProcessSelect = document.querySelector("#wizardProcessSelect");
+const wizardAssetName = document.querySelector("#wizardAssetName");
+const wizardAssetSelect = document.querySelector("#wizardAssetSelect");
+const saveOperationalContext = document.querySelector("#saveOperationalContext");
+const wizardContextStatus = document.querySelector("#wizardContextStatus");
+const capabilityStoppage = document.querySelector("#capabilityStoppage");
+const capabilityAbsence = document.querySelector("#capabilityAbsence");
+const drawMachineRegion = document.querySelector("#drawMachineRegion");
+const drawOperatorZone = document.querySelector("#drawOperatorZone");
+const wizardRegionStatus = document.querySelector("#wizardRegionStatus");
+const wizardMachineName = document.querySelector("#wizardMachineName");
+const wizardStopSeconds = document.querySelector("#wizardStopSeconds");
+const wizardAbsenceSeconds = document.querySelector("#wizardAbsenceSeconds");
+const wizardStoppedOperatorSeconds = document.querySelector("#wizardStoppedOperatorSeconds");
+const saveMonitorWizard = document.querySelector("#saveMonitorWizard");
+const wizardMonitorStatus = document.querySelector("#wizardMonitorStatus");
+const wizardCalibrateActive = document.querySelector("#wizardCalibrateActive");
+const wizardCalibrateStopped = document.querySelector("#wizardCalibrateStopped");
+const wizardCalibrationStatus = document.querySelector("#wizardCalibrationStatus");
+const wizardReadyStatus = document.querySelector("#wizardReadyStatus");
+const activateMonitorWizard = document.querySelector("#activateMonitorWizard");
+const wizardActivationStatus = document.querySelector("#wizardActivationStatus");
 
 let sessionId = null;
 let statusTimer = null;
@@ -90,6 +119,8 @@ let eventSource = null;
 let liveAlerts = [];
 let seenLiveEvents = new Set();
 let toastTimer = null;
+let setupOperation = { unidades: [], areas: [], processes: [], assets: [] };
+let liveContext = null;
 
 const LIVE_EVENT_TYPES = new Set([
   "workstation_unattended",
@@ -218,6 +249,7 @@ function renderStatus(payload) {
   const status = payload.status || "offline";
   const ops = payload.ops || {};
   const context = payload.context || {};
+  liveContext = context;
   const currentEvent = context.current_event;
   machineConfig = ops.machine || machineConfig;
   liveViewName.textContent = context.primary_label || payload.nome || "Live View";
@@ -264,6 +296,7 @@ function renderStatus(payload) {
     ? `${observation.machine_state} · conf. ${observation.machine_confidence} · operador ${observation.people_in_operator_zone} · restrita ${observation.people_in_restricted_zone}`
     : ops.relation || "Aguardando configuração";
   updateMonitorConfigCard();
+  updateWizardState();
   updateAiControls(payload.ai_status || ops.ai_status);
   if (payload.calibration && payload.calibration.status && payload.calibration.status !== "idle") {
     renderCalibration(payload.calibration);
@@ -277,6 +310,152 @@ function renderStatus(payload) {
     setStatus("offline", payload.error || "Câmera offline.");
   }
   drawCanvas();
+}
+
+function optionHtml(items, selectedId, placeholder) {
+  const options = [`<option value="">${placeholder}</option>`];
+  items.forEach((item) => {
+    options.push(`<option value="${item.id}" ${item.id === selectedId ? "selected" : ""}>${item.nome}</option>`);
+  });
+  return options.join("");
+}
+
+function selectedUnitId() {
+  return wizardUnitSelect?.value || liveContext?.site_id || currentPayload?.unidade_id || setupOperation.unidades?.[0]?.id || "";
+}
+
+function selectedAreaId() {
+  return wizardAreaSelect?.value || liveContext?.area_id || "";
+}
+
+function selectedProcessId() {
+  return wizardProcessSelect?.value || liveContext?.process_id || "";
+}
+
+function selectedAssetId() {
+  return wizardAssetSelect?.value || liveContext?.asset_id || "";
+}
+
+function contextItems() {
+  const unitId = selectedUnitId();
+  const areaId = selectedAreaId();
+  const processId = selectedProcessId();
+  return {
+    units: setupOperation.unidades || [],
+    areas: (setupOperation.areas || []).filter((area) => !unitId || area.unidade_id === unitId),
+    processes: (setupOperation.processes || []).filter((process) => {
+      if (unitId && process.unidade_id !== unitId) return false;
+      return !areaId || !process.area_id || process.area_id === areaId;
+    }),
+    assets: (setupOperation.assets || []).filter((asset) => {
+      if (unitId && asset.unidade_id !== unitId) return false;
+      if (areaId && asset.area_id && asset.area_id !== areaId) return false;
+      return !processId || !asset.process_id || asset.process_id === processId;
+    }),
+  };
+}
+
+async function loadSetupOperation() {
+  try {
+    setupOperation = await requestJson("/setup/operation");
+    renderWizardContextOptions();
+  } catch (error) {
+    if (wizardContextStatus) wizardContextStatus.textContent = `Contexto indisponível: ${error.message}`;
+  }
+}
+
+function renderWizardContextOptions() {
+  if (!wizardUnitSelect) return;
+  const items = contextItems();
+  wizardUnitSelect.innerHTML = optionHtml(items.units, selectedUnitId(), "Selecione a unidade");
+  wizardAreaSelect.innerHTML = optionHtml(items.areas, selectedAreaId(), "Selecione ou crie uma área");
+  wizardProcessSelect.innerHTML = optionHtml(items.processes, selectedProcessId(), "Selecione ou crie um processo");
+  wizardAssetSelect.innerHTML = optionHtml(items.assets, selectedAssetId(), "Selecione ou crie um ativo");
+  const assetName = wizardAssetSelect.selectedOptions?.[0]?.textContent || liveContext?.asset_name || "";
+  if (assetName && !wizardMachineName.value) wizardMachineName.value = assetName;
+}
+
+function syncWizardInputsFromMachine(machine) {
+  if (!machine) return;
+  if (wizardMachineName) wizardMachineName.value = machine.nome || "";
+  if (wizardStopSeconds) wizardStopSeconds.value = machine.stop_seconds ?? 10;
+  if (wizardAbsenceSeconds) wizardAbsenceSeconds.value = machine.operator_absence_seconds ?? 5;
+  if (wizardStoppedOperatorSeconds) wizardStoppedOperatorSeconds.value = machine.stopped_with_operator_seconds ?? 5;
+}
+
+function expandedPolygon(points, margin = 0.08) {
+  if (!points?.length) return [];
+  const xs = points.map((point) => Number(point.x));
+  const ys = points.map((point) => Number(point.y));
+  return [
+    { x: Math.max(0, Math.min(...xs) - margin), y: Math.max(0, Math.min(...ys) - margin) },
+    { x: Math.min(1, Math.max(...xs) + margin), y: Math.max(0, Math.min(...ys) - margin) },
+    { x: Math.min(1, Math.max(...xs) + margin), y: Math.min(1, Math.max(...ys) + margin) },
+    { x: Math.max(0, Math.min(...xs) - margin), y: Math.min(1, Math.max(...ys) + margin) },
+  ];
+}
+
+function zoneStatusText() {
+  const machineRegion = zoneByType("machine_region");
+  const operatorZone = zoneByType("operator_zone") || zoneByType("workstation");
+  const pieces = [];
+  pieces.push(machineRegion ? "Região da máquina configurada ✓" : "Região da máquina pendente");
+  pieces.push(operatorZone ? "Zona do operador configurada ✓" : "Zona do operador pendente");
+  return pieces.join(" · ");
+}
+
+function monitorReadyRequirements() {
+  const machine = currentMachine();
+  const machineRegion = zoneByType("machine_region");
+  const operatorZone = zoneByType("operator_zone") || zoneByType("workstation");
+  const needsStoppage = capabilityStoppage?.checked !== false;
+  const needsAbsence = capabilityAbsence?.checked === true;
+  const contextOk = Boolean(liveContext?.asset_id || selectedAssetId());
+  const regionOk = !needsStoppage || Boolean(machineRegion);
+  const operatorOk = !needsAbsence || Boolean(operatorZone);
+  const monitorOk = Boolean(machine);
+  const calibrated = !needsStoppage || machine?.calibration_result === "READY";
+  return { machine, machineRegion, operatorZone, needsStoppage, needsAbsence, contextOk, regionOk, operatorOk, monitorOk, calibrated };
+}
+
+function updateWizardState() {
+  if (!monitorWizardBody) return;
+  const req = monitorReadyRequirements();
+  const configured = req.contextOk && req.regionOk && req.operatorOk && req.monitorOk;
+  if (wizardSummary) {
+    wizardSummary.textContent = configured
+      ? "Configuração salva. Revise calibração e ativação quando necessário."
+      : "Complete contexto, regiões e monitoramento para ativar esta câmera.";
+  }
+  if (wizardContextStatus) {
+    wizardContextStatus.textContent = req.contextOk
+      ? `${liveContext?.path_label || "Contexto salvo"} · ${liveContext?.primary_label || selectedAssetId()}`
+      : "Selecione ou crie área, processo e ativo para esta câmera.";
+  }
+  if (wizardRegionStatus) wizardRegionStatus.textContent = zoneStatusText();
+  if (wizardMonitorStatus) {
+    wizardMonitorStatus.textContent = req.monitorOk
+      ? `Monitoramento salvo: ${req.machine.nome} (${req.machine.id})`
+      : "Monitor ainda não criado.";
+  }
+  if (wizardCalibrationStatus && req.machine) {
+    wizardCalibrationStatus.textContent = `Calibração: ${req.machine.calibration_result || req.machine.calibration_status || "pendente"}`;
+  }
+  const canActivate = req.contextOk && req.regionOk && req.operatorOk && req.monitorOk && req.calibrated;
+  if (activateMonitorWizard) activateMonitorWizard.disabled = !canActivate;
+  if (wizardReadyStatus) {
+    wizardReadyStatus.textContent = canActivate
+      ? "Pronto para ativar monitoramento."
+      : "Aguardando requisitos reais.";
+  }
+  if (wizardActivationStatus) {
+    if (!req.contextOk) wizardActivationStatus.textContent = "Pendente: contexto operacional.";
+    else if (!req.regionOk) wizardActivationStatus.textContent = "Pendente: região da máquina.";
+    else if (!req.operatorOk) wizardActivationStatus.textContent = "Pendente: zona do operador.";
+    else if (!req.monitorOk) wizardActivationStatus.textContent = "Pendente: salvar monitoramento.";
+    else if (!req.calibrated) wizardActivationStatus.textContent = "Pendente: calibração READY.";
+    else wizardActivationStatus.textContent = "Campex pronta para monitorar este ativo.";
+  }
 }
 
 function liveEventLabel(event) {
@@ -378,8 +557,14 @@ function operatorLabel(ops) {
   if (ops.analysis_status && ops.analysis_status !== "ANALYZING" && !Number(ops.inference_frames || ops.frames_analyzed || 0)) {
     return "Dados indisponíveis";
   }
+  if (!hasOperatorContext(ops)) return "Indeterminado";
   if (ops.operator_present) return `Presente${ops.operator_people_count ? ` (${ops.operator_people_count})` : ""}`;
   return "Ausente";
+}
+
+function hasOperatorContext(ops) {
+  if (ops?.machine?.operator_polygon?.length) return true;
+  return (ops?.zones || []).some((zone) => ["operator_zone", "workstation", "work_area"].includes(zone.tipo || zone.area_type));
 }
 
 function currentSituation(status, ops) {
@@ -391,7 +576,7 @@ function currentSituation(status, ops) {
   const state = ops.machine_state || "";
   if (!state || state === "NAO_CONFIGURADA" || state === "UNKNOWN") return "Aguardando configuração";
   if (state === "STOPPED" || state === "PARADA") return "Máquina parada";
-  if ((state === "ACTIVE" || state === "ATIVA") && !ops.operator_present) return "Máquina ativa sem operador";
+  if ((state === "ACTIVE" || state === "ATIVA") && hasOperatorContext(ops) && !ops.operator_present) return "Máquina ativa sem operador";
   return "Operação normal";
 }
 
@@ -555,6 +740,7 @@ async function startLiveView() {
   }
   currentPayload = payload;
   currentCameraId = payload.camera_id || null;
+  await loadSetupOperation();
   await loadPersistedZones();
   await loadMachines();
   await loadRecentLiveEvents();
@@ -631,10 +817,12 @@ function renderMachines() {
     if (machineStopSecondsInput) machineStopSecondsInput.value = selected.stop_seconds ?? 10;
     if (operatorAbsenceSecondsInput) operatorAbsenceSecondsInput.value = selected.operator_absence_seconds ?? 5;
     if (stoppedWithOperatorSecondsInput) stoppedWithOperatorSecondsInput.value = selected.stopped_with_operator_seconds ?? 5;
+    syncWizardInputsFromMachine(selected);
   }
   updateMachineRegionStatus();
   renderCalibrationFromMachine(selected);
   updateMonitorConfigCard();
+  updateWizardState();
 }
 
 function secondsFromInput(input, fallback) {
@@ -656,6 +844,7 @@ function updateMachineRegionStatus() {
   machineRegionStatus.textContent = machineRegion
     ? `Região da máquina salva (${machineRegion.id})`
     : "Região da máquina ausente. Crie uma zona machine_region antes de calibrar.";
+  if (wizardRegionStatus) wizardRegionStatus.textContent = zoneStatusText();
 }
 
 function renderCalibrationFromMachine(machine) {
@@ -709,7 +898,7 @@ function renderZoneList() {
   `).join("");
 }
 
-function startZoneEditor(zone) {
+function startZoneEditor(zone, preset = {}) {
   if (!sessionId) return;
   drawMode = "zone";
   editingZoneId = zone?.id || null;
@@ -717,12 +906,12 @@ function startZoneEditor(zone) {
   liveViewStage.classList.add("drawing");
   configureRestrictedArea.classList.add("active");
   drawToolbar.hidden = false;
-  zoneTypeInput.value = zone?.tipo || "work_area";
-  zoneNameInput.value = zone?.nome || (zone ? "" : "Área de corte A6");
-  zoneSecondsInput.value = zone?.absence_tolerance_seconds ?? zone?.dwell_limit_seconds ?? 20;
-  drawToolbarTitle.textContent = editingZoneId ? "Editar zona" : "Nova zona";
-  drawToolbarHint.textContent = "Escolha tipo/nome, clique no vídeo para adicionar pontos e salve.";
-  liveViewHint.textContent = editingZoneId ? `Editando zona ${editingZoneId}.` : "Modo ativo: desenhe uma nova zona.";
+  zoneTypeInput.value = zone?.tipo || preset.type || "work_area";
+  zoneNameInput.value = zone?.nome || preset.name || (zone ? "" : "Área de corte A6");
+  zoneSecondsInput.value = zone?.absence_tolerance_seconds ?? zone?.dwell_limit_seconds ?? preset.seconds ?? 20;
+  drawToolbarTitle.textContent = editingZoneId ? "Editar zona" : preset.title || "Nova zona";
+  drawToolbarHint.textContent = preset.hint || "Escolha tipo/nome, clique no vídeo para adicionar pontos e salve.";
+  liveViewHint.textContent = editingZoneId ? `Editando zona ${editingZoneId}.` : preset.message || "Modo ativo: desenhe uma nova zona.";
   drawCanvas();
 }
 
@@ -795,10 +984,191 @@ async function finishZoneDrawing() {
     }
     cancelDrawing();
     liveViewHint.textContent = `Zona salva com sucesso. ID persistente: ${saved.id}`;
+    updateWizardState();
   } catch (error) {
     liveViewHint.textContent = `Não foi possível salvar a zona. A configuração não foi alterada. ${error.message}`;
   } finally {
     saveDraw.disabled = false;
+  }
+}
+
+async function ensureSetupRecord(kind, payload) {
+  const endpoints = {
+    area: "/setup/areas",
+    process: "/setup/processes",
+    asset: "/setup/assets",
+  };
+  return requestJson(endpoints[kind], {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+async function saveWizardContext() {
+  if (!currentCameraId) {
+    wizardContextStatus.textContent = "Abra uma câmera cadastrada para salvar contexto.";
+    return;
+  }
+  const unitId = selectedUnitId();
+  if (!unitId) {
+    wizardContextStatus.textContent = "Selecione uma unidade.";
+    return;
+  }
+  saveOperationalContext.disabled = true;
+  wizardContextStatus.textContent = "Salvando contexto operacional...";
+  try {
+    let areaId = selectedAreaId();
+    if (!areaId && wizardAreaName.value.trim()) {
+      const area = await ensureSetupRecord("area", {
+        unidade_id: unitId,
+        nome: wizardAreaName.value.trim(),
+        tipo: "production_area",
+      });
+      areaId = area.id;
+    }
+    let processId = selectedProcessId();
+    if (!processId && wizardProcessName.value.trim()) {
+      const process = await ensureSetupRecord("process", {
+        unidade_id: unitId,
+        area_id: areaId || null,
+        nome: wizardProcessName.value.trim(),
+        tipo: "station",
+      });
+      processId = process.id;
+    }
+    let assetId = selectedAssetId();
+    if (!assetId && wizardAssetName.value.trim()) {
+      const asset = await ensureSetupRecord("asset", {
+        unidade_id: unitId,
+        area_id: areaId || null,
+        process_id: processId || null,
+        nome: wizardAssetName.value.trim(),
+        tipo: "machine",
+      });
+      assetId = asset.id;
+    }
+    if (!assetId && !processId && !areaId) {
+      throw new Error("Crie ou selecione pelo menos uma área, processo ou ativo.");
+    }
+    await requestJson(`/setup/cameras/${currentCameraId}/context`, {
+      method: "POST",
+      body: JSON.stringify({
+        area_context_id: areaId || null,
+        process_id: processId || null,
+        asset_id: assetId || null,
+      }),
+    });
+    await loadSetupOperation();
+    wizardAreaName.value = "";
+    wizardProcessName.value = "";
+    wizardAssetName.value = "";
+    wizardContextStatus.textContent = "Contexto salvo ✓";
+    await pollStatus();
+  } catch (error) {
+    wizardContextStatus.textContent = `Não foi possível salvar contexto: ${error.message}`;
+  } finally {
+    saveOperationalContext.disabled = false;
+    updateWizardState();
+  }
+}
+
+function startMachineRegionWizard() {
+  startZoneEditor(zoneByType("machine_region"), {
+    type: "machine_region",
+    name: "Região da máquina",
+    title: "Região da máquina",
+    hint: "Desenhe a parte da imagem que representa o funcionamento da máquina.",
+    message: "Clique no vídeo para desenhar a região da máquina.",
+  });
+}
+
+function startOperatorZoneWizard() {
+  startZoneEditor(zoneByType("operator_zone") || zoneByType("workstation"), {
+    type: "operator_zone",
+    name: "Zona do operador",
+    title: "Zona do operador",
+    hint: "Desenhe a área onde normalmente deve existir um operador.",
+    message: "Clique no vídeo para desenhar a zona do operador.",
+    seconds: secondsFromInput(wizardAbsenceSeconds, 5),
+  });
+}
+
+async function saveWizardMonitor() {
+  if (!currentCameraId) {
+    wizardMonitorStatus.textContent = "Abra uma câmera cadastrada antes de salvar monitoramento.";
+    return;
+  }
+  const machineRegion = zoneByType("machine_region");
+  const operatorZone = zoneByType("operator_zone") || zoneByType("workstation");
+  const needsStoppage = capabilityStoppage.checked;
+  const needsAbsence = capabilityAbsence.checked;
+  if (needsStoppage && !machineRegion) {
+    wizardMonitorStatus.textContent = "Desenhe e salve a região da máquina antes de continuar.";
+    return;
+  }
+  if (needsAbsence && !operatorZone) {
+    wizardMonitorStatus.textContent = "Desenhe e salve a zona do operador antes de continuar.";
+    return;
+  }
+  const machinePolygon = machineRegion?.pontos || operatorZone?.pontos;
+  if (!machinePolygon?.length) {
+    wizardMonitorStatus.textContent = "Configure pelo menos uma região para o monitoramento.";
+    return;
+  }
+  const operatorPolygon = operatorZone?.pontos || expandedPolygon(machinePolygon);
+  const name = wizardMachineName.value.trim() || liveContext?.asset_name || machineNameInput.value.trim() || "Ativo monitorado";
+  saveMonitorWizard.disabled = true;
+  wizardMonitorStatus.textContent = "Salvando monitoramento...";
+  try {
+    const payload = {
+      nome: name,
+      machine_polygon: machinePolygon,
+      operator_polygon: operatorPolygon,
+      ativo: true,
+      stop_seconds: secondsFromInput(wizardStopSeconds, 10),
+      recovery_seconds: 3,
+      operator_absence_seconds: secondsFromInput(wizardAbsenceSeconds, 5),
+      stopped_with_operator_seconds: secondsFromInput(wizardStoppedOperatorSeconds, 5),
+    };
+    const machine = currentMachine();
+    const saved = await requestJson(machine ? `/machine-monitors/${machine.id}` : `/cameras/${currentCameraId}/machine-monitors`, {
+      method: machine ? "PATCH" : "POST",
+      body: JSON.stringify(payload),
+    });
+    selectedMachineId = saved.id;
+    machineNameInput.value = name;
+    machineStopSecondsInput.value = payload.stop_seconds;
+    operatorAbsenceSecondsInput.value = payload.operator_absence_seconds;
+    stoppedWithOperatorSecondsInput.value = payload.stopped_with_operator_seconds;
+    await loadPersistedZones();
+    await loadMachines();
+    wizardMonitorStatus.textContent = `Monitoramento salvo ✓ ${saved.id}`;
+    liveViewHint.textContent = "Monitoramento salvo. Calibre a máquina para ativar com confiança.";
+  } catch (error) {
+    wizardMonitorStatus.textContent = `Não foi possível salvar monitoramento: ${error.message}`;
+  } finally {
+    saveMonitorWizard.disabled = false;
+    updateWizardState();
+  }
+}
+
+async function activateWizardMonitor() {
+  if (!selectedMachineId) {
+    wizardActivationStatus.textContent = "Salve o monitoramento antes de ativar.";
+    return;
+  }
+  try {
+    activateMonitorWizard.disabled = true;
+    wizardActivationStatus.textContent = "Ativando monitoramento...";
+    await requestJson(`/machine-monitors/${selectedMachineId}/activate`, { method: "POST" });
+    if (sessionId) await requestJson(`/live-view/${sessionId}/ai/start`, { method: "POST" });
+    await loadMachines();
+    wizardActivationStatus.textContent = "Campex monitorando este ativo ✓";
+    liveViewSituation.textContent = "Monitorando";
+  } catch (error) {
+    wizardActivationStatus.textContent = `Não foi possível ativar: ${error.message}`;
+  } finally {
+    updateWizardState();
   }
 }
 
@@ -810,6 +1180,57 @@ liveAiStart.addEventListener("click", () => {
 liveAiStop.addEventListener("click", () => {
   if (!sessionId) return;
   requestJson(`/live-view/${sessionId}/ai/stop`, { method: "POST" }).then((ops) => renderStatus({ status: "online", ops })).catch((error) => setStatus("offline", error.message));
+});
+
+openMonitorWizard?.addEventListener("click", () => {
+  monitorWizardBody.hidden = !monitorWizardBody.hidden;
+  if (!monitorWizardBody.hidden) {
+    loadSetupOperation().then(() => updateWizardState());
+    monitorConfigCard?.closest("details")?.setAttribute("open", "open");
+  }
+});
+
+[wizardUnitSelect, wizardAreaSelect, wizardProcessSelect].forEach((select) => {
+  select?.addEventListener("change", () => {
+    renderWizardContextOptions();
+    updateWizardState();
+  });
+});
+
+wizardAssetSelect?.addEventListener("change", () => {
+  const label = wizardAssetSelect.selectedOptions?.[0]?.textContent || "";
+  if (label) {
+    wizardMachineName.value = label;
+    machineNameInput.value = label;
+  }
+  updateWizardState();
+});
+
+[capabilityStoppage, capabilityAbsence].forEach((checkbox) => {
+  checkbox?.addEventListener("change", updateWizardState);
+});
+
+saveOperationalContext?.addEventListener("click", () => {
+  saveWizardContext().catch((error) => {
+    wizardContextStatus.textContent = `Erro ao salvar contexto: ${error.message}`;
+  });
+});
+
+drawMachineRegion?.addEventListener("click", startMachineRegionWizard);
+drawOperatorZone?.addEventListener("click", startOperatorZoneWizard);
+
+saveMonitorWizard?.addEventListener("click", () => {
+  saveWizardMonitor().catch((error) => {
+    wizardMonitorStatus.textContent = `Erro ao salvar monitoramento: ${error.message}`;
+  });
+});
+
+wizardCalibrateActive?.addEventListener("click", () => startAssistedCalibration("active"));
+wizardCalibrateStopped?.addEventListener("click", () => startAssistedCalibration("stopped"));
+activateMonitorWizard?.addEventListener("click", () => {
+  activateWizardMonitor().catch((error) => {
+    wizardActivationStatus.textContent = `Erro ao ativar: ${error.message}`;
+  });
 });
 
 configureRestrictedArea.addEventListener("click", () => {
@@ -911,11 +1332,12 @@ createMachineMonitor.addEventListener("click", async () => {
   }
   const machineRegion = zoneByType("machine_region");
   const operatorZone = zoneByType("operator_zone") || zoneByType("workstation");
+  const needsAbsence = capabilityAbsence?.checked !== false;
   if (!machineRegion) {
     calibrationStatus.textContent = "Crie e salve uma machine_region antes de cadastrar a máquina.";
     return;
   }
-  if (!operatorZone) {
+  if (needsAbsence && !operatorZone) {
     calibrationStatus.textContent = "Crie e salve uma operator_zone antes de cadastrar a máquina.";
     return;
   }
@@ -929,7 +1351,7 @@ createMachineMonitor.addEventListener("click", async () => {
     const payload = {
       nome,
       machine_polygon: machineRegion.pontos,
-      operator_polygon: operatorZone.pontos,
+      operator_polygon: operatorZone?.pontos || expandedPolygon(machineRegion.pontos),
       ativo: true,
       stop_seconds: stopSeconds,
       recovery_seconds: 3,

@@ -103,6 +103,18 @@ def test_live_v0_frontend_uses_context_and_hides_technical_priority() -> None:
     assert "liveCurrentEventLink" in view_script
     assert "Modo configuração" in view_html
     assert "Detalhes técnicos" in view_html
+    assert "Configurar monitoramento" in view_html
+    assert "Onde esta câmera está olhando?" in view_html
+    assert "Paradas / interrupções" in view_html
+    assert "Ausência de operador" in view_html
+    assert "/setup/operation" in view_script
+    assert "/setup/cameras/${currentCameraId}/context" in view_script
+    assert "startMachineRegionWizard" in view_script
+    assert "startOperatorZoneWizard" in view_script
+    assert "saveWizardMonitor" in view_script
+    assert "activateWizardMonitor" in view_script
+    assert "hasOperatorContext" in view_script
+    assert "Indeterminado" in view_script
 
 
 def test_live_grid_page_uses_live_v0_language() -> None:

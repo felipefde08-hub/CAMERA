@@ -153,6 +153,106 @@
             <strong>Último alerta</strong>
             <span id="liveLastAlert">Nenhum alerta entregue nesta sessão.</span>
           </section>
+          <section id="monitorWizard" class="zone-card live-monitor-wizard">
+            <div class="cx-panel-head">
+              <div>
+                <strong>Configurar monitoramento</strong>
+                <span id="wizardSummary">Guie a Campex para entender este ponto da operação.</span>
+              </div>
+            </div>
+            <button type="button" id="openMonitorWizard" class="primary">Configurar monitoramento</button>
+            <div id="monitorWizardBody" class="live-wizard-body" hidden>
+              <div class="live-wizard-step">
+                <small>1. Contexto operacional</small>
+                <strong>Onde esta câmera está olhando?</strong>
+                <label>
+                  Unidade
+                  <select id="wizardUnitSelect"></select>
+                </label>
+                <label>
+                  Nova área
+                  <input id="wizardAreaName" placeholder="Ex.: Corte" />
+                </label>
+                <label>
+                  Área
+                  <select id="wizardAreaSelect"></select>
+                </label>
+                <label>
+                  Novo processo/estação
+                  <input id="wizardProcessName" placeholder="Ex.: Linha A6" />
+                </label>
+                <label>
+                  Processo/Estação
+                  <select id="wizardProcessSelect"></select>
+                </label>
+                <label>
+                  Novo ativo/máquina/posto
+                  <input id="wizardAssetName" placeholder="Ex.: A6" />
+                </label>
+                <label>
+                  Ativo/Máquina/Posto
+                  <select id="wizardAssetSelect"></select>
+                </label>
+                <button type="button" id="saveOperationalContext">Salvar contexto</button>
+                <span id="wizardContextStatus">Contexto ainda não salvo.</span>
+              </div>
+              <div class="live-wizard-step">
+                <small>2. O que observar</small>
+                <strong>Capacidades disponíveis nesta versão</strong>
+                <label class="cx-check-row">
+                  <input id="capabilityStoppage" type="checkbox" checked />
+                  Paradas / interrupções
+                </label>
+                <label class="cx-check-row">
+                  <input id="capabilityAbsence" type="checkbox" checked />
+                  Ausência de operador
+                </label>
+              </div>
+              <div class="live-wizard-step">
+                <small>3. Regiões</small>
+                <strong>Desenhe as áreas sobre o vídeo</strong>
+                <button type="button" id="drawMachineRegion">Desenhar região da máquina</button>
+                <button type="button" id="drawOperatorZone">Desenhar zona do operador</button>
+                <span id="wizardRegionStatus">Regiões ainda pendentes.</span>
+              </div>
+              <div class="live-wizard-step">
+                <small>4. Monitoramento</small>
+                <strong>Parâmetros humanos</strong>
+                <label>
+                  Nome do ativo monitorado
+                  <input id="wizardMachineName" placeholder="Ex.: A6" />
+                </label>
+                <label>
+                  Considerar parada após (s)
+                  <input id="wizardStopSeconds" type="number" min="1" step="1" value="10" />
+                </label>
+                <label>
+                  Considerar ausência após (s)
+                  <input id="wizardAbsenceSeconds" type="number" min="1" step="1" value="5" />
+                </label>
+                <label>
+                  Parada com operador após (s)
+                  <input id="wizardStoppedOperatorSeconds" type="number" min="1" step="1" value="5" />
+                </label>
+                <button type="button" id="saveMonitorWizard">Salvar monitoramento</button>
+                <span id="wizardMonitorStatus">Monitor ainda não criado.</span>
+              </div>
+              <div class="live-wizard-step">
+                <small>5. Calibração</small>
+                <strong>Calibrar máquina</strong>
+                <p class="muted">Use a máquina funcionando e depois parada. A Campex captura frames reais da câmera.</p>
+                <button type="button" id="wizardCalibrateActive">Calibrar funcionamento</button>
+                <button type="button" id="wizardCalibrateStopped">Calibrar parada</button>
+                <span id="wizardCalibrationStatus">Calibração pendente.</span>
+              </div>
+              <div class="live-wizard-step">
+                <small>6. Ativar</small>
+                <strong id="wizardReadyStatus">Aguardando requisitos.</strong>
+                <button type="button" id="activateMonitorWizard" disabled>Ativar monitoramento</button>
+                <span id="wizardActivationStatus">Complete as etapas acima.</span>
+              </div>
+            </div>
+          </section>
           <section id="liveCriticalAlert" class="live-critical-alert" hidden>
             <strong>Operador fora da zona</strong>
             <span id="liveCriticalCamera">Câmera: —</span>
