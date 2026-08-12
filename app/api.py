@@ -20,8 +20,11 @@ from app.analytics import aggregate_period, compute_summary, current_period_rang
 from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, get_request_user, require_role, require_user, tenant_filter, update_user_password, users_exist
 from app.config import ROOT
 from app.database import connect, init_db
-from app.event_workflow import acknowledge_event, event_detail, resolve_event, update_human_context
+from app.event_workflow import acknowledge_event, event_detail, resolve_event, update_human_context, update_operational_memory
+from app.context_engine import ContextPackAccessError, ContextPackNotFoundError, build_context_pack
+from app.intelligence_reasoning import ReasoningEngine, ReasoningError, reasoning_error_response
 from app.live_stream import LiveStreamManager
+from app.recommendation_engine import RecommendationEngine, RecommendationError, recommendation_error_response
 from app.operational_read_model import (
     ReadModelFilters,
     comparison as read_model_comparison,
@@ -483,6 +486,16 @@ class EventHumanContextIn(BaseModel):
 class EventResolveIn(BaseModel):
     confirmed_cause: Optional[str] = None
     action_taken: Optional[str] = None
+    human_notes: Optional[str] = None
+
+
+class EventOperationalMemoryIn(BaseModel):
+    confirmed_cause: Optional[str] = None
+    action_taken: Optional[str] = None
+    recommendation_id: Optional[str] = None
+    recommendation_accepted: Optional[bool] = None
+    outcome_status: Optional[str] = None
+    outcome_notes: Optional[str] = None
     human_notes: Optional[str] = None
 
 
@@ -3053,6 +3066,60 @@ def get_evento_detail(evento_id: str, request: Request) -> dict[str, Any]:
         return event
 
 
+@api.get("/events/{event_uuid}/context")
+def get_event_context(event_uuid: str, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        try:
+            return build_context_pack(connection, event_uuid, tenant_id=tenant_filter(user))
+        except ContextPackNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.") from exc
+        except ContextPackAccessError as exc:
+            raise HTTPException(status_code=403, detail="Evento de outro cliente.") from exc
+
+
+@api.post("/events/{event_uuid}/reason")
+def post_event_reason(event_uuid: str, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        try:
+            context_pack = build_context_pack(connection, event_uuid, tenant_id=tenant_filter(user))
+        except ContextPackNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.") from exc
+        except ContextPackAccessError as exc:
+            raise HTTPException(status_code=403, detail="Evento de outro cliente.") from exc
+    try:
+        return ReasoningEngine().reason(context_pack)
+    except ReasoningError as exc:
+        status_code = 503 if exc.code in {"AI_NOT_CONFIGURED", "AI_UNAVAILABLE"} else 502
+        raise HTTPException(status_code=status_code, detail=reasoning_error_response(exc)) from exc
+
+
+@api.post("/events/{event_uuid}/recommend")
+def post_event_recommend(event_uuid: str, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        try:
+            context_pack = build_context_pack(connection, event_uuid, tenant_id=tenant_filter(user))
+        except ContextPackNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.") from exc
+        except ContextPackAccessError as exc:
+            raise HTTPException(status_code=403, detail="Evento de outro cliente.") from exc
+    try:
+        reasoning = ReasoningEngine().reason(context_pack)
+        recommendation = RecommendationEngine().recommend(context_pack, reasoning["reasoning"])
+    except ReasoningError as exc:
+        status_code = 503 if exc.code in {"AI_NOT_CONFIGURED", "AI_UNAVAILABLE"} else 502
+        raise HTTPException(status_code=status_code, detail=reasoning_error_response(exc)) from exc
+    except RecommendationError as exc:
+        status_code = 503 if exc.code in {"AI_NOT_CONFIGURED", "AI_UNAVAILABLE"} else 502
+        raise HTTPException(status_code=status_code, detail=recommendation_error_response(exc)) from exc
+    return {"status": "ok", "reasoning": reasoning, "recommendation": recommendation}
+
+
 @api.post("/eventos/{evento_id}/acknowledge")
 def post_evento_acknowledge(evento_id: str, payload: EventHumanContextIn, request: Request) -> dict[str, Any]:
     with connect() as connection:
@@ -3096,6 +3163,36 @@ def patch_evento_human_context(evento_id: str, payload: EventHumanContextIn, req
             human_notes=payload.human_notes,
             actor=user,
         )
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+        return event_detail(connection, evento_id) or updated
+
+
+@api.patch("/eventos/{evento_id}/memory")
+def patch_evento_operational_memory(evento_id: str, payload: EventOperationalMemoryIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        event = obter_evento(connection, evento_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+        if tenant_filter(user) and event.get("cliente_id") != tenant_filter(user):
+            raise HTTPException(status_code=403, detail="Evento de outro cliente.")
+        try:
+            updated = update_operational_memory(
+                connection,
+                evento_id,
+                actor=user,
+                confirmed_cause=payload.confirmed_cause,
+                action_taken=payload.action_taken,
+                recommendation_id=payload.recommendation_id,
+                recommendation_accepted=payload.recommendation_accepted,
+                outcome_status=payload.outcome_status,
+                outcome_notes=payload.outcome_notes,
+                human_notes=payload.human_notes,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         if updated is None:
             raise HTTPException(status_code=404, detail="Evento nao encontrado.")
         return event_detail(connection, evento_id) or updated
