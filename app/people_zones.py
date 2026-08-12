@@ -250,6 +250,19 @@ class PeopleZonesEngine:
             "zone_type": area.get("tipo"),
             "people_count": presence.pessoas_dentro,
             "collaborator_name": area.get("collaborator_name"),
+            "observation_provenance": {
+                "domain": "vision_v1",
+                "runtime": "PeopleZonesEngine",
+                "event_type": config.event_type,
+                "source_observations": ["zone_occupancy", "person_presence"],
+                "condition_started_monotonic": round(float(self._true_since.get((str(area["id"]), config.event_type), now)), 6),
+                "event_opened_monotonic": round(float(now), 6),
+                "zone_id": str(area["id"]),
+                "zone_type": area.get("tipo"),
+                "people_count": presence.pessoas_dentro,
+                "track_ids": ids,
+                "confidence": confidence,
+            },
         }
         try:
             with connect() as connection:
@@ -304,7 +317,10 @@ class PeopleZonesEngine:
             confidence=confidence,
             last_update_monotonic=now,
         )
-        enqueue_event_alert(event_id)
+        try:
+            enqueue_event_alert(event_id)
+        except Exception:
+            pass
 
     def _update_open(self, active: OpenZoneEvent, presence: AreaPresence, detections: list[Detection], now: float) -> None:
         ids = presence.ids_dentro or []

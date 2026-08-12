@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from dataclasses import dataclass
 from math import hypot
 from typing import Protocol
@@ -25,6 +26,49 @@ class Detection:
         return (self.x1 + self.x2) // 2, (self.y1 + self.y2) // 2
 
 
+@dataclass
+class PersonTrackState:
+    track_id: int
+    first_seen_at: float
+    last_seen_at: float
+    last_bbox: tuple[int, int, int, int]
+    last_confidence: float
+    class_name: str = "person"
+    zone_id: str | None = None
+    consecutive_seen: int = 1
+    consecutive_missed: int = 0
+    total_seen: int = 1
+    state: str = "PRESENT"
+    temporal_confidence: float = 0.0
+    last_update_at: float | None = None
+
+    @property
+    def center(self) -> tuple[int, int]:
+        x1, y1, x2, y2 = self.last_bbox
+        return (x1 + x2) // 2, (y1 + y2) // 2
+
+    @property
+    def duration_seen(self) -> float:
+        return max(0.0, self.last_seen_at - self.first_seen_at)
+
+    @property
+    def seconds_since_last_seen(self) -> float:
+        reference = self.last_update_at if self.last_update_at is not None else time.monotonic()
+        return max(0.0, reference - self.last_seen_at)
+
+    def to_detection(self) -> Detection:
+        x1, y1, x2, y2 = self.last_bbox
+        return Detection(
+            x1=x1,
+            y1=y1,
+            x2=x2,
+            y2=y2,
+            confidence=self.temporal_confidence,
+            class_name=self.class_name,
+            track_id=self.track_id,
+        )
+
+
 class PersonDetector(Protocol):
     model_name: str
 
@@ -39,6 +83,9 @@ YOLO_CLASS_IDS = {
     "bus": 5,
     "truck": 7,
 }
+
+SUPPORTED_VEHICLE_CLASSES = {"bicycle", "car", "motorcycle", "bus", "truck"}
+SPECIALIZED_MODEL_REQUIRED_CLASSES = {"forklift"}
 
 
 def requested_classes() -> list[str]:
@@ -85,20 +132,33 @@ class YoloPersonDetector:
 
 
 class CentroidTracker:
-    def __init__(self, max_distance: float = 80.0, max_missing: int = 10) -> None:
+    def __init__(
+        self,
+        max_distance: float = 80.0,
+        max_missing: int = 10,
+        grace_seconds: float | None = None,
+        unknown_seconds: float | None = None,
+    ) -> None:
         self.max_distance = max_distance
         self.max_missing = max_missing
+        self.grace_seconds = grace_seconds if grace_seconds is not None else float(os.getenv("CAMPEX_TRACK_GRACE_SECONDS", "2.0"))
+        self.unknown_seconds = unknown_seconds if unknown_seconds is not None else float(os.getenv("CAMPEX_TRACK_UNKNOWN_SECONDS", "5.0"))
         self._next_id = 1
         self._tracks: dict[int, tuple[int, int]] = {}
         self._missing: dict[int, int] = {}
+        self._states: dict[int, PersonTrackState] = {}
 
-    def update(self, detections: list[Detection]) -> list[Detection]:
+    def update(self, detections: list[Detection], now: float | None = None) -> list[Detection]:
+        now = time.monotonic() if now is None else now
         unmatched_tracks = set(self._tracks)
         for detection in detections:
             center = detection.center
             best_id = None
             best_distance = self.max_distance
             for track_id in list(unmatched_tracks):
+                state = self._states.get(track_id)
+                if state is not None and state.class_name != detection.class_name:
+                    continue
                 previous = self._tracks[track_id]
                 distance = hypot(center[0] - previous[0], center[1] - previous[1])
                 if distance < best_distance:
@@ -112,13 +172,73 @@ class CentroidTracker:
             detection.track_id = best_id
             self._tracks[best_id] = center
             self._missing[best_id] = 0
+            state = self._states.get(best_id)
+            bbox = (int(detection.x1), int(detection.y1), int(detection.x2), int(detection.y2))
+            if state is None:
+                state = PersonTrackState(
+                    track_id=best_id,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    last_bbox=bbox,
+                    last_confidence=float(detection.confidence),
+                    class_name=detection.class_name,
+                    temporal_confidence=float(detection.confidence),
+                    last_update_at=now,
+                )
+                self._states[best_id] = state
+            else:
+                state.last_seen_at = now
+                state.last_bbox = bbox
+                state.last_confidence = float(detection.confidence)
+                state.class_name = detection.class_name
+                state.consecutive_seen += 1
+                state.consecutive_missed = 0
+                state.total_seen += 1
+                state.state = "PRESENT"
+                state.temporal_confidence = float(detection.confidence)
+                state.last_update_at = now
 
         for track_id in unmatched_tracks:
             self._missing[track_id] = self._missing.get(track_id, 0) + 1
-            if self._missing[track_id] > self.max_missing:
+            state = self._states.get(track_id)
+            if state is not None:
+                state.consecutive_missed += 1
+                state.consecutive_seen = 0
+                state.last_update_at = now
+                age = state.seconds_since_last_seen
+                if age <= self.grace_seconds:
+                    state.state = "PRESENT"
+                    state.temporal_confidence = self._decayed_confidence(state.last_confidence, age)
+                else:
+                    state.state = "UNKNOWN"
+                    state.temporal_confidence = 0.0
+            if self._missing[track_id] > self.max_missing and (state is None or state.seconds_since_last_seen > self.unknown_seconds):
                 self._tracks.pop(track_id, None)
                 self._missing.pop(track_id, None)
+                self._states.pop(track_id, None)
         return detections
+
+    def active_tracks(self) -> list[PersonTrackState]:
+        return [state for state in self._states.values() if state.state == "PRESENT"]
+
+    def track_states(self) -> list[PersonTrackState]:
+        return list(self._states.values())
+
+    def recent_detections(self, *, include_inferred: bool = True) -> list[Detection]:
+        if not include_inferred:
+            return [state.to_detection() for state in self._states.values() if state.consecutive_missed == 0 and state.state == "PRESENT"]
+        return [state.to_detection() for state in self.active_tracks()]
+
+    def reset(self) -> None:
+        self._tracks.clear()
+        self._missing.clear()
+        self._states.clear()
+
+    def _decayed_confidence(self, base: float, age: float) -> float:
+        if self.grace_seconds <= 0:
+            return 0.0
+        factor = max(0.0, 1.0 - (age / self.grace_seconds) * 0.5)
+        return round(max(0.0, min(1.0, base * factor)), 4)
 
 
 class PersonAnalysisEngine:
@@ -139,14 +259,23 @@ class PersonAnalysisEngine:
         self.allowed_classes = set(getattr(self.detector, "class_names", requested_classes()))
         self.tracker = CentroidTracker()
         self.last_error: str | None = None
+        self.last_track_states: list[PersonTrackState] = []
 
     def analyze(self, frame: np.ndarray) -> list[Detection]:
         detections = self.detector.detect(frame)
         detections = [detection for detection in detections if detection.class_name in self.allowed_classes]
         if self.tracking_enabled:
             detections = self.tracker.update(detections)
+            self.last_track_states = self.tracker.track_states()
+        else:
+            self.last_track_states = []
         self.last_error = None
         return detections
+
+    def recent_detections(self) -> list[Detection]:
+        if not self.tracking_enabled:
+            return []
+        return self.tracker.recent_detections()
 
     def draw(self, frame: np.ndarray, detections: list[Detection]) -> np.ndarray:
         annotated = frame.copy()

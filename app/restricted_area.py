@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 
 import cv2
@@ -42,33 +43,38 @@ class AreaPresence:
 
 
 class AreaPresenceTracker:
-    def __init__(self, enter_frames: int = 2, exit_frames: int = 3) -> None:
+    def __init__(self, enter_frames: int = 2, exit_frames: int = 3, exit_grace_seconds: float = 2.0) -> None:
         self.enter_frames = enter_frames
         self.exit_frames = exit_frames
+        self.exit_grace_seconds = exit_grace_seconds
         self._inside_counts: dict[int, int] = {}
         self._outside_counts: dict[int, int] = {}
+        self._last_inside_at: dict[int, float] = {}
         self._stable_inside: set[int] = set()
 
-    def update(self, raw_inside_ids: set[int], visible_ids: set[int]) -> set[int]:
+    def update(self, raw_inside_ids: set[int], visible_ids: set[int], now: float | None = None) -> set[int]:
+        now = time.monotonic() if now is None else now
         for track_id in visible_ids:
             if track_id in raw_inside_ids:
                 self._inside_counts[track_id] = self._inside_counts.get(track_id, 0) + 1
                 self._outside_counts[track_id] = 0
+                self._last_inside_at[track_id] = now
                 if self._inside_counts[track_id] >= self.enter_frames:
                     self._stable_inside.add(track_id)
             else:
                 self._outside_counts[track_id] = self._outside_counts.get(track_id, 0) + 1
                 self._inside_counts[track_id] = 0
-                if self._outside_counts[track_id] >= self.exit_frames:
+                if self._outside_counts[track_id] >= self.exit_frames and now - self._last_inside_at.get(track_id, 0.0) > self.exit_grace_seconds:
                     self._stable_inside.discard(track_id)
 
         missing = set(self._inside_counts) - visible_ids
         for track_id in missing:
             self._outside_counts[track_id] = self._outside_counts.get(track_id, 0) + 1
-            if self._outside_counts[track_id] >= self.exit_frames:
+            if self._outside_counts[track_id] >= self.exit_frames and now - self._last_inside_at.get(track_id, 0.0) > self.exit_grace_seconds:
                 self._stable_inside.discard(track_id)
                 self._inside_counts.pop(track_id, None)
                 self._outside_counts.pop(track_id, None)
+                self._last_inside_at.pop(track_id, None)
         return set(self._stable_inside)
 
 

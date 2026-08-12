@@ -15,7 +15,7 @@ from edge_agent.camera_connector import CameraSource, UniversalCameraConnector, 
 from app.person_detection import Detection, PersonAnalysisEngine
 from app.incidents import IncidentManager
 from app.people_zones import PeopleZonesEngine
-from app.machine_monitoring import MachineMonitorEngine, config_from_dict, draw_machine_overlay, machine_activity_score
+from app.machine_monitoring import MachineMonitorEngine, config_from_dict, draw_machine_overlay, machine_activity_score, machine_calibration_separation
 from app.models import atualizar_machine_monitor, listar_areas_ativas_camera, listar_machine_monitors_ativos_camera, registrar_machine_calibration
 from app.operations_history import OperationsRecorder
 from app.observation_engine import ObservationEngine
@@ -106,6 +106,7 @@ class LiveCameraStream:
         self._analysis_enabled = False
         self._analysis_engine: PersonAnalysisEngine | None = None
         self._last_detections: list[Detection] = []
+        self._last_temporal_detections: list[Detection] = []
         self._last_analysis_seconds = 0.0
         self._analysis_frames = 0
         self._analysis_started = time.monotonic()
@@ -288,7 +289,7 @@ class LiveCameraStream:
                 "invalid_frames": 0,
                 "region": region,
                 "previous_gray": None,
-                "algorithm_version": "frame-diff-roi-v1",
+                "algorithm_version": "frame-diff-roi-temporal-v1",
                 "result": None,
                 "error": None,
             }
@@ -376,17 +377,17 @@ class LiveCameraStream:
                     monitor_id,
                     motion_threshold=separation.get("threshold"),
                     calibration_status="calibrated" if separation["result"] == "READY" else "calibration_needs_review",
-                    running_motion=active_calibration.get("mean") if active_calibration else None,
-                    stopped_motion=stopped_calibration.get("mean") if stopped_calibration else None,
-                    active_baseline=active_calibration.get("mean") if active_calibration else None,
-                    stopped_baseline=stopped_calibration.get("mean") if stopped_calibration else None,
+                    running_motion=active_calibration.get("median") if active_calibration else None,
+                    stopped_motion=stopped_calibration.get("median") if stopped_calibration else None,
+                    active_baseline=active_calibration.get("median") if active_calibration else None,
+                    stopped_baseline=stopped_calibration.get("median") if stopped_calibration else None,
                     active_noise=active_calibration.get("std") if active_calibration else None,
                     stopped_noise=stopped_calibration.get("std") if stopped_calibration else None,
                     active_calibration=active_calibration if phase == "active" else None,
                     stopped_calibration=stopped_calibration if phase == "stopped" else None,
                     separation_score=separation.get("score"),
                     calibration_result=separation["result"],
-                    calibration_algorithm_version=algorithm,
+                    calibration_algorithm_version="frame-diff-roi-temporal-v1",
                 )
                 self._machine_engines.pop(monitor_id, None)
         except Exception as exc:
@@ -477,6 +478,7 @@ class LiveCameraStream:
             try:
                 detections = engine.analyze(frame)
                 self._last_detections = detections
+                self._last_temporal_detections = engine.recent_detections() or detections
                 self._last_analysis_seconds = now
                 self._analysis_frames += 1
                 elapsed = max(0.001, now - self._analysis_started)
@@ -494,7 +496,8 @@ class LiveCameraStream:
                     self.status.analysis_error = str(exc)
                 return frame
         height, width = frame.shape[:2]
-        presence, inside_ids = evaluate_area(area, self._last_detections, width, height, self._area_presence_tracker)
+        temporal_detections = self._last_temporal_detections or self._last_detections
+        presence, inside_ids = evaluate_area(area, temporal_detections, width, height, self._area_presence_tracker)
         with self._lock:
             self.status.area_id = presence.area_id
             self.status.area_nome = presence.area_nome
@@ -503,7 +506,7 @@ class LiveCameraStream:
             self.status.ids_na_area = presence.ids_dentro or []
         machine_engines = self._load_machine_engines()
         if areas:
-            output, people_zones = self._people_zones.update(areas, self._last_detections, frame)
+            output, people_zones = self._people_zones.update(areas, temporal_detections, frame)
             output = self._update_machines(output, machine_engines, presence, people_zones.get("zones") or [])
             with self._lock:
                 self.status.zones = people_zones.get("zones") or []
@@ -515,8 +518,8 @@ class LiveCameraStream:
                 self.status.incident_people = int(first_active.get("current_people") or 0) if first_active else 0
             self._evaluate_rules(output, area_presence=presence)
             return output
-        self._people_zones.update([], self._last_detections, frame)
-        output = engine.draw(frame, self._last_detections)
+        self._people_zones.update([], temporal_detections, frame)
+        output = engine.draw(frame, temporal_detections)
         output = self._update_machines(output, machine_engines, presence)
         self._evaluate_rules(output, area_presence=presence)
         return output
@@ -583,6 +586,7 @@ class LiveCameraStream:
                 machine_state = "ACTIVE" if state.state == "ACTIVE" else "STOPPED" if state.state == "STOPPED" else "UNKNOWN"
                 if area_presence and not zone_states:
                     zone_states.append({**area_presence.to_dict(), "tipo": "restricted_zone"})
+                monitor_public = getattr(engine, "_monitor_public", {}) or {}
                 observation = self._observation_engine.build(
                     machine_id=engine.config.id,
                     machine_state=machine_state,
@@ -590,6 +594,17 @@ class LiveCameraStream:
                     machine_confidence=state.confidence,
                     operator_present=state.operator_present,
                     zone_states=zone_states or [],
+                    cliente_id=engine.config.client_id,
+                    unidade_id=engine.config.unit_id,
+                    area_id=monitor_public.get("area_context_id"),
+                    process_id=monitor_public.get("process_id"),
+                    asset_id=monitor_public.get("asset_id"),
+                    camera_online=self.status.status == "online",
+                    inference_available=self.status.ai_status == "ativa",
+                    operator_absence_tolerance_seconds=engine.config.operator_absence_seconds,
+                    detections=self._last_temporal_detections or self._last_detections,
+                    frame_width=output.shape[1],
+                    frame_height=output.shape[0],
                 )
                 with self._lock:
                     self.status.machine_state = state.state
@@ -608,7 +623,6 @@ class LiveCameraStream:
                     self.status.machine_roi_height = state.roi_height
                     self.status.observation = observation
                     self.status.machine_seconds_in_state = observation.get("seconds_in_machine_state")
-                    monitor_public = getattr(engine, "_monitor_public", {}) or {}
                     self.status.calibration = {
                         "machine_monitor_id": engine.config.id,
                         "active_baseline": engine.config.active_baseline,
@@ -772,30 +786,10 @@ def calibration_stats(samples: list[float]) -> dict[str, object]:
 
 
 def calibration_separation(active: dict[str, object] | None, stopped: dict[str, object] | None) -> dict[str, object]:
-    if not active or not stopped:
-        return {"result": "INVALID", "score": None, "overlap": None, "threshold": None, "message": "Calibre ativa e parada para calcular separacao."}
-    active_mean = float(active.get("mean") or 0)
-    stopped_mean = float(stopped.get("mean") or 0)
-    active_std = float(active.get("std") or 0)
-    stopped_std = float(stopped.get("std") or 0)
-    distance = active_mean - stopped_mean
-    noise = max(active_std + stopped_std, 1e-6)
-    score = round(distance / noise, 3)
-    overlap = not (float(stopped.get("p90") or stopped_mean) < float(active.get("p10") or active_mean))
-    threshold = round((active_mean + stopped_mean) / 2.0, 4)
-    if distance <= 0:
-        result = "INVALID"
-        message = "A atividade parada ficou igual ou maior que a ativa. Reposicione a ROI."
-    elif score >= 3 and not overlap:
-        result = "READY"
-        message = "Ativa e parada visualmente distinguiveis."
-    elif score >= 1.5:
-        result = "WEAK_SEPARATION"
-        message = "Separacao fraca. Reposicione a ROI ou valide tecnicamente antes de monitorar."
-    else:
-        result = "INVALID"
-        message = "Separacao insuficiente entre ativa e parada."
-    return {"result": result, "score": score, "overlap": overlap, "threshold": threshold, "message": message}
+    result = machine_calibration_separation(active, stopped)
+    if result["result"] == "CALIBRATION_REQUIRED":
+        return {**result, "result": "INVALID"}
+    return result
 
 
 class LiveStreamManager:

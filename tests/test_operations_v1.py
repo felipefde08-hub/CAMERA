@@ -64,7 +64,12 @@ class OperationsV1Test(unittest.TestCase):
                 replay_post_seconds=0.1,
             )
             monitor = obter_machine_monitor(connection, monitor_id)
-        return test_connect, config_from_dict(monitor), camera_id, monitor_id, cliente_id
+        config = config_from_dict(monitor)
+        config.active_baseline = 5.0
+        config.stopped_baseline = 0.0
+        config.active_noise = 0.2
+        config.stopped_noise = 0.2
+        return test_connect, config, camera_id, monitor_id, cliente_id
 
     def test_running_machine_does_not_create_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -95,18 +100,15 @@ class OperationsV1Test(unittest.TestCase):
             test_connect, config, *_ = self.make_context(temp_dir)
             with patch("app.machine_monitoring.connect", test_connect), patch("app.machine_monitoring.ROOT", Path(temp_dir)):
                 engine = MachineMonitorEngine(config, ReplayBuffer(config.camera_id, fps=30))
-                engine.smoothing_seconds = 0.01
-                engine.analysis_fps = 100
-                engine.update(frame_with_square(10), [])
-                time.sleep(0.06)
-                engine.update(frame_with_square(10), [])
-                engine.update(frame_with_square(10), [])
-                time.sleep(0.06)
-                engine.update(frame_with_square(10), [])
-                time.sleep(0.06)
-                for i in range(8):
-                    engine.update(frame_with_square(20 + i * 8), [])
-                    time.sleep(0.02)
+                frame = frame_with_square(10)
+                engine.state.state = "STOPPED"
+                engine.state.state_since = 100.0
+                engine.state.confidence = 0.9
+                engine.state.analysis_status = "ANALYZING"
+                engine._evaluate_official_events(100.5, frame)
+                engine._evaluate_official_events(101.0, frame)
+                engine.state.state = "ACTIVE"
+                engine._evaluate_official_events(102.0, frame)
                 with test_connect() as connection:
                     events = listar_eventos_filtrados(connection, tipo="machine_stoppage")
         self.assertEqual(len(events), 1)

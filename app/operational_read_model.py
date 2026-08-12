@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -223,6 +224,213 @@ def _coverage(connection: sqlite3.Connection, filters: ReadModelFilters) -> dict
         "offline_samples": offline_count,
         "inference_inactive_samples": inactive_count,
         "gaps": gaps,
+    }
+
+
+def _list_samples(connection: sqlite3.Connection, filters: ReadModelFilters) -> list[dict[str, Any]]:
+    if not filters.start or not filters.end:
+        return []
+    clauses = ["sample_at >= ?", "sample_at <= ?"]
+    params: list[Any] = [to_iso(filters.start), to_iso(filters.end)]
+    for column, value in {
+        "tenant_id": filters.cliente_id,
+        "site_id": filters.site_id,
+        "area_context_id": filters.area_context_id,
+        "process_id": filters.process_id,
+        "asset_id": filters.asset_id,
+        "camera_id": filters.camera_id,
+        "machine_id": filters.asset_id,
+    }.items():
+        if value:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+    rows = connection.execute(
+        f"""
+        SELECT *
+        FROM operational_samples
+        WHERE {' AND '.join(clauses)}
+        ORDER BY sample_at ASC, id ASC
+        """,
+        params,
+    ).fetchall()
+    samples = [row_to_dict(row) for row in rows]
+    for sample in samples:
+        raw = sample.get("metadata_json")
+        try:
+            sample["metadata"] = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            sample["metadata"] = {}
+    return samples
+
+
+def _coverage_from_sample_seconds(known_seconds: float, total_seconds: float, sample_count: int, unknown_seconds: float) -> dict[str, Any]:
+    if total_seconds <= 0:
+        return {"status": "INSUFFICIENT", "valid_percent": 0.0, "unknown_percent": 100.0, "sample_count": sample_count}
+    valid_percent = round((known_seconds / total_seconds) * 100, 2)
+    unknown_percent = round((unknown_seconds / total_seconds) * 100, 2)
+    if sample_count == 0 or valid_percent < 50:
+        status = "INSUFFICIENT"
+    elif valid_percent < 90:
+        status = "PARTIAL"
+    else:
+        status = "GOOD"
+    return {
+        "status": status,
+        "valid_percent": valid_percent,
+        "unknown_percent": unknown_percent,
+        "sample_count": sample_count,
+    }
+
+
+def _sample_rollup(samples: list[dict[str, Any]], start: datetime, end: datetime) -> dict[str, Any]:
+    total_seconds = max(0.0, (end - start).total_seconds())
+    machine = {"ACTIVE": 0.0, "STOPPED": 0.0, "UNKNOWN": 0.0}
+    human = {"PRESENT": 0.0, "ABSENT": 0.0, "UNKNOWN": 0.0}
+    if not samples:
+        machine["UNKNOWN"] = total_seconds
+        human["UNKNOWN"] = total_seconds
+        coverage = _coverage_from_sample_seconds(0.0, total_seconds, 0, total_seconds)
+        return {"machine": machine, "human": human, "coverage": coverage}
+    first_at = parse_datetime(samples[0]["sample_at"], start)
+    if first_at > start:
+        gap = min(total_seconds, (first_at - start).total_seconds())
+        machine["UNKNOWN"] += gap
+        human["UNKNOWN"] += gap
+    for index, sample in enumerate(samples):
+        current_at = parse_datetime(sample["sample_at"], start)
+        next_at = parse_datetime(samples[index + 1]["sample_at"], end) if index + 1 < len(samples) else end
+        segment_seconds = _overlap_seconds({"inicio": to_iso(current_at), "fim": to_iso(next_at)}, start, end, end)
+        if segment_seconds <= 0:
+            continue
+        sensor_ok = sample.get("camera_online") == 1 and bool(sample.get("inference_fps"))
+        state = str(sample.get("machine_state") or "UNKNOWN").upper()
+        if not sensor_ok or state not in {"ACTIVE", "STOPPED"}:
+            machine["UNKNOWN"] += segment_seconds
+        else:
+            machine[state] += segment_seconds
+        operator_value = sample.get("operator_present")
+        if not sensor_ok or operator_value is None:
+            human["UNKNOWN"] += segment_seconds
+        elif int(operator_value) == 1:
+            human["PRESENT"] += segment_seconds
+        else:
+            human["ABSENT"] += segment_seconds
+    known_seconds = machine["ACTIVE"] + machine["STOPPED"]
+    coverage = _coverage_from_sample_seconds(known_seconds, total_seconds, len(samples), machine["UNKNOWN"])
+    return {"machine": machine, "human": human, "coverage": coverage}
+
+
+def operational_data(connection: sqlite3.Connection, filters: ReadModelFilters, *, now: datetime | None = None) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    if not filters.start or not filters.end:
+        raise ValueError("Dados operacionais requerem início e fim.")
+    events = list_events(connection, filters, now=now)
+    samples = _list_samples(connection, filters)
+    rollup = _sample_rollup(samples, filters.start, filters.end)
+    classified_events = _official_events(events)
+    stoppages = [event for event in classified_events if event.get("tipo") == "machine_stoppage"]
+    absences = [event for event in classified_events if event.get("tipo") in {"workstation_unattended", "machine_running_without_operator"}]
+    zone_events = [event for event in events if event.get("area_id") or event.get("tipo") in {"restricted_zone_occupied", "restricted_area_occupied", "excessive_zone_dwell"}]
+    proximity_observations = []
+    for sample in samples:
+        metadata = sample.get("metadata") or {}
+        for observation in metadata.get("canonical_observations", []) if isinstance(metadata.get("canonical_observations"), list) else []:
+            if observation.get("observation_type") == "person_vehicle_proximity":
+                proximity_observations.append(observation)
+    stopped_total = sum(float(event.get("read_duration_seconds") or 0) for event in stoppages)
+    absence_total = sum(float(event.get("read_duration_seconds") or 0) for event in absences)
+    return {
+        "period": {"start": to_iso(filters.start), "end": to_iso(filters.end)},
+        "filters": {key: value for key, value in filters.__dict__.items() if value is not None and key not in {"start", "end"}},
+        "coverage": rollup["coverage"],
+        "machine_data": {
+            "observed_total_seconds": round(sum(rollup["machine"].values()), 3),
+            "active_seconds": round(rollup["machine"]["ACTIVE"], 3),
+            "stopped_seconds": round(rollup["machine"]["STOPPED"], 3),
+            "unknown_seconds": round(rollup["machine"]["UNKNOWN"], 3),
+            "visual_availability_percent": round((rollup["machine"]["ACTIVE"] / max(1.0, rollup["machine"]["ACTIVE"] + rollup["machine"]["STOPPED"])) * 100, 2) if (rollup["machine"]["ACTIVE"] + rollup["machine"]["STOPPED"]) else None,
+            "stoppage_count": len(stoppages),
+            "stoppage_total_seconds": round(stopped_total, 3),
+            "average_stoppage_seconds": round(stopped_total / len(stoppages), 3) if stoppages else 0,
+            "max_stoppage_seconds": round(max((float(event.get("read_duration_seconds") or 0) for event in stoppages), default=0), 3),
+            "critical_times": [{"started_at": event.get("inicio"), "duration_seconds": event.get("read_duration_seconds"), "event_uuid": _event_uuid(event)} for event in stoppages],
+            "traceability": {"event_uuids": [_event_uuid(event) for event in stoppages], "observation_types": ["machine_activity"]},
+        },
+        "human_operation_data": {
+            "presence_seconds": round(rollup["human"]["PRESENT"], 3),
+            "absence_seconds": round(rollup["human"]["ABSENT"], 3),
+            "unknown_seconds": round(rollup["human"]["UNKNOWN"], 3),
+            "absence_count": len(absences),
+            "absence_total_seconds": round(absence_total, 3),
+            "absence_periods": [{"started_at": event.get("inicio"), "ended_at": event.get("fim"), "duration_seconds": event.get("read_duration_seconds"), "event_uuid": _event_uuid(event)} for event in absences],
+            "traceability": {"event_uuids": [_event_uuid(event) for event in absences], "observation_types": ["person_presence", "zone_occupancy"]},
+        },
+        "zone_safety_data": {
+            "occupancy_event_count": len(zone_events),
+            "occupancy_total_seconds": round(sum(float(event.get("read_duration_seconds") or 0) for event in zone_events), 3),
+            "occupancies": [{"event_uuid": _event_uuid(event), "tipo": event.get("tipo"), "area_id": event.get("area_id"), "duration_seconds": event.get("read_duration_seconds"), "evidence": event.get("midia_path")} for event in zone_events],
+            "person_vehicle_proximity": {
+                "observations_count": len(proximity_observations),
+                "near_count": sum(1 for item in proximity_observations if item.get("value") == "NEAR"),
+                "candidate_count": sum(1 for item in proximity_observations if item.get("value") == "CANDIDATE"),
+                "vehicle_classes": sorted({str((item.get("metadata") or {}).get("vehicle_class")) for item in proximity_observations if (item.get("metadata") or {}).get("vehicle_class")}),
+                "status": "OBSERVATION_SUPPORTED_EVENT_NOT_YET_DEFINED",
+            },
+            "traceability": {"event_uuids": [_event_uuid(event) for event in zone_events], "observation_types": ["zone_occupancy", "person_vehicle_proximity"]},
+        },
+        "data_quality": {
+            "unknown_seconds": round(rollup["machine"]["UNKNOWN"], 3),
+            "unknown_is_not_counted_as_active_or_stopped": True,
+            "sample_count": len(samples),
+        },
+    }
+
+
+def daily_report(connection: sqlite3.Connection, filters: ReadModelFilters, *, now: datetime | None = None) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    data = operational_data(connection, filters, now=now)
+    summary = period_summary(connection, filters, now=now)
+    intel = intelligence(connection, filters, now=now)
+    events = list_events(connection, filters, now=now)
+    main_events = sorted(events, key=lambda event: float(event.get("read_duration_seconds") or 0), reverse=True)[:10]
+    return {
+        "report_type": "daily_operational_report_v1",
+        "period": data["period"],
+        "coverage": data["coverage"],
+        "summary": {
+            "machines": data["machine_data"],
+            "human_operation": data["human_operation_data"],
+            "zones_safety": data["zone_safety_data"],
+        },
+        "main_events": [
+            {
+                "event_uuid": _event_uuid(event),
+                "tipo": event.get("tipo"),
+                "event_family": event.get("event_family") or EVENT_FAMILY_UNKNOWN,
+                "started_at": event.get("inicio"),
+                "ended_at": event.get("fim"),
+                "duration_seconds": event.get("read_duration_seconds"),
+                "context": {
+                    "site_id": event.get("site_id"),
+                    "area_id": event.get("area_context_id") or event.get("area_id"),
+                    "process_id": event.get("process_id"),
+                    "asset_id": event.get("asset_id") or event.get("machine_monitor_id"),
+                    "camera_id": event.get("camera_id"),
+                },
+                "evidence": event.get("midia_path"),
+            }
+            for event in main_events
+        ],
+        "intelligence": {
+            "briefing": intel["briefing"],
+            "attention": intel["attention"],
+            "patterns": intel["patterns"],
+            "confirmed_causes": intel["confirmed_causes"],
+        },
+        "traceability": {
+            "event_uuids": summary["event_uuids"],
+            "why": "Cada métrica referencia events/event_uuids e observation_types usados no cálculo.",
+        },
     }
 
 

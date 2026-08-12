@@ -26,8 +26,10 @@ from app.operational_read_model import (
     ReadModelFilters,
     comparison as read_model_comparison,
     current_operation as read_model_current,
+    daily_report as read_model_daily_report,
     intelligence as read_model_intelligence,
     losses as read_model_losses,
+    operational_data as read_model_operational_data,
     parse_datetime as read_model_parse_datetime,
     period_bounds as read_model_period_bounds,
     period_summary as read_model_summary,
@@ -3469,6 +3471,88 @@ def get_operations_read_model_insights(
         )
         try:
             return read_model_intelligence(connection, filters)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.get("/operations/read-model/operational-data")
+def get_operations_read_model_operational_data(
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+            start=start,
+            end=end,
+            period=period,
+        )
+        try:
+            return read_model_operational_data(connection, filters)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.get("/operations/read-model/daily-report")
+def get_operations_read_model_daily_report(
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+            start=start,
+            end=end,
+            period=period,
+        )
+        try:
+            return read_model_daily_report(connection, filters)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -116,7 +116,7 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["phase"], "active")
         self.assertGreater(updated["active_calibration"]["samples_count"], 0)
-        self.assertEqual(updated["calibration_algorithm_version"], "frame-diff-roi-v1")
+        self.assertEqual(updated["calibration_algorithm_version"], "frame-diff-roi-temporal-v1")
 
     def test_calibration_separation_ready_and_invalid(self) -> None:
         active = calibration_stats([30, 32, 31, 33, 29])

@@ -12,7 +12,7 @@ from app.auth import create_user
 from app.database import connect, init_db
 from app.models import criar_camera, criar_cliente, criar_unidade, obter_evento, registrar_evento, registrar_operational_sample
 from app.operational_context import criar_operational_area, criar_operational_asset, criar_operational_process
-from app.operational_read_model import ReadModelFilters, comparison, current_operation, intelligence, losses, parse_datetime, period_summary
+from app.operational_read_model import ReadModelFilters, comparison, current_operation, daily_report, intelligence, losses, operational_data, parse_datetime, period_summary
 
 
 NOW = datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc)
@@ -73,6 +73,40 @@ def add_event(
     )
     connection.commit()
     return event_id
+
+
+def add_sample(
+    connection,
+    cliente_id: str,
+    site_id: str,
+    camera_id: str,
+    machine_id: str,
+    at: str,
+    machine_state: str | None,
+    operator_present: bool | None,
+    *,
+    camera_online: bool = True,
+    inference_fps: float | None = 5.0,
+    metadata: dict | None = None,
+) -> None:
+    registrar_operational_sample(
+        connection,
+        sample_uuid=f"sample-{at}-{machine_state}-{operator_present}".replace(":", "").replace("+", ""),
+        tenant_id=cliente_id,
+        unit_id=site_id,
+        camera_id=camera_id,
+        machine_id=machine_id,
+        machine_state=machine_state,
+        operator_present=operator_present,
+        activity_score=10.0 if machine_state == "ACTIVE" else 1.0 if machine_state == "STOPPED" else None,
+        confidence=0.9 if machine_state in {"ACTIVE", "STOPPED"} else 0.0,
+        capture_fps=15.0 if camera_online else 0.0,
+        inference_fps=inference_fps,
+        frames_analyzed=10 if inference_fps else 0,
+        camera_online=camera_online,
+        sample_at=at,
+        metadata=metadata or {"people_count": 1 if operator_present else 0},
+    )
 
 
 def test_summary_separates_families_unknown_and_traceability() -> None:
@@ -317,3 +351,71 @@ def test_intelligence_api_endpoint() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["attention"][0]["event_uuids"] == ["evt-intel-api"]
+
+
+def test_vision_v1_operational_data_daily_report_and_intelligence_are_traceable() -> None:
+    temp_dir, _db_path, connection, cliente_id, site_id, area_id, process_id, asset_id, camera_id = make_context()
+    start = parse_datetime("2026-08-07T08:00:00+00:00")
+    end = parse_datetime("2026-08-07T09:40:00+00:00")
+    with temp_dir, connection:
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T08:00:00+00:00", "ACTIVE", True)
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T08:30:00+00:00", "STOPPED", True)
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T08:40:00+00:00", "ACTIVE", True)
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T09:00:00+00:00", "ACTIVE", False)
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T09:10:00+00:00", "ACTIVE", True)
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T09:30:00+00:00", "UNKNOWN", None, inference_fps=0.0)
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T09:40:00+00:00", "ACTIVE", True)
+        add_event(connection, cliente_id, site_id, camera_id, "machine_stoppage", start="2026-08-07T08:30:00+00:00", end="2026-08-07T08:40:00+00:00", duration=600, event_uuid="evt-a6-stop")
+        add_event(connection, cliente_id, site_id, camera_id, "workstation_unattended", start="2026-08-07T09:00:00+00:00", end="2026-08-07T09:10:00+00:00", duration=600, event_uuid="evt-a6-absence")
+        add_event(connection, cliente_id, site_id, camera_id, "restricted_zone_occupied", start="2026-08-07T09:15:00+00:00", end="2026-08-07T09:17:00+00:00", duration=120, event_uuid="evt-a6-zone")
+        data = operational_data(connection, ReadModelFilters(cliente_id=cliente_id, start=start, end=end), now=end)
+        report = daily_report(connection, ReadModelFilters(cliente_id=cliente_id, start=start, end=end), now=end)
+
+    assert data["machine_data"]["active_seconds"] == 4800
+    assert data["machine_data"]["stopped_seconds"] == 600
+    assert data["machine_data"]["unknown_seconds"] == 600
+    assert data["machine_data"]["stoppage_count"] == 1
+    assert data["machine_data"]["average_stoppage_seconds"] == 600
+    assert data["human_operation_data"]["presence_seconds"] == 4800
+    assert data["human_operation_data"]["absence_seconds"] == 600
+    assert data["human_operation_data"]["unknown_seconds"] == 600
+    assert data["human_operation_data"]["absence_count"] == 1
+    assert data["coverage"]["status"] == "GOOD"
+    assert data["coverage"]["unknown_percent"] == 10.0
+    assert data["data_quality"]["unknown_is_not_counted_as_active_or_stopped"] is True
+    assert data["zone_safety_data"]["occupancy_event_count"] == 1
+    assert data["zone_safety_data"]["person_vehicle_proximity"]["status"] == "OBSERVATION_SUPPORTED_EVENT_NOT_YET_DEFINED"
+    assert report["report_type"] == "daily_operational_report_v1"
+    assert "evt-a6-stop" in report["traceability"]["event_uuids"]
+    assert report["summary"]["machines"]["traceability"]["observation_types"] == ["machine_activity"]
+    assert all("causou" not in str(item).lower() for item in report["intelligence"]["attention"])
+
+
+def test_operational_data_without_samples_has_insufficient_coverage_and_no_strong_conclusion() -> None:
+    temp_dir, _db_path, connection, cliente_id, _site_id, _area_id, _process_id, _asset_id, _camera_id = make_context()
+    with temp_dir, connection:
+        data = operational_data(connection, ReadModelFilters(cliente_id=cliente_id, start=START, end=END), now=NOW)
+        report = daily_report(connection, ReadModelFilters(cliente_id=cliente_id, start=START, end=END), now=NOW)
+
+    assert data["coverage"]["status"] == "INSUFFICIENT"
+    assert data["machine_data"]["active_seconds"] == 0
+    assert data["machine_data"]["stopped_seconds"] == 0
+    assert data["machine_data"]["unknown_seconds"] == 14400
+    assert report["intelligence"]["briefing"] == ["Ainda não existem eventos operacionais classificados suficientes neste período."]
+
+
+def test_operational_data_tenant_isolation() -> None:
+    temp_dir, _db_path, connection, cliente_a, site_a, _area_a, _process_a, asset_a, camera_a = make_context()
+    with temp_dir, connection:
+        cliente_b = criar_cliente(connection, "Cliente B")
+        site_b = criar_unidade(connection, cliente_b, "Fabrica B")
+        camera_b = criar_camera(connection, site_b, "Camera B", cliente_id=cliente_b)
+        add_sample(connection, cliente_a, site_a, camera_a, asset_a, "2026-08-07T08:00:00+00:00", "ACTIVE", True)
+        add_sample(connection, cliente_a, site_a, camera_a, asset_a, "2026-08-07T09:00:00+00:00", "STOPPED", True)
+        add_event(connection, cliente_a, site_a, camera_a, "machine_stoppage", start="2026-08-07T09:00:00+00:00", end="2026-08-07T09:10:00+00:00", duration=600, event_uuid="evt-tenant-a")
+        add_event(connection, cliente_b, site_b, camera_b, "machine_stoppage", start="2026-08-07T09:00:00+00:00", end="2026-08-07T09:20:00+00:00", duration=1200, event_uuid="evt-tenant-b")
+        data_a = operational_data(connection, ReadModelFilters(cliente_id=cliente_a, start=START, end=END), now=NOW)
+        data_b = operational_data(connection, ReadModelFilters(cliente_id=cliente_b, start=START, end=END), now=NOW)
+
+    assert data_a["machine_data"]["traceability"]["event_uuids"] == ["evt-tenant-a"]
+    assert data_b["machine_data"]["traceability"]["event_uuids"] == ["evt-tenant-b"]
