@@ -187,9 +187,9 @@ Após reiniciar, confirme:
 - `app/analytics.py`: analytics anterior, deve convergir para Read Model quando usado.
 - `app/reports.py`: relatórios legados simples.
 
-### REMOVER COM SEGURANÇA DEPOIS
+### REMOVIDOS EM LIMPEZA SEGURA PRÉ-VISION V1
 
-Somente após uma etapa dedicada de limpeza e com testes:
+Removidos em etapa dedicada de limpeza após auditoria de referências e testes:
 
 - `app/api.py.orig`
 - `app/api.py.backup`
@@ -200,8 +200,6 @@ Somente após uma etapa dedicada de limpeza e com testes:
 - `frontend/campex-brand-board.png`
 - `frontend/campex-logo-hero.png`
 - `frontend/.DS_Store`
-
-Nenhum desses arquivos deve ser apagado nesta validação.
 
 ## Critério final
 
