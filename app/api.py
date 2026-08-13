@@ -110,7 +110,7 @@ if FRONTEND_DIR.exists():
 
 
 def _link_machine_monitor_areas(connection, camera_id: str, monitor_id: str) -> dict[str, str | None]:
-    linked: dict[str, str | None] = {"machine_region_id": None, "operator_zone_id": None}
+    linked: dict[str, str | None] = {"machine_region_id": None, "operator_zone_id": None, "operation_area_id": None}
     areas = listar_areas_camera(connection, camera_id)
     for area in areas:
         if not area.get("ativa"):
@@ -121,7 +121,12 @@ def _link_machine_monitor_areas(connection, camera_id: str, monitor_id: str) -> 
             linked["machine_region_id"] = area["id"]
         if area_type in {"operator_zone", "workstation"} and linked["operator_zone_id"] is None:
             atualizar_area_monitorada(connection, area["id"], machine_id=monitor_id)
+            atualizar_machine_monitor(connection, monitor_id, operator_polygon=area["pontos"])
             linked["operator_zone_id"] = area["id"]
+        if area_type == "work_area" and linked["operation_area_id"] is None:
+            atualizar_area_monitorada(connection, area["id"], machine_id=monitor_id)
+            atualizar_machine_monitor(connection, monitor_id, operation_polygon=area["pontos"], presence_scope="OPERATION_AREA")
+            linked["operation_area_id"] = area["id"]
     return linked
 
 
@@ -393,6 +398,8 @@ class MachineMonitorIn(BaseModel):
     nome: str
     machine_polygon: list[AreaPointIn]
     operator_polygon: list[AreaPointIn]
+    operation_polygon: Optional[list[AreaPointIn]] = None
+    presence_scope: str = "OPERATOR_ZONE"
     ativo: bool = True
     motion_sensitivity: float = 25.0
     stop_seconds: float = 10.0
@@ -414,6 +421,8 @@ class MachineMonitorPatchIn(BaseModel):
     nome: Optional[str] = None
     machine_polygon: Optional[list[AreaPointIn]] = None
     operator_polygon: Optional[list[AreaPointIn]] = None
+    operation_polygon: Optional[list[AreaPointIn]] = None
+    presence_scope: Optional[str] = None
     ativo: Optional[bool] = None
     motion_sensitivity: Optional[float] = None
     motion_threshold: Optional[float] = None
@@ -2599,6 +2608,7 @@ def get_machine_monitors(camera_id: str, request: Request) -> list[dict[str, Any
 def post_machine_monitor(camera_id: str, payload: MachineMonitorIn, request: Request) -> dict[str, Any]:
     machine_points = normalize_points([point.model_dump() for point in payload.machine_polygon])
     operator_points = normalize_points([point.model_dump() for point in payload.operator_polygon])
+    operation_points = normalize_points([point.model_dump() for point in payload.operation_polygon]) if payload.operation_polygon else None
     with connect() as connection:
         init_db(connection)
         user = require_user(request, connection)
@@ -2620,6 +2630,8 @@ def post_machine_monitor(camera_id: str, payload: MachineMonitorIn, request: Req
                 nome=payload.nome,
                 machine_polygon=machine_points,
                 operator_polygon=operator_points,
+                operation_polygon=operation_points,
+                presence_scope=payload.presence_scope,
                 ativo=payload.ativo,
                 motion_sensitivity=payload.motion_sensitivity,
                 stop_seconds=payload.stop_seconds,
@@ -2637,28 +2649,30 @@ def post_machine_monitor(camera_id: str, payload: MachineMonitorIn, request: Req
             audit_action = "config.machine_monitor.update"
         else:
             monitor_id = criar_machine_monitor(
-                connection,
-                client_id,
-                unit_id,
-                camera_id,
-                payload.nome,
-                machine_points,
-                operator_points,
-                payload.ativo,
-                payload.motion_sensitivity,
-                payload.stop_seconds,
-                payload.recovery_seconds,
-                payload.replay_pre_seconds,
-                payload.replay_post_seconds,
-                payload.operator_absence_seconds,
-                payload.stopped_with_operator_seconds,
-                payload.microstop_window_seconds,
-                payload.microstop_limit,
-                payload.loss_model,
-                payload.loss_per_minute,
-                payload.units_per_minute,
-                payload.margin_per_unit,
-                indicator_points,
+                connection=connection,
+                client_id=client_id,
+                unit_id=unit_id,
+                camera_id=camera_id,
+                nome=payload.nome,
+                machine_polygon=machine_points,
+                operator_polygon=operator_points,
+                ativo=payload.ativo,
+                motion_sensitivity=payload.motion_sensitivity,
+                stop_seconds=payload.stop_seconds,
+                recovery_seconds=payload.recovery_seconds,
+                replay_pre_seconds=payload.replay_pre_seconds,
+                replay_post_seconds=payload.replay_post_seconds,
+                operator_absence_seconds=payload.operator_absence_seconds,
+                stopped_with_operator_seconds=payload.stopped_with_operator_seconds,
+                microstop_window_seconds=payload.microstop_window_seconds,
+                microstop_limit=payload.microstop_limit,
+                loss_model=payload.loss_model,
+                loss_per_minute=payload.loss_per_minute,
+                units_per_minute=payload.units_per_minute,
+                margin_per_unit=payload.margin_per_unit,
+                indicator_polygon=indicator_points,
+                operation_polygon=operation_points,
+                presence_scope=payload.presence_scope,
             )
             audit_action = "config.machine_monitor.create"
         linked_areas = _link_machine_monitor_areas(connection, camera_id, monitor_id)
@@ -2682,6 +2696,7 @@ def post_machine_monitor(camera_id: str, payload: MachineMonitorIn, request: Req
 def patch_machine_monitor(monitor_id: str, payload: MachineMonitorPatchIn, request: Request) -> dict[str, Any]:
     machine_points = normalize_points([point.model_dump() for point in payload.machine_polygon]) if payload.machine_polygon else None
     operator_points = normalize_points([point.model_dump() for point in payload.operator_polygon]) if payload.operator_polygon else None
+    operation_points = normalize_points([point.model_dump() for point in payload.operation_polygon]) if payload.operation_polygon else None
     with connect() as connection:
         init_db(connection)
         user = require_user(request, connection)
@@ -2696,6 +2711,8 @@ def patch_machine_monitor(monitor_id: str, payload: MachineMonitorPatchIn, reque
             nome=payload.nome,
             machine_polygon=machine_points,
             operator_polygon=operator_points,
+            operation_polygon=operation_points,
+            presence_scope=payload.presence_scope,
             ativo=payload.ativo,
             motion_sensitivity=payload.motion_sensitivity,
             motion_threshold=payload.motion_threshold,

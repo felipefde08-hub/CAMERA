@@ -301,6 +301,8 @@ def init_db(connection: sqlite3.Connection) -> None:
             nome TEXT NOT NULL,
             machine_polygon_json TEXT NOT NULL,
             operator_polygon_json TEXT NOT NULL,
+            operation_polygon_json TEXT,
+            presence_scope TEXT NOT NULL DEFAULT 'OPERATOR_ZONE',
             ativo INTEGER NOT NULL DEFAULT 1,
             motion_sensitivity REAL NOT NULL DEFAULT 25.0,
             motion_threshold REAL,
@@ -662,6 +664,8 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "machine_monitors", "area_context_id", "TEXT")
     _ensure_column(connection, "machine_monitors", "process_id", "TEXT")
     _ensure_column(connection, "machine_monitors", "asset_id", "TEXT")
+    _ensure_column(connection, "machine_monitors", "operation_polygon_json", "TEXT")
+    _ensure_column(connection, "machine_monitors", "presence_scope", "TEXT NOT NULL DEFAULT 'OPERATOR_ZONE'")
     _ensure_column(connection, "machine_monitors", "active_baseline", "REAL")
     _ensure_column(connection, "machine_monitors", "stopped_baseline", "REAL")
     _ensure_column(connection, "machine_monitors", "active_noise", "REAL")

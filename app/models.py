@@ -1585,12 +1585,22 @@ def get_installation_state(connection: sqlite3.Connection) -> dict[str, str]:
     return {row["key"]: row["value"] for row in rows}
 
 
+def normalize_presence_scope(value: str | None) -> str:
+    normalized = str(value or "OPERATOR_ZONE").strip().upper()
+    if normalized not in {"OPERATOR_ZONE", "OPERATION_AREA"}:
+        return "OPERATOR_ZONE"
+    return normalized
+
+
 def machine_monitor_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
     data["ativo"] = bool(data["ativo"])
     data["operator_present"] = bool(data.get("operator_present"))
     data["machine_polygon"] = json.loads(data.pop("machine_polygon_json"))
     data["operator_polygon"] = json.loads(data.pop("operator_polygon_json"))
+    operation_polygon = data.pop("operation_polygon_json", None)
+    data["operation_polygon"] = json.loads(operation_polygon) if operation_polygon else None
+    data["presence_scope"] = str(data.get("presence_scope") or "OPERATOR_ZONE").upper()
     indicator = data.pop("indicator_polygon_json", None)
     data["indicator_polygon"] = json.loads(indicator) if indicator else None
     active_calibration = data.pop("active_calibration_json", None)
@@ -1626,18 +1636,20 @@ def criar_machine_monitor(
     area_context_id: str | None = None,
     process_id: str | None = None,
     asset_id: str | None = None,
+    operation_polygon: list[dict[str, float]] | None = None,
+    presence_scope: str = "OPERATOR_ZONE",
 ) -> str:
     monitor_id = new_id("mach")
     connection.execute(
         """
         INSERT INTO machine_monitors (
             id, client_id, unit_id, camera_id, nome, machine_polygon_json,
-            operator_polygon_json, ativo, motion_sensitivity, stop_seconds,
+            operator_polygon_json, operation_polygon_json, presence_scope, ativo, motion_sensitivity, stop_seconds,
             recovery_seconds, replay_pre_seconds, replay_post_seconds,
             operator_absence_seconds, stopped_with_operator_seconds,
             microstop_window_seconds, microstop_limit, loss_model,
             loss_per_minute, units_per_minute, margin_per_unit, indicator_polygon_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             monitor_id,
@@ -1647,6 +1659,8 @@ def criar_machine_monitor(
             nome,
             json.dumps(machine_polygon),
             json.dumps(operator_polygon),
+            json.dumps(operation_polygon) if operation_polygon else None,
+            normalize_presence_scope(presence_scope),
             1 if ativo else 0,
             motion_sensitivity,
             stop_seconds,
@@ -1718,6 +1732,8 @@ def atualizar_machine_monitor(
     nome: str | None = None,
     machine_polygon: list[dict[str, float]] | None = None,
     operator_polygon: list[dict[str, float]] | None = None,
+    operation_polygon: list[dict[str, float]] | None = None,
+    presence_scope: str | None = None,
     ativo: bool | None = None,
     motion_sensitivity: float | None = None,
     motion_threshold: float | None = None,
@@ -1759,6 +1775,8 @@ def atualizar_machine_monitor(
         SET nome = ?,
             machine_polygon_json = ?,
             operator_polygon_json = ?,
+            operation_polygon_json = ?,
+            presence_scope = ?,
             ativo = ?,
             motion_sensitivity = ?,
             motion_threshold = COALESCE(?, motion_threshold),
@@ -1798,6 +1816,8 @@ def atualizar_machine_monitor(
             nome if nome is not None else current["nome"],
             json.dumps(machine_polygon if machine_polygon is not None else current["machine_polygon"]),
             json.dumps(operator_polygon if operator_polygon is not None else current["operator_polygon"]),
+            json.dumps(operation_polygon if operation_polygon is not None else current.get("operation_polygon")) if (operation_polygon is not None or current.get("operation_polygon")) else None,
+            normalize_presence_scope(presence_scope if presence_scope is not None else current.get("presence_scope", "OPERATOR_ZONE")),
             1 if (ativo if ativo is not None else current["ativo"]) else 0,
             motion_sensitivity if motion_sensitivity is not None else current["motion_sensitivity"],
             motion_threshold,

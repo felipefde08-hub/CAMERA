@@ -102,13 +102,14 @@ class YoloPersonDetector:
             raise RuntimeError("YOLO indisponível. Instale com: pip install -r requirements-yolo.txt") from exc
         self.model_name = model_name
         self.confidence = confidence
+        self.imgsz = int(os.getenv("CAMPEX_YOLO_IMGSZ", "960"))
         self.class_names = requested_classes()
         self.class_ids = [YOLO_CLASS_IDS[name] for name in self.class_names]
         self.id_to_name = {YOLO_CLASS_IDS[name]: name for name in self.class_names}
         self.model = YOLO(model_name)
 
     def detect(self, frame: np.ndarray) -> list[Detection]:
-        results = self.model.predict(source=frame, classes=self.class_ids, conf=self.confidence, verbose=False)
+        results = self.model.predict(source=frame, classes=self.class_ids, conf=self.confidence, imgsz=self.imgsz, verbose=False)
         detections: list[Detection] = []
         for result in results:
             if result.boxes is None:
@@ -297,11 +298,12 @@ class PersonAnalysisEngine:
 
 
 _DETECTOR_LOCK = threading.Lock()
-_DETECTORS: dict[tuple[str, float, tuple[str, ...]], YoloPersonDetector] = {}
+_DETECTORS: dict[tuple[str, float, int, tuple[str, ...]], YoloPersonDetector] = {}
 
 
 def get_yolo_detector(model_name: str, confidence: float) -> YoloPersonDetector:
-    key = (model_name, confidence, tuple(requested_classes()))
+    imgsz = int(os.getenv("CAMPEX_YOLO_IMGSZ", "960"))
+    key = (model_name, confidence, imgsz, tuple(requested_classes()))
     with _DETECTOR_LOCK:
         detector = _DETECTORS.get(key)
         if detector is None:

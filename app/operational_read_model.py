@@ -170,7 +170,7 @@ def _group_events(events: list[dict[str, Any]], key: str) -> list[dict[str, Any]
 def _coverage(connection: sqlite3.Connection, filters: ReadModelFilters) -> dict[str, Any]:
     if not filters.start or not filters.end:
         return {"status": "unknown", "reason": "Período não informado para cobertura."}
-    clauses = ["sample_at >= ?", "sample_at <= ?"]
+    clauses = ["datetime(sample_at) >= datetime(?)", "datetime(sample_at) <= datetime(?)"]
     params: list[Any] = [to_iso(filters.start), to_iso(filters.end)]
     for column, value in {
         "unit_id": filters.site_id,
@@ -184,7 +184,7 @@ def _coverage(connection: sqlite3.Connection, filters: ReadModelFilters) -> dict
             params.append(value)
     rows = connection.execute(
         f"""
-        SELECT sample_at, camera_online, inference_fps
+        SELECT sample_at, camera_online, inference_fps, metadata_json
         FROM operational_samples
         WHERE {' AND '.join(clauses)}
         ORDER BY sample_at ASC
@@ -213,7 +213,12 @@ def _coverage(connection: sqlite3.Connection, filters: ReadModelFilters) -> dict
     if (filters.end - previous).total_seconds() > 120:
         gaps.append({"type": "no_samples", "start": to_iso(previous), "end": to_iso(filters.end)})
     offline_count = sum(1 for sample in samples if sample.get("camera_online") == 0)
-    inactive_count = sum(1 for sample in samples if not sample.get("inference_fps"))
+    for sample in samples:
+        try:
+            sample["metadata"] = json.loads(sample.get("metadata_json") or "{}")
+        except json.JSONDecodeError:
+            sample["metadata"] = {}
+    inactive_count = sum(1 for sample in samples if not _sample_has_inference_signal(sample))
     return {
         "status": "partial" if gaps or offline_count or inactive_count else "observed",
         "requested_start": to_iso(filters.start),
@@ -230,7 +235,7 @@ def _coverage(connection: sqlite3.Connection, filters: ReadModelFilters) -> dict
 def _list_samples(connection: sqlite3.Connection, filters: ReadModelFilters) -> list[dict[str, Any]]:
     if not filters.start or not filters.end:
         return []
-    clauses = ["sample_at >= ?", "sample_at <= ?"]
+    clauses = ["datetime(sample_at) >= datetime(?)", "datetime(sample_at) <= datetime(?)"]
     params: list[Any] = [to_iso(filters.start), to_iso(filters.end)]
     for column, value in {
         "tenant_id": filters.cliente_id,
@@ -261,6 +266,34 @@ def _list_samples(connection: sqlite3.Connection, filters: ReadModelFilters) -> 
         except json.JSONDecodeError:
             sample["metadata"] = {}
     return samples
+
+
+def _sample_has_valid_observation(sample: dict[str, Any]) -> bool:
+    metadata = sample.get("metadata") or {}
+    observations = metadata.get("canonical_observations")
+    if not isinstance(observations, list):
+        return False
+    for observation in observations:
+        if not isinstance(observation, dict):
+            continue
+        if observation.get("observation_type") not in {"machine_activity", "person_presence", "zone_occupancy"}:
+            continue
+        if observation.get("data_quality") not in {"observed", "inferred"}:
+            continue
+        if str(observation.get("value") or "UNKNOWN").upper() == "UNKNOWN":
+            continue
+        return True
+    return False
+
+
+def _sample_has_inference_signal(sample: dict[str, Any]) -> bool:
+    fps = sample.get("inference_fps")
+    if fps is None:
+        return _sample_has_valid_observation(sample)
+    try:
+        return float(fps) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _coverage_from_sample_seconds(known_seconds: float, total_seconds: float, sample_count: int, unknown_seconds: float) -> dict[str, Any]:
@@ -302,7 +335,7 @@ def _sample_rollup(samples: list[dict[str, Any]], start: datetime, end: datetime
         segment_seconds = _overlap_seconds({"inicio": to_iso(current_at), "fim": to_iso(next_at)}, start, end, end)
         if segment_seconds <= 0:
             continue
-        sensor_ok = sample.get("camera_online") == 1 and bool(sample.get("inference_fps"))
+        sensor_ok = sample.get("camera_online") == 1 and _sample_has_inference_signal(sample)
         state = str(sample.get("machine_state") or "UNKNOWN").upper()
         if not sensor_ok or state not in {"ACTIVE", "STOPPED"}:
             machine["UNKNOWN"] += segment_seconds

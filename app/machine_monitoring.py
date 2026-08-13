@@ -29,6 +29,7 @@ from app.models import (
     registrar_evidence_index,
     registrar_operational_sample,
 )
+from app.observation_engine import ObservationEngine
 from app.person_detection import Detection
 from app.restricted_area import AreaPoint, foot_point_normalized, normalize_points, point_in_polygon
 from app.security import mask_sensitive_error
@@ -49,6 +50,13 @@ def first_not_none(*values: Any) -> Any:
     return None
 
 
+def normalize_presence_scope(value: Any) -> str:
+    normalized = str(value or "OPERATOR_ZONE").strip().upper()
+    if normalized not in {"OPERATOR_ZONE", "OPERATION_AREA"}:
+        return "OPERATOR_ZONE"
+    return normalized
+
+
 @dataclass
 class MachineMonitorConfig:
     id: str
@@ -58,6 +66,8 @@ class MachineMonitorConfig:
     nome: str
     machine_polygon: list[AreaPoint]
     operator_polygon: list[AreaPoint]
+    operation_polygon: list[AreaPoint] | None = None
+    presence_scope: str = "OPERATOR_ZONE"
     ativo: bool = True
     motion_sensitivity: float = 25.0
     motion_threshold: float | None = None
@@ -128,6 +138,8 @@ def config_from_dict(payload: dict[str, Any]) -> MachineMonitorConfig:
         nome=str(payload["nome"]),
         machine_polygon=[AreaPoint(float(p["x"]), float(p["y"])) for p in payload["machine_polygon"]],
         operator_polygon=[AreaPoint(float(p["x"]), float(p["y"])) for p in payload["operator_polygon"]],
+        operation_polygon=[AreaPoint(float(p["x"]), float(p["y"])) for p in payload.get("operation_polygon") or []] or None,
+        presence_scope=normalize_presence_scope(payload.get("presence_scope")),
         ativo=bool(payload.get("ativo", True)),
         motion_sensitivity=float(payload.get("motion_sensitivity") or 25.0),
         motion_threshold=payload.get("motion_threshold"),
@@ -191,6 +203,7 @@ class MachineMonitorEngine:
         self.config = config
         self.state = MachineMonitorState(threshold=float(config.motion_threshold or config.motion_sensitivity))
         self.replay_buffer = replay_buffer or ReplayBuffer(config.camera_id)
+        self._observation_engine = ObservationEngine(config.camera_id)
         self.analysis_fps = env_float("CAMPEX_MACHINE_ANALYSIS_FPS", 5.0)
         self.smoothing_seconds = env_float("CAMPEX_MACHINE_MOTION_SMOOTHING_SECONDS", 2.0)
         self.window_seconds = env_float("CAMPEX_MACHINE_ACTIVITY_WINDOW_SECONDS", 3.0)
@@ -266,12 +279,13 @@ class MachineMonitorEngine:
     def _update_operator(self, frame: np.ndarray, detections: list[Detection], dt: float) -> None:
         height, width = frame.shape[:2]
         ids: set[int] = set()
+        presence_polygon = self._presence_polygon()
         for detection in detections:
             if detection.class_name != "person":
                 continue
             if detection.track_id is None:
                 continue
-            if point_in_polygon(foot_point_normalized(detection, width, height), self.config.operator_polygon):
+            if point_in_polygon(foot_point_normalized(detection, width, height), presence_polygon):
                 ids.add(detection.track_id)
         self.state.operator_present = bool(ids)
         self.state.track_ids.update(ids)
@@ -281,6 +295,11 @@ class MachineMonitorEngine:
                 self.state.operator_present_seconds += dt
             else:
                 self.state.operator_absent_seconds += dt
+
+    def _presence_polygon(self) -> list[AreaPoint]:
+        if normalize_presence_scope(self.config.presence_scope) == "OPERATION_AREA" and self.config.operation_polygon:
+            return self.config.operation_polygon
+        return self.config.operator_polygon
 
     def _classify_and_transition(self, now: float, frame: np.ndarray) -> None:
         target, confidence, reason = self._classify_state()
@@ -567,6 +586,7 @@ class MachineMonitorEngine:
                 "activity_score": self.state.smoothed_motion,
                 "raw_activity_score": self.state.raw_activity_score,
                 "operator_present": self.state.operator_present,
+                "presence_scope": normalize_presence_scope(self.config.presence_scope),
                 "track_ids": sorted(self.state.track_ids),
             }
         }
@@ -642,6 +662,7 @@ class MachineMonitorEngine:
 
     def _persist_state(self, changed: bool) -> None:
         try:
+            observation = self._build_persisted_observation()
             with connect() as connection:
                 init_db(connection)
                 atualizar_machine_monitor_estado(
@@ -681,10 +702,36 @@ class MachineMonitorEngine:
                         "window_std": self.state.window_std,
                         "signal_quality": self.state.signal_quality,
                         "separation_score": self.state.separation_score,
+                        "canonical_observations": observation["observations"],
                     },
                 )
         except Exception:
             pass
+
+    def _build_persisted_observation(self) -> dict[str, Any]:
+        scope = normalize_presence_scope(self.config.presence_scope)
+        zone_type = "work_area" if scope == "OPERATION_AREA" else "operator_zone"
+        zone_id = f"{self.config.id}:{zone_type}"
+        zone_states = [
+            {
+                "id": zone_id,
+                "tipo": zone_type,
+                "pessoas_dentro": 1 if self.state.operator_present else 0,
+            }
+        ]
+        return self._observation_engine.build(
+            machine_id=self.config.id,
+            machine_state=self.state.state if self.state.state in {"ACTIVE", "STOPPED"} else "UNKNOWN",
+            machine_activity_score=self.state.smoothed_motion,
+            machine_confidence=self.state.confidence,
+            operator_present=self.state.operator_present,
+            zone_states=zone_states,
+            cliente_id=self.config.client_id,
+            unidade_id=self.config.unit_id,
+            camera_online=True,
+            inference_available=self.state.analysis_status not in {"ERROR", "INVALID_ROI", "WAITING_FOR_REGION"},
+            operator_absence_tolerance_seconds=self.config.operator_absence_seconds,
+        )
 
     def _calculated_threshold(self) -> float:
         if self.config.active_baseline is not None and self.config.stopped_baseline is not None:
