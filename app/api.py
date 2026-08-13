@@ -831,10 +831,7 @@ def get_edge_runtime_status(edge_id: Optional[str] = None) -> dict[str, object]:
         "edge_id": edge_id or os.getenv("CAMPEX_EDGE_ID"),
         "heartbeat": heartbeat,
         "cameras": [
-            {
-                **dict(camera),
-                "stream": stream_by_camera.get(camera["id"]),
-            }
+            {**_camera_with_runtime_status(dict(camera), stream_by_camera.get(camera["id"])), "stream": stream_by_camera.get(camera["id"])}
             for camera in cameras
         ],
         "last_event": dict(last_event) if last_event else None,
@@ -988,7 +985,7 @@ def get_system_health(request: Request) -> dict[str, object]:
     with connect() as connection:
         init_db(connection)
         require_user(request, connection)
-    return health_snapshot()
+    return health_snapshot(runtime_statuses=live_streams.statuses())
 
 
 @api.get("/pilot/checklist")
@@ -996,7 +993,7 @@ def get_pilot_checklist(request: Request) -> dict[str, object]:
     with connect() as connection:
         init_db(connection)
         require_user(request, connection)
-    return acceptance_checklist()
+    return acceptance_checklist(runtime_statuses=live_streams.statuses())
 
 
 @api.get("/clientes")
@@ -1866,6 +1863,48 @@ def _live_status_for_camera(connection, camera: dict[str, Any]) -> dict[str, Any
     return {**status_payload, "context": _live_context(connection, camera, status_payload)}
 
 
+def _camera_with_runtime_status(camera: dict[str, Any], stream: dict[str, Any] | None) -> dict[str, Any]:
+    payload = dict(camera)
+    runtime_online = bool(stream and stream.get("status") == "online" and _recent_iso(stream.get("last_frame_at")))
+    inference_active = bool(
+        stream
+        and _recent_iso(stream.get("last_analysis_at"))
+        and (
+            stream.get("ai_status") == "ativa"
+            or float(stream.get("analysis_fps") or 0) > 0
+            or int(stream.get("analysis_frames") or stream.get("machine_frames_analyzed") or 0) > 0
+        )
+    )
+    if stream:
+        payload["runtime"] = {
+            "camera_online": runtime_online,
+            "stream_running": stream.get("status") == "online",
+            "last_frame_at": stream.get("last_frame_at"),
+            "inference_active": inference_active,
+            "inference_fps": stream.get("analysis_fps"),
+            "last_inference_at": stream.get("last_analysis_at"),
+            "frames_analyzed": stream.get("analysis_frames") or stream.get("machine_frames_analyzed") or 0,
+            "status": "online" if runtime_online else str(stream.get("status") or "offline"),
+        }
+        payload["effective_status"] = "online" if runtime_online else str(stream.get("status") or "offline")
+        payload["ultimo_frame"] = stream.get("last_frame_at") or payload.get("ultimo_frame")
+        payload["analysis_enabled"] = inference_active
+    else:
+        payload["runtime"] = {
+            "camera_online": False,
+            "stream_running": False,
+            "last_frame_at": None,
+            "inference_active": False,
+            "inference_fps": 0,
+            "last_inference_at": None,
+            "frames_analyzed": 0,
+            "status": "offline",
+        }
+        payload["effective_status"] = "offline"
+        payload["analysis_enabled"] = False
+    return payload
+
+
 def expanded_live_view_polygon(points: list[dict[str, float]], margin: float = 0.08) -> list[dict[str, float]]:
     normalized = normalize_points(points)
     xs = [float(point["x"]) for point in normalized]
@@ -2274,11 +2313,21 @@ def get_local_diagnostics(request: Request) -> dict[str, object]:
         outbox = connection.execute("SELECT COUNT(*) AS total FROM sync_outbox WHERE status IN ('pending', 'failed')").fetchone()["total"]
         last_delivery = connection.execute("SELECT status, last_attempt_at, sent_at, erro FROM alert_deliveries ORDER BY criado_em DESC LIMIT 1").fetchone()
     streams = live_streams.statuses()
+    online_streams = [stream for stream in streams if stream.get("status") == "online" and _recent_iso(stream.get("last_frame_at"))]
+    inference_streams = [
+        stream for stream in streams
+        if _recent_iso(stream.get("last_analysis_at"))
+        and (
+            stream.get("ai_status") == "ativa"
+            or float(stream.get("analysis_fps") or 0) > 0
+            or int(stream.get("analysis_frames") or stream.get("machine_frames_analyzed") or 0) > 0
+        )
+    ]
     return {
         "sqlite": "ok",
-        "cameras_online": len([stream for stream in streams if stream.get("status") == "online"]),
-        "ultimo_frame": max([str(stream.get("last_frame_at") or "") for stream in streams], default=None),
-        "ia_ativa": len([stream for stream in streams if stream.get("ai_status") == "ativa"]),
+        "cameras_online": len(online_streams),
+        "ultimo_frame": max([str(stream.get("last_frame_at") or "") for stream in online_streams], default=None),
+        "ia_ativa": len(inference_streams),
         "zonas_ativas": zones,
         "regras_ativas": rules,
         "eventos_abertos": open_events,
@@ -3938,6 +3987,8 @@ def get_camera_estado(request: Request) -> list[dict[str, Any]]:
         init_db(connection)
         user = require_user(request, connection)
         cameras = listar_por_cliente(connection, "cameras", tenant_filter(user))
+        streams = {stream.get("camera_id"): stream for stream in live_streams.statuses()}
+        cameras = [_camera_with_runtime_status(camera, streams.get(camera.get("id"))) for camera in cameras]
         if user["role"] in {"operador", "visualizador"}:
             for camera in cameras:
                 camera.pop("rtsp_host", None)

@@ -8,10 +8,12 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 import app.alerts as alerts_module
+import app.pilot as pilot_module
 from app import edge_runtime as edge_runtime_module
 from app import api as api_module
 from app.analytics import aggregate_period, compute_summary, data_quality, generate_insights, parse_dt
 from app.api import api
+from app.auth import create_user
 from app.database import connect, init_db
 from app.models import (
     atualizar_camera_operacao,
@@ -207,7 +209,7 @@ class Edge24x7AnalyticsTest(unittest.TestCase):
             def patched_connect(_path=None):
                 return connect(db_path)
 
-            with patch.object(api_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
+            with patch.object(api_module, "connect", patched_connect), patch.object(pilot_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
                 result = api_module.bootstrap_production_streams()
 
         self.assertEqual(len(result["started"]), 1)
@@ -225,7 +227,7 @@ class Edge24x7AnalyticsTest(unittest.TestCase):
             def patched_connect(_path=None):
                 return connect(db_path)
 
-            with patch.object(api_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
+            with patch.object(api_module, "connect", patched_connect), patch.object(pilot_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
                 result = api_module.bootstrap_production_streams()
 
         self.assertEqual(len(result["started"]), 1)
@@ -283,20 +285,25 @@ class Edge24x7AnalyticsTest(unittest.TestCase):
             runtime = edge_runtime_module.ProductionEdgeRuntime(edge_id="edge_test", db_path=runtime_db)
             original_api_connect = api_module.connect
             original_alerts_connect = alerts_module.connect
+            original_pilot_connect = pilot_module.connect
             try:
                 runtime._bind_runtime_database()
                 with api_module.connect() as connection:
                     runtime_clients = connection.execute("SELECT COUNT(*) AS total FROM clientes").fetchone()["total"]
                 with alerts_module.connect() as connection:
                     alert_clients = connection.execute("SELECT COUNT(*) AS total FROM clientes").fetchone()["total"]
+                with pilot_module.connect() as connection:
+                    pilot_clients = connection.execute("SELECT COUNT(*) AS total FROM clientes").fetchone()["total"]
                 with connect(other_db) as connection:
                     other_clients = connection.execute("SELECT COUNT(*) AS total FROM clientes").fetchone()["total"]
             finally:
                 api_module.connect = original_api_connect
                 alerts_module.connect = original_alerts_connect
+                pilot_module.connect = original_pilot_connect
 
         self.assertEqual(runtime_clients, 1)
         self.assertEqual(alert_clients, 1)
+        self.assertEqual(pilot_clients, 1)
         self.assertEqual(other_clients, 0)
 
     def test_production_runtime_starts_api_camera_outbox_alert_and_heartbeat_workers(self) -> None:
@@ -324,6 +331,7 @@ class Edge24x7AnalyticsTest(unittest.TestCase):
 
             original_api_connect = api_module.connect
             original_alerts_connect = alerts_module.connect
+            original_pilot_connect = pilot_module.connect
             try:
                 with patch.object(edge_runtime_module.threading, "Thread", ImmediateThread), patch.object(alerts_module, "resume_pending_deliveries"):
                     runtime.start()
@@ -331,6 +339,7 @@ class Edge24x7AnalyticsTest(unittest.TestCase):
             finally:
                 api_module.connect = original_api_connect
                 alerts_module.connect = original_alerts_connect
+                pilot_module.connect = original_pilot_connect
 
         self.assertEqual(
             started_jobs,
@@ -383,7 +392,7 @@ class Edge24x7AnalyticsTest(unittest.TestCase):
             def patched_connect(_path=None):
                 return connect(db_path)
 
-            with patch.object(api_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
+            with patch.object(api_module, "connect", patched_connect), patch.object(pilot_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
                 response = TestClient(api).get("/ready")
 
         self.assertEqual(response.status_code, 200)
@@ -391,6 +400,75 @@ class Edge24x7AnalyticsTest(unittest.TestCase):
         self.assertEqual(response.json()["camera_stream"], "ready")
         self.assertEqual(response.json()["inference"], "ready")
         self.assertEqual(response.json()["machine_monitor_loaded"], "ready")
+
+    def test_health_and_checklist_use_runtime_frames_not_stale_camera_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, db_path, cliente_id, _unidade_id, camera_id, _machine_id = self.make_db(temp_dir)
+            create_user(connection, "admin@runtime.test", "senha-segura", "admin_cliente", cliente_id=cliente_id, nome="Admin")
+            atualizar_camera_operacao(connection, camera_id, "offline", ultimo_frame=None)
+            connection.execute("UPDATE cameras SET analysis_enabled = 0 WHERE id = ?", (camera_id,))
+            connection.commit()
+            fake_streams = FakeLiveStreams()
+            stream = fake_streams.get_or_create(camera_id, "teste_maquina.mp4")
+            stream.start()
+            stream.set_analysis(True)
+
+            def patched_connect(_path=None):
+                return connect(db_path)
+
+            with patch.object(api_module, "connect", patched_connect), patch.object(pilot_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
+                client = TestClient(api)
+                login = client.post("/auth/login", json={"email": "admin@runtime.test", "senha": "senha-segura"})
+                self.assertEqual(login.status_code, 200)
+                health = client.get("/system/health")
+                checklist = client.get("/pilot/checklist")
+                cameras = client.get("/cameras/estado")
+
+        self.assertEqual(health.status_code, 200)
+        self.assertEqual(health.json()["cameras_online"], 1)
+        self.assertEqual(health.json()["cameras_offline"], 0)
+        self.assertEqual(health.json()["ai_active"], 1)
+        self.assertTrue(health.json()["ultimo_frame"])
+        self.assertTrue(checklist.json()["checks"]["camera_conectada"])
+        self.assertTrue(checklist.json()["checks"]["ia_ativa"])
+        camera = next(item for item in cameras.json() if item["id"] == camera_id)
+        self.assertEqual(camera["effective_status"], "online")
+        self.assertTrue(camera["runtime"]["camera_online"])
+        self.assertTrue(camera["runtime"]["inference_active"])
+
+    def test_health_does_not_mark_online_without_recent_runtime_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            connection, db_path, cliente_id, _unidade_id, camera_id, _machine_id = self.make_db(temp_dir)
+            create_user(connection, "admin@stale.test", "senha-segura", "admin_cliente", cliente_id=cliente_id, nome="Admin")
+            atualizar_camera_operacao(connection, camera_id, "online", ultimo_frame="2026-08-05T10:00:00+00:00")
+            fake_streams = FakeLiveStreams()
+            stream = fake_streams.get_or_create(camera_id, "teste_maquina.mp4")
+            stream.start()
+            original_public_status = stream.public_status
+
+            def stale_public_status():
+                data = original_public_status()
+                data["last_frame_at"] = None
+                data["last_analysis_at"] = None
+                data["analysis_fps"] = 0
+                data["analysis_frames"] = 0
+                return data
+
+            stream.public_status = stale_public_status
+
+            def patched_connect(_path=None):
+                return connect(db_path)
+
+            with patch.object(api_module, "connect", patched_connect), patch.object(pilot_module, "connect", patched_connect), patch.object(api_module, "live_streams", fake_streams):
+                client = TestClient(api)
+                self.assertEqual(client.post("/auth/login", json={"email": "admin@stale.test", "senha": "senha-segura"}).status_code, 200)
+                health = client.get("/system/health")
+                ready = client.get("/ready")
+
+        self.assertEqual(health.json()["cameras_online"], 0)
+        self.assertEqual(health.json()["cameras_offline"], 1)
+        self.assertEqual(health.json()["ai_active"], 0)
+        self.assertEqual(ready.json()["camera_stream"], "not_ready")
 
 
 if __name__ == "__main__":

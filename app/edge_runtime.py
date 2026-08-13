@@ -12,6 +12,7 @@ import uvicorn
 
 import app.alerts as alerts_module
 import app.api as api_module
+import app.pilot as pilot_module
 from app.config import API_HOST, API_PORT
 from app.database import connect as db_connect, init_db
 from app.models import atualizar_camera_operacao, registrar_edge_heartbeat
@@ -141,6 +142,7 @@ class ProductionEdgeRuntime:
 
         api_module.connect = runtime_connect
         alerts_module.connect = runtime_connect
+        pilot_module.connect = runtime_connect
 
     def start(self) -> None:
         self._bind_runtime_database()
