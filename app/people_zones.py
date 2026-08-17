@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -70,6 +71,14 @@ class ZoneRuleConfig:
     severity: str
     cooldown_seconds: float
     rule_id: str | None
+
+
+@dataclass
+class OperationalAbsenceContext:
+    presence_required: bool
+    data_quality_sufficient: bool
+    reason: str
+    facts: list[str] = field(default_factory=list)
 
 
 class PeopleZonesEngine:
@@ -186,7 +195,7 @@ class PeopleZonesEngine:
         if zone_type in {"restricted_area", "restricted_zone"}:
             candidates.append(("restricted_zone_occupied", occupied))
         if zone_type in {"workstation", "operator_zone", "work_area"}:
-            candidates.append(("workstation_unattended", not occupied))
+            candidates.append(("workstation_unattended", self._workstation_unattended_condition(area, presence, occupied)))
         if zone_type == "dwell_area":
             candidates.append(("excessive_zone_dwell", occupied))
         if zone_type == "authorized_area":
@@ -199,6 +208,142 @@ class PeopleZonesEngine:
             if event_state.get("event_active"):
                 result = event_state
         return result
+
+    def _workstation_unattended_condition(self, area: dict[str, Any], presence: AreaPresence, occupied: bool) -> bool:
+        if occupied:
+            return False
+        context = self._absence_context(area, presence)
+        area["_absence_context"] = {
+            "presence_required": context.presence_required,
+            "data_quality_sufficient": context.data_quality_sufficient,
+            "reason": context.reason,
+            "facts": context.facts,
+        }
+        return context.presence_required and context.data_quality_sufficient
+
+    def _absence_context(self, area: dict[str, Any], presence: AreaPresence) -> OperationalAbsenceContext:
+        sample = self._latest_operational_sample(area)
+        if sample is None:
+            return OperationalAbsenceContext(False, False, "sem amostra operacional recente para exigir presença")
+        if int(sample.get("camera_online") or 0) != 1:
+            return OperationalAbsenceContext(False, False, "câmera offline não prova ausência operacional", ["camera_online=false"])
+        metadata = sample.get("metadata") or {}
+        observations = metadata.get("canonical_observations")
+        if not isinstance(observations, list):
+            observations = []
+        states = self._observation_states(observations)
+        machine = states.get("machine_activity") or self._sample_machine_state(sample)
+        person = states.get("person_presence")
+        lighting = states.get("lighting_state")
+        activity = states.get("operational_activity")
+        zone = states.get("zone_occupancy") or ("EMPTY" if presence.pessoas_dentro <= 0 else "OCCUPIED")
+        context_matches = self._context_matches(area, sample)
+        facts = [
+            fact
+            for fact in (
+                f"machine_activity={machine}" if machine else None,
+                f"person_presence={person}" if person else None,
+                f"lighting_state={lighting}" if lighting else None,
+                f"operational_activity={activity}" if activity else None,
+                f"zone_occupancy={zone}" if zone else None,
+                "context_match=true" if context_matches else "context_match=false",
+            )
+            if fact
+        ]
+        if not context_matches:
+            return OperationalAbsenceContext(False, False, "amostra operacional não pertence ao ativo/área monitorada", facts)
+        invalid_quality = any(
+            str(observation.get("data_quality") or "").lower() in {"sensor_unavailable", "insufficient_data"}
+            and str(observation.get("value") or "").upper() == "UNKNOWN"
+            for observation in observations
+            if isinstance(observation, dict) and observation.get("observation_type") == "machine_activity"
+        )
+        if invalid_quality:
+            return OperationalAbsenceContext(False, False, "dados operacionais insuficientes; UNKNOWN não vira ausência", facts)
+        if activity == "NO_ACTIVITY":
+            return OperationalAbsenceContext(False, True, "operação sem atividade observada; não exigir operador", facts)
+        if machine == "STOPPED" and lighting == "OFF" and person in {None, "ABSENT", "UNKNOWN"}:
+            return OperationalAbsenceContext(False, True, "máquina parada e luz apagada indicam operação inativa", facts)
+        if machine == "ACTIVE" or activity == "NORMAL_ACTIVITY":
+            return OperationalAbsenceContext(True, True, "contexto operacional ativo exige presença", facts)
+        if machine in {"UNKNOWN", None}:
+            return OperationalAbsenceContext(False, False, "estado da máquina desconhecido; ausência não pode ser inferida", facts)
+        return OperationalAbsenceContext(False, True, "contexto operacional não exige presença neste momento", facts)
+
+    def _latest_operational_sample(self, area: dict[str, Any]) -> dict[str, Any] | None:
+        max_age = float(os.getenv("CAMPEX_OPERATIONAL_ABSENCE_CONTEXT_MAX_AGE_SECONDS", "30"))
+        try:
+            with connect() as connection:
+                init_db(connection)
+                row = connection.execute(
+                    """
+                    SELECT *
+                    FROM operational_samples
+                    WHERE camera_id = ?
+                    ORDER BY sample_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (self.camera_id,),
+                ).fetchone()
+        except Exception:
+            return None
+        if row is None:
+            return None
+        sample = dict(row)
+        raw = sample.get("metadata_json")
+        try:
+            sample["metadata"] = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            sample["metadata"] = {}
+        sample_at = self._parse_sample_time(sample.get("sample_at"))
+        if sample_at is not None:
+            age = max(0.0, (datetime.now(timezone.utc) - sample_at).total_seconds())
+            if age > max_age:
+                return None
+        return sample
+
+    def _parse_sample_time(self, value: Any) -> datetime | None:
+        if not value:
+            return None
+        try:
+            text = str(value).replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(text)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            return None
+
+    def _observation_states(self, observations: list[Any]) -> dict[str, str]:
+        states: dict[str, str] = {}
+        for observation in observations:
+            if not isinstance(observation, dict):
+                continue
+            kind = str(observation.get("observation_type") or "")
+            if kind not in {"machine_activity", "person_presence", "lighting_state", "operational_activity", "zone_occupancy"}:
+                continue
+            value = str(observation.get("value") or "UNKNOWN").upper()
+            states[kind] = value
+        return states
+
+    def _sample_machine_state(self, sample: dict[str, Any]) -> str | None:
+        value = sample.get("machine_state")
+        if value is None:
+            return None
+        normalized = str(value or "UNKNOWN").upper()
+        return normalized if normalized in {"ACTIVE", "STOPPED", "UNKNOWN"} else None
+
+    def _context_matches(self, area: dict[str, Any], sample: dict[str, Any]) -> bool:
+        comparable = (
+            ("machine_id", "machine_id"),
+            ("asset_id", "asset_id"),
+            ("process_id", "process_id"),
+            ("area_context_id", "area_context_id"),
+        )
+        expected = [(area_key, sample_key) for area_key, sample_key in comparable if area.get(area_key)]
+        if not expected:
+            return True
+        return any(str(area.get(area_key)) == str(sample.get(sample_key)) for area_key, sample_key in expected if sample.get(sample_key))
 
     def _apply_condition(
         self,
@@ -250,6 +395,7 @@ class PeopleZonesEngine:
             "zone_type": area.get("tipo"),
             "people_count": presence.pessoas_dentro,
             "collaborator_name": area.get("collaborator_name"),
+            "operational_absence_context": area.get("_absence_context"),
             "observation_provenance": {
                 "domain": "vision_v1",
                 "runtime": "PeopleZonesEngine",

@@ -20,10 +20,12 @@ from app.models import (
     listar_alert_deliveries,
     listar_areas_camera,
     listar_eventos_filtrados,
+    registrar_operational_sample,
 )
 from app.people_zones import PeopleZonesEngine
 from app.person_detection import Detection
 from app.restricted_area import AreaPoint
+from shared.schemas import now_iso
 
 
 class ObservationsToEventsV1Test(unittest.TestCase):
@@ -84,6 +86,43 @@ class ObservationsToEventsV1Test(unittest.TestCase):
             time.sleep(0.05)
         with test_connect() as connection:
             return listar_alert_deliveries(connection)
+
+    def _add_active_operational_context(self, connection, camera_id: str) -> None:
+        registrar_operational_sample(
+            connection,
+            sample_uuid=f"sample-{time.monotonic_ns()}",
+            tenant_id="tenant",
+            unit_id="unit",
+            camera_id=camera_id,
+            machine_id=None,
+            machine_state="ACTIVE",
+            operator_present=None,
+            activity_score=42.0,
+            confidence=0.9,
+            capture_fps=15.0,
+            inference_fps=5.0,
+            frames_analyzed=10,
+            camera_online=True,
+            sample_at=now_iso(),
+            metadata={
+                "canonical_observations": [
+                    {
+                        "observation_type": "machine_activity",
+                        "camera_id": camera_id,
+                        "value": "ACTIVE",
+                        "confidence": 0.9,
+                        "data_quality": "observed",
+                    },
+                    {
+                        "observation_type": "person_presence",
+                        "camera_id": camera_id,
+                        "value": "UNKNOWN",
+                        "confidence": 0.0,
+                        "data_quality": "insufficient_data",
+                    },
+                ]
+            },
+        )
 
     def test_machine_stoppage_vertical_chain_from_temporal_observation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_ZONE_EVENT_SECONDS": "0"}):
@@ -227,6 +266,7 @@ class ObservationsToEventsV1Test(unittest.TestCase):
                     [{"x": 0.2, "y": 0.2}, {"x": 0.8, "y": 0.2}, {"x": 0.8, "y": 0.8}, {"x": 0.2, "y": 0.8}],
                     tipo="restricted_zone",
                 )
+                self._add_active_operational_context(connection, camera_id)
                 areas = listar_areas_camera(connection, camera_id)
             engine = PeopleZonesEngine(camera_id, evidence_root=evidence_root)
             inside = [Detection(35, 10, 50, 70, 0.9, track_id=9)]

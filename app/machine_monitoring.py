@@ -82,6 +82,7 @@ class MachineMonitorConfig:
     separation_score: float | None = None
     calibration_result: str | None = None
     operator_absence_seconds: float = 30.0
+    operator_presence_grace_seconds: float = field(default_factory=lambda: env_float("CAMPEX_OPERATOR_PRESENCE_GRACE_SECONDS", 45.0))
     stopped_with_operator_seconds: float = 120.0
     microstop_window_seconds: float = 3600.0
     microstop_limit: int = 5
@@ -100,6 +101,10 @@ class MachineMonitorState:
     confidence: float = 0.0
     reason: str = "monitoramento ainda sem amostras suficientes"
     operator_present: bool = False
+    raw_operator_present: bool = False
+    operator_presence_reason: str = "sem detecção humana recente"
+    last_operator_seen_at: float | None = None
+    operator_absence_candidate_since: float | None = None
     operator_present_seconds: float = 0.0
     operator_absent_seconds: float = 0.0
     max_people: int = 0
@@ -154,6 +159,7 @@ def config_from_dict(payload: dict[str, Any]) -> MachineMonitorConfig:
         separation_score=payload.get("separation_score"),
         calibration_result=payload.get("calibration_result"),
         operator_absence_seconds=float(payload.get("operator_absence_seconds") or env_float("CAMPEX_OPERATOR_ABSENCE_SECONDS", 30.0)),
+        operator_presence_grace_seconds=float(payload.get("operator_presence_grace_seconds") or env_float("CAMPEX_OPERATOR_PRESENCE_GRACE_SECONDS", 45.0)),
         stopped_with_operator_seconds=float(payload.get("stopped_with_operator_seconds") or env_float("CAMPEX_STOPPED_WITH_OPERATOR_SECONDS", 120.0)),
         microstop_window_seconds=float(payload.get("microstop_window_seconds") or env_float("CAMPEX_MICROSTOP_WINDOW_SECONDS", 3600.0)),
         microstop_limit=int(payload.get("microstop_limit") or int(env_float("CAMPEX_MICROSTOP_LIMIT", 5))),
@@ -276,7 +282,8 @@ class MachineMonitorEngine:
         self.state.frames_analyzed += 1
         return float(score)
 
-    def _update_operator(self, frame: np.ndarray, detections: list[Detection], dt: float) -> None:
+    def _update_operator(self, frame: np.ndarray, detections: list[Detection], dt: float, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
         height, width = frame.shape[:2]
         ids: set[int] = set()
         presence_polygon = self._presence_polygon()
@@ -287,11 +294,31 @@ class MachineMonitorEngine:
                 continue
             if point_in_polygon(foot_point_normalized(detection, width, height), presence_polygon):
                 ids.add(detection.track_id)
-        self.state.operator_present = bool(ids)
+        raw_present = bool(ids)
+        self.state.raw_operator_present = raw_present
+        if raw_present:
+            self.state.operator_present = True
+            self.state.last_operator_seen_at = now
+            self.state.operator_absence_candidate_since = None
+            self.state.operator_presence_reason = "pessoa detectada na área de presença operacional"
+        else:
+            if self.state.last_operator_seen_at is not None:
+                missing_for = max(0.0, now - self.state.last_operator_seen_at)
+                if missing_for <= max(0.0, self.config.operator_presence_grace_seconds):
+                    self.state.operator_present = True
+                    self.state.operator_presence_reason = f"presença mantida por graça temporal; detector sem pessoa há {missing_for:.1f}s"
+                else:
+                    self.state.operator_absence_candidate_since = self.state.operator_absence_candidate_since or self.state.last_operator_seen_at
+                    self.state.operator_present = False
+                    self.state.operator_presence_reason = f"sem pessoa na área de presença há {missing_for:.1f}s"
+            else:
+                self.state.operator_absence_candidate_since = self.state.operator_absence_candidate_since or now
+                self.state.operator_present = False
+                self.state.operator_presence_reason = "nenhuma presença operacional observada desde o início do monitor"
         self.state.track_ids.update(ids)
         self.state.max_people = max(self.state.max_people, len(ids))
         if self.state.event_id:
-            if ids:
+            if self.state.operator_present:
                 self.state.operator_present_seconds += dt
             else:
                 self.state.operator_absent_seconds += dt
@@ -534,7 +561,15 @@ class MachineMonitorEngine:
                     midia_path=image_path,
                     track_ids=sorted(self.state.track_ids),
                     severidade=severity,
-                    metadata={**(metadata or {}), **provenance, "estimated_loss": self.estimated_loss(0), "machine_state": self.state.state},
+                    metadata={
+                        **(metadata or {}),
+                        **provenance,
+                        "estimated_loss": self.estimated_loss(0),
+                        "machine_state": self.state.state,
+                        "operator_present": self.state.operator_present,
+                        "raw_operator_present": self.state.raw_operator_present,
+                        "operator_presence_reason": self.state.operator_presence_reason,
+                    },
                 )
             if error:
                 atualizar_evento_replay(connection, event_id, replay_error=error)
@@ -586,6 +621,9 @@ class MachineMonitorEngine:
                 "activity_score": self.state.smoothed_motion,
                 "raw_activity_score": self.state.raw_activity_score,
                 "operator_present": self.state.operator_present,
+                "raw_operator_present": self.state.raw_operator_present,
+                "operator_presence_reason": self.state.operator_presence_reason,
+                "operator_presence_grace_seconds": self.config.operator_presence_grace_seconds,
                 "presence_scope": normalize_presence_scope(self.config.presence_scope),
                 "track_ids": sorted(self.state.track_ids),
             }
@@ -695,6 +733,9 @@ class MachineMonitorEngine:
                         "changed": changed,
                         "reason": self.state.reason,
                         "people_count": 1 if self.state.operator_present else 0,
+                        "raw_people_count": 1 if self.state.raw_operator_present else 0,
+                        "operator_presence_reason": self.state.operator_presence_reason,
+                        "operator_presence_grace_seconds": self.config.operator_presence_grace_seconds,
                         "raw_activity_score": self.state.raw_activity_score,
                         "window_samples": self.state.window_samples,
                         "window_mean": self.state.window_mean,

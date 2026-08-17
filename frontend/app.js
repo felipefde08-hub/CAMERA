@@ -84,10 +84,13 @@ const setupCompanySummary = document.querySelector("#setupCompanySummary");
 const setupOperationSummary = document.querySelector("#setupOperationSummary");
 const setupCameraGate = document.querySelector("#setupCameraGate");
 const setupReadinessConclusion = document.querySelector("#setupReadinessConclusion");
+const setupHeroStatus = document.querySelector("#setupHeroStatus");
 const firstRunPanel = document.querySelector("#firstRunPanel");
 const firstRunForm = document.querySelector("#firstRunForm");
 const firstRunStatus = document.querySelector("#firstRunStatus");
 const firstRunAdminEmail = firstRunForm?.querySelector("input[name='admin_email']");
+const setupNavLinks = Array.from(document.querySelectorAll("[data-setup-nav]"));
+const setupSections = Array.from(document.querySelectorAll("[data-setup-section]"));
 
 let currentCameraId = null;
 let currentCameraName = null;
@@ -170,10 +173,86 @@ function safeText(value) {
     .replaceAll('"', "&quot;");
 }
 
+function friendlyError(error) {
+  const raw = String(error?.message || error || "erro desconhecido");
+  if (/internal server error/i.test(raw)) {
+    return "Não foi possível carregar esta visualização agora. Verifique a API local e tente atualizar.";
+  }
+  if (/failed to fetch|networkerror/i.test(raw)) {
+    return "Não foi possível conectar à API local. Confirme se a Campex está iniciada.";
+  }
+  if (/401|unauthorized|not authenticated/i.test(raw)) {
+    return "Entre para acessar esta configuração.";
+  }
+  return raw.replace(/^Erro:\s*/i, "");
+}
+
+function setupErrorState(title, error, action = "Atualizar") {
+  return `
+    <div class="cx-setup-error">
+      <strong>${safeText(title)}</strong>
+      <p>${safeText(friendlyError(error))}</p>
+      <button type="button" data-setup-refresh>${safeText(action)}</button>
+    </div>
+  `;
+}
+
+function setupStatusPill(status) {
+  const value = String(status || "indisponível").toLowerCase();
+  const tone = value.includes("online") || value.includes("pass") || value.includes("ativo") || value.includes("sent") ? "online"
+    : value.includes("fail") || value.includes("falh") || value.includes("offline") || value.includes("erro") ? "offline"
+    : "neutral";
+  return `<span class="cx-setup-pill ${tone}">${safeText(status || "Indisponível")}</span>`;
+}
+
+function humanSetupType(value) {
+  const labels = {
+    machine_region: "Região da máquina",
+    operator_zone: "Zona do operador",
+    work_area: "Área de trabalho",
+    workstation: "Posto de trabalho",
+    restricted_area: "Área restrita",
+    restricted_zone: "Área restrita",
+    dwell_area: "Permanência",
+    machine_stoppage: "Parada operacional",
+    workstation_unattended: "Ausência operacional",
+    machine_running_without_operator: "Máquina ativa sem operador",
+    machine_stopped_with_operator: "Máquina parada com operador",
+    restricted_zone_occupied: "Área restrita ocupada",
+  };
+  return labels[value] || value || "Não informado";
+}
+
+function humanSetupId(value, fallback = "Não informado") {
+  const text = String(value || "").trim();
+  if (!text) return fallback;
+  if (/^(cam|area|mach|evt|evd|rec|del|unit|client|proc|asset|rule)_[a-z0-9_-]+$/i.test(text)) return fallback;
+  return text;
+}
+
+function currentSetupSection() {
+  const key = String(window.location.hash || "#cliente").replace("#", "");
+  const known = new Set(setupNavLinks.map((link) => link.dataset.setupNav));
+  return known.has(key) ? key : "cliente";
+}
+
+function applySetupSection() {
+  const active = currentSetupSection();
+  setupNavLinks.forEach((link) => {
+    const isActive = link.dataset.setupNav === active;
+    link.classList.toggle("active", isActive);
+    link.setAttribute("aria-current", isActive ? "page" : "false");
+  });
+  setupSections.forEach((section) => {
+    section.hidden = section.dataset.setupSection !== active;
+  });
+}
+
 function setSetupStatus(message, offline = false) {
   if (!setupSaveStatus) return;
   setupSaveStatus.textContent = message;
   setupSaveStatus.classList.toggle("offline", offline);
+  if (setupHeroStatus) setupHeroStatus.textContent = offline ? "Configuração requer atenção" : message;
 }
 
 function fillSetupSelects() {
@@ -570,7 +649,7 @@ async function requestJson(url, options) {
   const payload = isJson ? await response.json() : { detail: await response.text() };
   if (!response.ok) {
     const detail = payload.detail || `Erro HTTP ${response.status}`;
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    throw new Error(friendlyError(typeof detail === "string" ? detail : JSON.stringify(detail)));
   }
   if (!isJson) {
     throw new Error("A API respondeu em formato inesperado.");
@@ -594,7 +673,7 @@ async function testConnection() {
     }
   } catch (error) {
     result.className = "result offline";
-    result.textContent = `Offline\nErro: ${error.message}`;
+    result.innerHTML = setupErrorState("Câmera offline no teste", error, "Testar novamente");
   }
 }
 
@@ -631,27 +710,27 @@ async function saveCamera(event) {
     form.elements.porta_rtsp.value = 554;
   } catch (error) {
     result.className = "result offline";
-    result.textContent = `Não foi possível cadastrar.\nErro: ${error.message}`;
+    result.innerHTML = setupErrorState("Não foi possível cadastrar a câmera", error, "Tentar novamente");
   }
 }
 
 function renderCameras(cameras) {
   if (!cameras.length) {
-    cameraList.innerHTML = '<div class="muted">Nenhuma câmera cadastrada ainda.</div>';
+    cameraList.innerHTML = '<div class="cx-setup-empty"><strong>Nenhuma câmera cadastrada.</strong><p>Cadastre uma câmera RTSP para associar ao contexto operacional.</p></div>';
     return;
   }
   cameraList.innerHTML = cameras.map((camera) => `
-    <article class="camera-card">
-      <strong>${camera.nome}</strong>
-      <div><span class="status-dot ${camera.status === "online" ? "online" : "offline"}"></span>${camera.status === "online" ? "Online" : "Offline"}</div>
-      <div>Host: ${camera.rtsp_host || camera.secure_ref || "não informado"}</div>
-      <div>Resolução: ${camera.resolucao || "indisponível"}</div>
-      <div>FPS: ${camera.fps ?? "indisponível"}</div>
-      <div>Edge: ${camera.ativa ? "ativa no runtime" : "desativada"}</div>
-      <div>Última atualização: ${camera.ultimo_frame || camera.criado_em || "nunca"}</div>
+    <article class="camera-card cx-setup-list-row">
+      <div class="cx-setup-row-main">
+        <strong>${safeText(camera.nome)}</strong>
+        <span>${safeText(camera.resolucao || "Resolução indisponível")} · ${camera.fps ?? "FPS indisponível"}</span>
+      </div>
+      <div>${setupStatusPill(camera.status === "online" ? "Online" : camera.status || "Offline")}</div>
+      <div><span>Edge</span><strong>${camera.ativa ? "Ativa no runtime" : "Desativada"}</strong></div>
+      <div><span>Último frame</span><strong>${safeText(camera.ultimo_frame || "Nunca")}</strong></div>
       <div class="camera-actions">
-        <button type="button" data-action="open" data-camera-id="${camera.id}" data-camera-name="${camera.nome}">Abrir câmera</button>
-        <button type="button" data-action="live-view" data-camera-id="${camera.id}" data-camera-name="${camera.nome}">Live View</button>
+        <button type="button" data-action="open" data-camera-id="${camera.id}" data-camera-name="${safeText(camera.nome)}">Abrir</button>
+        <button type="button" data-action="live-view" data-camera-id="${camera.id}" data-camera-name="${safeText(camera.nome)}">Live</button>
         <button type="button" data-action="stop" data-camera-id="${camera.id}">Parar</button>
         <button type="button" data-action="toggle-active" data-camera-id="${camera.id}" data-active="${camera.ativa}">
           ${camera.ativa ? "Desativar no Edge" : "Ativar no Edge"}
@@ -686,21 +765,21 @@ async function loadConfigData() {
   fillSelect(cameraUnitSelect, units, "Usar unidade padrão");
   fillSetupSelects();
   clientList.innerHTML = clients.length ? clients.map((client) => `
-    <article class="compact-card">
-      <strong>${client.nome}</strong>
-      <span>${client.documento || "sem documento"} · ${client.status}</span>
+    <article class="compact-card cx-setup-list-row">
+      <strong>${safeText(client.nome)}</strong>
+      <span>${safeText(client.documento || "sem documento")} · ${safeText(client.status || "ativo")}</span>
     </article>
   `).join("") : '<div class="muted">Nenhum cliente cadastrado.</div>';
   unitList.innerHTML = units.length ? units.map((unit) => `
-    <article class="compact-card">
-      <strong>${unit.nome}</strong>
-      <span>${unit.localizacao || "sem endereço"} · ${unit.timezone || "America/Sao_Paulo"}</span>
+    <article class="compact-card cx-setup-list-row">
+      <strong>${safeText(unit.nome)}</strong>
+      <span>${safeText(unit.localizacao || "sem endereço")} · ${safeText(unit.timezone || "America/Sao_Paulo")}</span>
     </article>
   `).join("") : '<div class="muted">Nenhuma unidade cadastrada.</div>';
   userList.innerHTML = users.length ? users.map((user) => `
-    <article class="compact-card">
-      <strong>${user.nome || user.email}</strong>
-      <span>${user.email} · ${user.role} · ${user.ativo ? "ativo" : "inativo"}</span>
+    <article class="compact-card cx-setup-list-row">
+      <strong>${safeText(user.nome || user.email)}</strong>
+      <span>${safeText(user.email)} · ${safeText(user.role)} · ${user.ativo ? "ativo" : "inativo"}</span>
     </article>
   `).join("") : '<div class="muted">Nenhum usuário cadastrado.</div>';
   renderSetupJourney();
@@ -995,21 +1074,22 @@ function updateUnackedCount(events) {
 
 function renderEvents(events) {
   if (!events.length) {
-    eventList.innerHTML = '<div class="muted">Nenhuma ocorrência registrada.</div>';
+    eventList.innerHTML = '<div class="cx-setup-empty"><strong>Nenhuma ocorrência registrada.</strong><p>Eventos reais aparecerão aqui quando o monitoramento estiver ativo.</p></div>';
     return;
   }
   eventList.innerHTML = events.slice(0, 20).map((event) => `
-    <article class="event-card">
-      <strong>${event.tipo}</strong>
-      <div>Status: ${event.status || "indisponível"}</div>
-      <div>Câmera: ${event.camera_id}</div>
-      <div>Área: ${event.area_id || "indisponível"}</div>
-      <div>Início: ${event.inicio}</div>
-      <div>Fim: ${event.fim || "aberta"}</div>
-      <div>Duração: ${event.duracao ?? "em andamento"}</div>
-      <div>Máximo de pessoas: ${event.quantidade_maxima ?? "-"}</div>
-      <div>Track IDs: ${event.track_ids && event.track_ids.length ? event.track_ids.join(", ") : "-"}</div>
-      <div>Causa: ${event.cause_category || "pendente"}</div>
+    <article class="event-card cx-setup-history-card">
+      <div class="cx-setup-history-head">
+        <strong>${humanSetupType(event.tipo)}</strong>
+        ${setupStatusPill(event.status || "Em andamento")}
+      </div>
+      <div class="cx-setup-history-grid">
+        <span>Câmera</span><strong>${humanSetupId(event.camera_nome || event.camera_name || event.camera_id, "Câmera monitorada")}</strong>
+        <span>Área</span><strong>${humanSetupId(event.area_nome || event.area_id, "Área não informada")}</strong>
+        <span>Início</span><strong>${safeText(event.inicio || "Não informado")}</strong>
+        <span>Duração</span><strong>${event.duracao ?? "em andamento"}</strong>
+        <span>Causa</span><strong>${safeText(event.cause_category || "pendente")}</strong>
+      </div>
       ${event.midia_path ? `<img src="/eventos/${event.id}/evidence" alt="Evidência da ocorrência ${event.id}" />` : ""}
       <div class="actions">
         <button type="button" data-event-action="view" data-event-id="${event.id}">Ver ocorrência</button>
@@ -1039,17 +1119,21 @@ function beepOnce() {
 
 function renderLiveAlerts() {
   if (!liveAlerts.length) {
-    liveAlertList.innerHTML = '<div class="muted">Nenhum alerta recebido agora.</div>';
+    liveAlertList.innerHTML = '<div class="cx-setup-empty"><strong>Nenhum alerta em tempo real.</strong><p>Alertas aparecem aqui quando eventos críticos forem criados.</p></div>';
     return;
   }
   liveAlertList.innerHTML = liveAlerts.slice(0, 10).map((alert) => `
-    <article class="alert-card new" id="evento-${alert.event_id || alert.recipient_id}">
-      <strong>${alert.titulo || "Alerta Campex"}</strong>
-      <div>Câmera: ${alert.camera_id || "-"}</div>
-      <div>Área: ${alert.area_id || "-"}</div>
-      <div>Unidade: ${alert.unidade_id || "-"}</div>
-      <div>Horário: ${alert.horario || "-"}</div>
-      <div>Pessoas: ${alert.quantidade_pessoas ?? "-"}</div>
+    <article class="alert-card new cx-setup-history-card" id="evento-${alert.event_id || alert.recipient_id}">
+      <div class="cx-setup-history-head">
+        <strong>${safeText(alert.titulo || "Alerta Campex")}</strong>
+        ${setupStatusPill("Novo")}
+      </div>
+      <div class="cx-setup-history-grid">
+        <span>Câmera</span><strong>${humanSetupId(alert.camera_nome || alert.camera_id, "Câmera monitorada")}</strong>
+        <span>Área</span><strong>${humanSetupId(alert.area_nome || alert.area_id, "Área monitorada")}</strong>
+        <span>Horário</span><strong>${safeText(alert.horario || "-")}</strong>
+        <span>Pessoas</span><strong>${alert.quantidade_pessoas ?? "-"}</strong>
+      </div>
       ${alert.evidence_url ? `<img src="${alert.evidence_url}" alt="Miniatura da evidência" />` : ""}
       ${alert.event_id ? `
         <div class="actions">
@@ -1104,21 +1188,28 @@ function recipientPayload() {
 }
 
 async function loadRecipients() {
-  const recipients = await requestJson("/alert-recipients");
+  let recipients = [];
+  try {
+    recipients = await requestJson("/alert-recipients");
+  } catch (error) {
+    recipientList.innerHTML = setupErrorState("Não foi possível carregar responsáveis", error);
+    return;
+  }
   knownRecipients = recipients;
   if (!recipients.length) {
-    recipientList.innerHTML = '<div class="muted">Nenhum responsável cadastrado.</div>';
+    recipientList.innerHTML = '<div class="cx-setup-empty"><strong>Nenhum responsável cadastrado.</strong><p>Cadastre quem deve receber alertas reais da operação.</p></div>';
     return;
   }
   recipientList.innerHTML = recipients.map((recipient) => `
-    <article class="recipient-card">
-      <strong>${recipient.nome}</strong>
-      <div>E-mail: ${recipient.email}</div>
-      <div>Status: ${recipient.ativo ? "ativo" : "inativo"}</div>
-      <div>Câmera: ${recipient.camera_id || "todas"}</div>
-      <div>Área: ${recipient.area_id || "todas"}</div>
-      <div>Severidade mínima: ${recipient.severidade_minima}</div>
-      <div>Eventos: ${recipient.event_types?.length ? recipient.event_types.join(", ") : "todos"}</div>
+    <article class="recipient-card cx-setup-list-row">
+      <div class="cx-setup-row-main">
+        <strong>${safeText(recipient.nome)}</strong>
+        <span>${safeText(recipient.email)}</span>
+      </div>
+      <div>${setupStatusPill(recipient.ativo ? "Ativo" : "Inativo")}</div>
+      <div><span>Escopo</span><strong>${recipient.camera_id ? "Câmera específica" : "Todas as câmeras"}</strong></div>
+      <div><span>Severidade</span><strong>${safeText(recipient.severidade_minima || "low")}</strong></div>
+      <div><span>Eventos</span><strong>${recipient.event_types?.length ? recipient.event_types.map(humanSetupType).join(", ") : "Todos"}</strong></div>
       <div class="actions">
         <button type="button" data-recipient-action="test" data-recipient-id="${recipient.id}">Enviar alerta de teste</button>
         <button type="button" data-recipient-action="edit" data-recipient-id="${recipient.id}">Editar</button>
@@ -1132,21 +1223,31 @@ async function loadRecipients() {
 }
 
 async function loadDeliveries() {
-  const deliveries = await requestJson("/alert-deliveries");
+  let deliveries = [];
+  try {
+    deliveries = await requestJson("/alert-deliveries");
+  } catch (error) {
+    deliveryList.innerHTML = setupErrorState("Não foi possível carregar entregas", error);
+    return;
+  }
   if (!deliveries.length) {
-    deliveryList.innerHTML = '<div class="muted">Nenhuma entrega registrada.</div>';
+    deliveryList.innerHTML = '<div class="cx-setup-empty"><strong>Nenhuma entrega registrada.</strong><p>Histórico de e-mails aparece quando alertas forem enviados.</p></div>';
     return;
   }
   const label = { pending: "Enviando", sent: "Enviado", failed: "Falhou" };
   deliveryList.innerHTML = deliveries.slice(0, 30).map((delivery) => `
-    <article class="delivery-card ${delivery.status}">
-      <strong>${delivery.is_test ? "Teste" : "Ocorrência"} por ${delivery.canal}</strong>
-      <div>Status: ${label[delivery.status] || delivery.status}</div>
-      <div>Evento: ${delivery.evento_id || "teste"}</div>
-      <div>Responsável: ${delivery.recipient_id}</div>
-      <div>Tentativas: ${delivery.attempts}</div>
-      <div>Última tentativa: ${delivery.last_attempt_at || "-"}</div>
-      ${delivery.erro ? `<div>Erro: ${delivery.erro}</div>` : ""}
+    <article class="delivery-card ${delivery.status} cx-setup-history-card">
+      <div class="cx-setup-history-head">
+        <strong>${delivery.is_test ? "Teste de e-mail" : "Alerta de ocorrência"} · ${safeText(delivery.canal || "e-mail")}</strong>
+        ${setupStatusPill(label[delivery.status] || delivery.status)}
+      </div>
+      <div class="cx-setup-history-grid">
+        <span>Origem</span><strong>${delivery.evento_id ? "Evento operacional" : "Teste"}</strong>
+        <span>Responsável</span><strong>${humanSetupId(delivery.recipient_name || delivery.destinatario || delivery.recipient_id, "Responsável configurado")}</strong>
+        <span>Tentativas</span><strong>${delivery.attempts}</strong>
+        <span>Última tentativa</span><strong>${safeText(delivery.last_attempt_at || "-")}</strong>
+      </div>
+      ${delivery.erro ? `<div class="cx-setup-error compact"><strong>Erro de entrega</strong><p>${safeText(friendlyError(delivery.erro))}</p></div>` : ""}
       ${delivery.status === "failed" ? `
         <div class="actions">
           <button type="button" data-delivery-action="retry" data-delivery-id="${delivery.id}">Tentar novamente</button>
@@ -1283,6 +1384,43 @@ async function checkApi() {
   }
 }
 
+function renderSignedOutSetupState() {
+  renderCameras([]);
+  renderEvents([]);
+  renderLiveAlerts();
+  recipientList.innerHTML = '<div class="cx-setup-empty"><strong>Entre para configurar responsáveis.</strong><p>Destinatários de alerta ficam disponíveis após autenticação.</p></div>';
+  deliveryList.innerHTML = '<div class="cx-setup-empty"><strong>Entre para consultar histórico.</strong><p>Entregas de e-mail e alertas são protegidos pela sessão.</p></div>';
+  systemHealth.className = "cx-setup-empty";
+  systemHealth.innerHTML = '<strong>Saúde protegida pela sessão.</strong><p>Entre para consultar banco, câmeras, IA e armazenamento.</p>';
+  pilotChecklist.className = "cx-setup-empty";
+  pilotChecklist.innerHTML = '<strong>Checklist protegido pela sessão.</strong><p>O status do piloto aparece após login.</p>';
+  setSetupStatus("Entre para concluir a configuração", true);
+}
+
+async function bootstrapProtectedSetup() {
+  const auth = await requestJson("/auth/status");
+  if (!auth.authenticated) {
+    if (loginStatus && !loginForm.hidden) loginStatus.textContent = "Entre para acessar as configurações da operação.";
+    renderSignedOutSetupState();
+    return false;
+  }
+  if (loginStatus && auth.user) {
+    loginStatus.textContent = `Logado como ${auth.user.email} (${auth.user.role})`;
+  }
+  await Promise.allSettled([
+    loadConfigData().then(loadSetupOperation),
+    loadCameras().then(() => Promise.all([loadMachineConfigList(), loadSetupOperation()])),
+    loadEvents(),
+    loadRecipients(),
+    loadDeliveries(),
+    loadSystemHealth(),
+    loadOperations(),
+  ]);
+  connectRealtime();
+  startDeliveryPolling();
+  return true;
+}
+
 async function login(event) {
   event.preventDefault();
   const data = new FormData(loginForm);
@@ -1309,25 +1447,39 @@ async function login(event) {
 async function loadSystemHealth() {
   try {
     const health = await requestJson("/system/health");
-    systemHealth.textContent = [
-      `API: ${health.api}`,
-      `Banco: ${health.database}`,
-      `Disco livre: ${health.disk_free_gb} GB`,
-      `Câmeras online: ${health.cameras_online}`,
-      `Câmeras offline: ${health.cameras_offline}`,
-      `IA ativa: ${health.ai_active}`,
-      `IA inativa: ${health.ai_inactive}`,
-      `Último frame: ${health.ultimo_frame || "nenhum"}`,
-      `Último evento: ${health.ultimo_evento || "nenhum"}`,
-      `Último e-mail: ${health.ultimo_email || "nenhum"}`,
-    ].join("\n");
+    systemHealth.className = "cx-setup-health-grid";
+    systemHealth.innerHTML = [
+      ["API", health.api],
+      ["Banco", health.database],
+      ["Disco livre", `${health.disk_free_gb} GB`],
+      ["Câmeras online", health.cameras_online],
+      ["Câmeras offline", health.cameras_offline],
+      ["IA ativa", health.ai_active],
+      ["IA inativa", health.ai_inactive],
+      ["Último frame", health.ultimo_frame || "nenhum"],
+      ["Último evento", health.ultimo_evento || "nenhum"],
+      ["Último e-mail", health.ultimo_email || "nenhum"],
+    ].map(([label, value]) => `
+      <article>
+        <span>${safeText(label)}</span>
+        <strong>${safeText(value)}</strong>
+      </article>
+    `).join("");
     const checklist = await requestJson("/pilot/checklist");
-    pilotChecklist.textContent = Object.entries(checklist.checks)
-      .map(([key, ok]) => `${ok ? "OK" : "Pendente"} - ${key}`)
-      .join("\n");
+    pilotChecklist.className = "cx-setup-checklist";
+    pilotChecklist.innerHTML = Object.entries(checklist.checks)
+      .map(([key, ok]) => `
+        <article>
+          ${setupStatusPill(ok ? "PASS" : "Pendente")}
+          <strong>${safeText(key.replaceAll("_", " "))}</strong>
+        </article>
+      `)
+      .join("");
   } catch (error) {
-    systemHealth.textContent = `Não foi possível carregar saúde: ${error.message}`;
-    pilotChecklist.textContent = "Checklist indisponível.";
+    systemHealth.className = "result offline";
+    systemHealth.innerHTML = setupErrorState("Não foi possível carregar saúde", error);
+    pilotChecklist.className = "result muted";
+    pilotChecklist.innerHTML = setupErrorState("Checklist indisponível", error);
   }
 }
 
@@ -1591,17 +1743,25 @@ deliveryList.addEventListener("click", async (event) => {
   await requestJson(`/alert-deliveries/${button.dataset.deliveryId}/retry`, { method: "POST" });
   await loadDeliveries();
 });
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-setup-refresh]");
+  if (!button) return;
+  Promise.allSettled([
+    loadConfigData(),
+    loadCameras(),
+    loadSetupOperation(),
+    loadRecipients(),
+    loadDeliveries(),
+    loadSystemHealth(),
+  ]);
+});
 window.addEventListener("resize", drawAreaCanvas);
-window.addEventListener("hashchange", focusLoginFromHash);
+window.addEventListener("hashchange", () => {
+  applySetupSection();
+  focusLoginFromHash();
+});
 checkApi();
 checkFirstRun();
-loadConfigData().then(loadSetupOperation).catch(() => {});
-loadCameras().then(() => Promise.all([loadMachineConfigList(), loadSetupOperation()])).catch(() => renderCameras([]));
-loadEvents().catch(() => renderEvents([]));
-loadRecipients().catch(() => {});
-loadDeliveries().catch(() => {});
-loadSystemHealth().catch(() => {});
-loadOperations().catch(() => {});
-connectRealtime();
-startDeliveryPolling();
+applySetupSection();
+bootstrapProtectedSetup().catch(() => renderSignedOutSetupState());
 focusLoginFromHash();

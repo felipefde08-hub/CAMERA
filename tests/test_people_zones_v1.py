@@ -21,9 +21,11 @@ from app.models import (
     listar_alert_deliveries,
     listar_areas_camera,
     listar_eventos_filtrados,
+    registrar_operational_sample,
 )
 from app.people_zones import EVENT_CATALOG_V1, PeopleZonesEngine
 from app.person_detection import Detection
+from shared.schemas import now_iso
 
 
 class PeopleZonesV1Test(unittest.TestCase):
@@ -47,6 +49,74 @@ class PeopleZonesV1Test(unittest.TestCase):
                 event_types=["workstation_unattended", "restricted_zone_occupied"],
             )
         return test_connect, camera_id
+
+    def add_operational_context(
+        self,
+        connection,
+        camera_id: str,
+        *,
+        machine_state: str = "ACTIVE",
+        person_presence: str = "UNKNOWN",
+        lighting_state: str | None = None,
+        operational_activity: str | None = None,
+        camera_online: bool = True,
+        data_quality: str = "observed",
+        machine_id: str | None = None,
+    ) -> None:
+        observations = [
+            {
+                "observation_type": "machine_activity",
+                "camera_id": camera_id,
+                "value": machine_state,
+                "confidence": 0.9 if machine_state != "UNKNOWN" else 0.0,
+                "data_quality": data_quality if machine_state != "UNKNOWN" else "insufficient_data",
+            },
+            {
+                "observation_type": "person_presence",
+                "camera_id": camera_id,
+                "value": person_presence,
+                "confidence": 0.8 if person_presence != "UNKNOWN" else 0.0,
+                "data_quality": data_quality if person_presence != "UNKNOWN" else "insufficient_data",
+            },
+        ]
+        if lighting_state:
+            observations.append(
+                {
+                    "observation_type": "lighting_state",
+                    "camera_id": camera_id,
+                    "value": lighting_state,
+                    "confidence": 0.9,
+                    "data_quality": data_quality,
+                }
+            )
+        if operational_activity:
+            observations.append(
+                {
+                    "observation_type": "operational_activity",
+                    "camera_id": camera_id,
+                    "value": operational_activity,
+                    "confidence": 0.85,
+                    "data_quality": "inferred",
+                }
+            )
+        registrar_operational_sample(
+            connection,
+            sample_uuid=f"sample-{time.monotonic_ns()}",
+            tenant_id="tenant",
+            unit_id="unit",
+            camera_id=camera_id,
+            machine_id=machine_id,
+            machine_state=machine_state,
+            operator_present=None,
+            activity_score=42.0 if machine_state == "ACTIVE" else 0.0,
+            confidence=0.9 if machine_state != "UNKNOWN" else 0.0,
+            capture_fps=15.0 if camera_online else 0.0,
+            inference_fps=5.0 if data_quality != "sensor_unavailable" else 0.0,
+            frames_analyzed=10 if data_quality != "sensor_unavailable" else 0,
+            camera_online=camera_online,
+            sample_at=now_iso(),
+            metadata={"canonical_observations": observations},
+        )
 
     def test_catalog_has_people_and_zones_v1_events(self) -> None:
         self.assertEqual(
@@ -94,6 +164,7 @@ class PeopleZonesV1Test(unittest.TestCase):
                     tipo="workstation",
                     absence_tolerance_seconds=0,
                 )
+                self.add_operational_context(connection, camera_id, machine_state="ACTIVE")
                 areas = listar_areas_camera(connection, camera_id)
             frame = np.zeros((100, 100, 3), dtype=np.uint8)
             engine = PeopleZonesEngine(camera_id, evidence_root=evidence_root)
@@ -279,6 +350,7 @@ class PeopleZonesV1Test(unittest.TestCase):
                     tipo="work_area",
                     absence_tolerance_seconds=0.2,
                 )
+                self.add_operational_context(connection, camera_id, machine_state="ACTIVE")
                 areas = listar_areas_camera(connection, camera_id)
             engine = PeopleZonesEngine(camera_id, evidence_root=evidence_root)
             with patch("app.people_zones.connect", test_connect), patch("app.alerts.connect", test_connect), patch("builtins.print"):
@@ -310,6 +382,170 @@ class PeopleZonesV1Test(unittest.TestCase):
         self.assertEqual(len(outbox_rows), 1)
         self.assertEqual(len(deliveries), 1)
         self.assertEqual(deliveries[0]["status"], "sent")
+
+    def test_brief_exit_from_zone_does_not_create_operational_absence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console"}):
+            test_connect, camera_id = self.make_context(temp_dir)
+            frame = np.zeros((100, 100, 3), dtype=np.uint8)
+            inside = [Detection(30, 10, 50, 70, 0.92, track_id=5)]
+            with test_connect() as connection:
+                criar_area_monitorada(
+                    connection,
+                    camera_id,
+                    "Área de trabalho",
+                    [{"x": 0.2, "y": 0.2}, {"x": 0.8, "y": 0.2}, {"x": 0.8, "y": 0.8}],
+                    tipo="work_area",
+                    absence_tolerance_seconds=5,
+                )
+                self.add_operational_context(connection, camera_id, machine_state="ACTIVE")
+                areas = listar_areas_camera(connection, camera_id)
+            engine = PeopleZonesEngine(camera_id, evidence_root=Path(temp_dir) / "evidence")
+            with patch("app.people_zones.connect", test_connect), patch("app.alerts.connect", test_connect):
+                engine.update(areas, inside, frame)
+                engine.update(areas, [], frame)
+                time.sleep(0.05)
+                engine.update(areas, [], frame)
+                engine.update(areas, inside, frame)
+                with test_connect() as connection:
+                    events = listar_eventos_filtrados(connection, tipo="workstation_unattended")
+        self.assertEqual(events, [])
+
+    def test_stopped_machine_lights_off_and_no_people_is_no_activity_not_absence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, camera_id = self.make_context(temp_dir)
+            frame = np.zeros((100, 100, 3), dtype=np.uint8)
+            with test_connect() as connection:
+                criar_area_monitorada(
+                    connection,
+                    camera_id,
+                    "Área parada",
+                    [{"x": 0.2, "y": 0.2}, {"x": 0.8, "y": 0.2}, {"x": 0.8, "y": 0.8}],
+                    tipo="work_area",
+                    absence_tolerance_seconds=0,
+                )
+                self.add_operational_context(
+                    connection,
+                    camera_id,
+                    machine_state="STOPPED",
+                    person_presence="UNKNOWN",
+                    lighting_state="OFF",
+                    operational_activity="NO_ACTIVITY",
+                )
+                areas = listar_areas_camera(connection, camera_id)
+            engine = PeopleZonesEngine(camera_id, evidence_root=Path(temp_dir) / "evidence")
+            with patch("app.people_zones.connect", test_connect):
+                engine.update(areas, [], frame)
+                engine.update(areas, [], frame)
+                with test_connect() as connection:
+                    events = listar_eventos_filtrados(connection, tipo="workstation_unattended")
+        self.assertEqual(events, [])
+
+    def test_active_machine_with_sustained_empty_area_creates_absence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console"}):
+            test_connect, camera_id = self.make_context(temp_dir)
+            frame = np.zeros((100, 100, 3), dtype=np.uint8)
+            with test_connect() as connection:
+                criar_area_monitorada(
+                    connection,
+                    camera_id,
+                    "Área ativa",
+                    [{"x": 0.2, "y": 0.2}, {"x": 0.8, "y": 0.2}, {"x": 0.8, "y": 0.8}],
+                    tipo="work_area",
+                    absence_tolerance_seconds=0.1,
+                )
+                self.add_operational_context(connection, camera_id, machine_state="ACTIVE")
+                areas = listar_areas_camera(connection, camera_id)
+            engine = PeopleZonesEngine(camera_id, evidence_root=Path(temp_dir) / "evidence")
+            with patch("app.people_zones.connect", test_connect), patch("app.alerts.connect", test_connect):
+                engine.update(areas, [], frame)
+                time.sleep(0.12)
+                engine.update(areas, [], frame)
+                with test_connect() as connection:
+                    events = listar_eventos_filtrados(connection, tipo="workstation_unattended")
+        self.assertEqual(len(events), 1)
+
+    def test_normal_activity_from_other_context_does_not_require_operator_here(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, camera_id = self.make_context(temp_dir)
+            frame = np.zeros((100, 100, 3), dtype=np.uint8)
+            with test_connect() as connection:
+                criar_area_monitorada(
+                    connection,
+                    camera_id,
+                    "Área A6",
+                    [{"x": 0.2, "y": 0.2}, {"x": 0.8, "y": 0.2}, {"x": 0.8, "y": 0.8}],
+                    tipo="work_area",
+                    absence_tolerance_seconds=0,
+                    machine_id="mach_a6",
+                )
+                self.add_operational_context(
+                    connection,
+                    camera_id,
+                    machine_state="STOPPED",
+                    operational_activity="NORMAL_ACTIVITY",
+                    machine_id="mach_other",
+                )
+                areas = listar_areas_camera(connection, camera_id)
+            engine = PeopleZonesEngine(camera_id, evidence_root=Path(temp_dir) / "evidence")
+            with patch("app.people_zones.connect", test_connect):
+                engine.update(areas, [], frame)
+                engine.update(areas, [], frame)
+                with test_connect() as connection:
+                    events = listar_eventos_filtrados(connection, tipo="workstation_unattended")
+
+        self.assertEqual(events, [])
+
+    def test_active_machine_same_context_still_requires_presence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, camera_id = self.make_context(temp_dir)
+            frame = np.zeros((100, 100, 3), dtype=np.uint8)
+            with test_connect() as connection:
+                criar_area_monitorada(
+                    connection,
+                    camera_id,
+                    "Área A6",
+                    [{"x": 0.2, "y": 0.2}, {"x": 0.8, "y": 0.2}, {"x": 0.8, "y": 0.8}],
+                    tipo="work_area",
+                    absence_tolerance_seconds=0,
+                    machine_id="mach_a6",
+                )
+                self.add_operational_context(connection, camera_id, machine_state="ACTIVE", machine_id="mach_a6")
+                areas = listar_areas_camera(connection, camera_id)
+            engine = PeopleZonesEngine(camera_id, evidence_root=Path(temp_dir) / "evidence")
+            with patch("app.people_zones.connect", test_connect), patch("app.alerts.connect", test_connect):
+                engine.update(areas, [], frame)
+                engine.update(areas, [], frame)
+                with test_connect() as connection:
+                    events = listar_eventos_filtrados(connection, tipo="workstation_unattended")
+
+        self.assertEqual(len(events), 1)
+
+    def test_camera_offline_and_unknown_context_do_not_create_absence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, camera_id = self.make_context(temp_dir)
+            frame = np.zeros((100, 100, 3), dtype=np.uint8)
+            with test_connect() as connection:
+                criar_area_monitorada(
+                    connection,
+                    camera_id,
+                    "Área sem dado",
+                    [{"x": 0.2, "y": 0.2}, {"x": 0.8, "y": 0.2}, {"x": 0.8, "y": 0.8}],
+                    tipo="work_area",
+                    absence_tolerance_seconds=0,
+                )
+                self.add_operational_context(connection, camera_id, machine_state="ACTIVE", camera_online=False, data_quality="sensor_unavailable")
+                areas = listar_areas_camera(connection, camera_id)
+            engine = PeopleZonesEngine(camera_id, evidence_root=Path(temp_dir) / "evidence")
+            with patch("app.people_zones.connect", test_connect):
+                engine.update(areas, [], frame)
+                with test_connect() as connection:
+                    offline_events = listar_eventos_filtrados(connection, tipo="workstation_unattended")
+                    self.add_operational_context(connection, camera_id, machine_state="UNKNOWN", data_quality="insufficient_data")
+                engine.update(areas, [], frame)
+                with test_connect() as connection:
+                    unknown_events = listar_eventos_filtrados(connection, tipo="workstation_unattended")
+        self.assertEqual(offline_events, [])
+        self.assertEqual(unknown_events, [])
 
     def test_work_area_without_runtime_updates_does_not_create_empty_event(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

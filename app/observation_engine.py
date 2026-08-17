@@ -132,6 +132,7 @@ class HumanPresenceTemporalTracker:
         camera_online: bool,
         inference_available: bool,
         zone_configured: bool,
+        presence_required: bool = True,
         track_confidence: float | None = None,
         now: float | None = None,
         absence_tolerance_seconds: float | None = None,
@@ -156,6 +157,11 @@ class HumanPresenceTemporalTracker:
             state.absence_started_at = None
             confidence = 0.85 if track_confidence is None else min(1.0, max(0.0, float(track_confidence)))
             state.set_state("PRESENT", now, confidence)
+            return state
+
+        if not presence_required:
+            state.absence_started_at = None
+            state.set_state("UNKNOWN", now, 0.0)
             return state
 
         if state.last_presence_at is not None and now - state.last_presence_at <= self.grace_seconds:
@@ -968,6 +974,7 @@ class ObservationEngine:
             camera_online=camera_online,
             inference_available=inference_available,
             zone_configured=bool(zone_states) or operator_present,
+            presence_required=str(machine_state or "UNKNOWN").upper() == "ACTIVE",
             track_confidence=machine_confidence,
             absence_tolerance_seconds=operator_absence_tolerance_seconds,
         )
@@ -1005,6 +1012,7 @@ class ObservationEngine:
                     "seconds_absent": round(human_state.seconds_absent, 3),
                     "transitions": human_state.transitions,
                     "valid_tracks_count": human_state.valid_tracks_count,
+                    "presence_required": str(machine_state or "UNKNOWN").upper() == "ACTIVE",
                 },
             ).to_dict(),
         ]

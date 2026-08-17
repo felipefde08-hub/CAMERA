@@ -15,6 +15,7 @@ from app.models import criar_area_monitorada, criar_camera, criar_cliente, criar
 from app.models import criar_alert_recipient, listar_alert_deliveries
 from app.machine_replay import evaluate_state_samples
 from app.observation_engine import ObservationEngine
+from app.person_detection import Detection
 from app.restricted_area import AreaPoint
 
 
@@ -84,6 +85,19 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
 
         self.assertEqual(baseline, 12.0)
         self.assertGreater(noise, 0)
+
+    def test_default_operator_presence_grace_is_conservative_for_factory_flow(self) -> None:
+        config = MachineMonitorConfig(
+            id="mon_1",
+            client_id="tenant",
+            unit_id="unit",
+            camera_id="cam_1",
+            nome="A6",
+            machine_polygon=[AreaPoint(0.1, 0.1), AreaPoint(0.9, 0.1), AreaPoint(0.9, 0.9)],
+            operator_polygon=[AreaPoint(0.0, 0.0), AreaPoint(0.2, 0.0), AreaPoint(0.2, 1.0)],
+        )
+
+        self.assertEqual(config.operator_presence_grace_seconds, 45.0)
 
     def test_assisted_calibration_collects_frame_samples_and_persists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -233,6 +247,66 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
 
         self.assertEqual(events, 0)
         self.assertEqual(outbox, 0)
+
+    def test_short_detector_loss_keeps_operator_present_during_grace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            engine.config.operator_presence_grace_seconds = 10.0
+            engine.config.operator_polygon = [
+                AreaPoint(0.0, 0.0),
+                AreaPoint(0.25, 0.0),
+                AreaPoint(0.25, 1.0),
+                AreaPoint(0.0, 1.0),
+            ]
+            frame = np.zeros((100, 100, 3), dtype=np.uint8)
+            detection = Detection(5, 20, 15, 70, 0.91, track_id=7)
+
+            engine._update_operator(frame, [detection], dt=0.1, now=100.0)
+            engine._update_operator(frame, [], dt=1.0, now=105.0)
+
+        self.assertTrue(engine.state.operator_present)
+        self.assertFalse(engine.state.raw_operator_present)
+        self.assertIn("graça temporal", engine.state.operator_presence_reason)
+
+    def test_operation_area_presence_survives_leaving_small_operator_zone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            engine.config.presence_scope = "OPERATION_AREA"
+            engine.config.operation_polygon = [
+                AreaPoint(0.0, 0.0),
+                AreaPoint(1.0, 0.0),
+                AreaPoint(1.0, 1.0),
+                AreaPoint(0.0, 1.0),
+            ]
+            frame = np.zeros((100, 100, 3), dtype=np.uint8)
+            outside_operator_zone_inside_operation = Detection(65, 20, 75, 70, 0.88, track_id=8)
+
+            engine._update_operator(frame, [outside_operator_zone_inside_operation], dt=0.1, now=100.0)
+
+        self.assertTrue(engine.state.operator_present)
+        self.assertTrue(engine.state.raw_operator_present)
+
+    def test_active_machine_sustained_absence_opens_event_after_grace_and_tolerance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            engine.config.operator_presence_grace_seconds = 1.0
+            frame = np.zeros((80, 120, 3), dtype=np.uint8)
+            now = time.monotonic()
+            with patch("app.machine_monitoring.connect", test_connect), patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.save_machine_evidence", return_value=(None, None)):
+                engine.state.state = "ACTIVE"
+                engine.state.state_since = now - 30.0
+                engine.state.confidence = 0.9
+                engine.state.last_operator_seen_at = now - 2.0
+                engine.state.operator_present = False
+                engine._evaluate_official_events(now, frame)
+                engine._evaluate_official_events(now + 0.2, frame)
+            with test_connect() as connection:
+                rows = connection.execute("SELECT tipo, status FROM eventos WHERE tipo = 'machine_running_without_operator'").fetchall()
+
+        self.assertEqual(len(rows), 1)
 
     def test_running_without_operator_event_evidence_outbox_and_alert(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console"}):

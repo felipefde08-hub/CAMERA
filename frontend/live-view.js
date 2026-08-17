@@ -74,6 +74,7 @@ const monitorConfigCard = document.querySelector("#monitorConfigCard");
 const monitorConfigTitle = document.querySelector("#monitorConfigTitle");
 const monitorConfigText = document.querySelector("#monitorConfigText");
 const openMonitorWizard = document.querySelector("#openMonitorWizard");
+const monitorWizard = document.querySelector("#monitorWizard");
 const monitorWizardBody = document.querySelector("#monitorWizardBody");
 const wizardSummary = document.querySelector("#wizardSummary");
 const wizardUnitSelect = document.querySelector("#wizardUnitSelect");
@@ -136,6 +137,16 @@ const LIVE_EVENT_LABELS = {
   machine_stopped_with_operator: "Máquina parada com operador",
 };
 
+function markLiveNavigationActive() {
+  document.querySelectorAll(".cx-nav a").forEach((link) => {
+    const href = link.getAttribute("href") || "";
+    const active = href === "/live-grid" || href.startsWith("/live-grid");
+    link.classList.toggle("active", active);
+    if (active) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  });
+}
+
 async function requestJson(url, options) {
   const response = await fetch(url, {
     headers: { "Content-Type": "application/json" },
@@ -150,6 +161,30 @@ async function requestJson(url, options) {
   }
   if (payload && typeof payload === "object") payload._http_status = response.status;
   return payload;
+}
+
+async function authStatus() {
+  return requestJson("/auth/status").catch(() => ({ authenticated: false }));
+}
+
+function friendlyLiveError(error) {
+  const raw = String(error?.message || error || "erro desconhecido");
+  if (/internal server error/i.test(raw) || raw.startsWith("500")) {
+    return "Não foi possível carregar o vídeo desta câmera. Verifique a API local e tente novamente.";
+  }
+  if (/401|unauthorized|not authenticated/i.test(raw)) {
+    return "Entre para acessar esta câmera.";
+  }
+  if (/403|forbidden/i.test(raw)) {
+    return "Você não tem permissão para acessar esta câmera.";
+  }
+  if (/404|not found/i.test(raw)) {
+    return "Câmera ou sessão não encontrada.";
+  }
+  if (/failed to fetch|networkerror/i.test(raw)) {
+    return "Não foi possível conectar à API local.";
+  }
+  return raw.replace(/^Erro:\s*/i, "");
 }
 
 function sourcePayload() {
@@ -263,7 +298,9 @@ function renderStatus(payload) {
   liveViewResolution.textContent = payload.width && payload.height ? `${payload.width}x${payload.height}` : "indisponível";
   liveViewFps.textContent = payload.fps ?? "indisponível";
   liveViewInferenceFps.textContent = ops.inference_fps ?? 0;
-  liveViewPeople.textContent = ops.people_count ?? 0;
+  liveViewPeople.textContent = Number.isFinite(Number(ops.people_count))
+    ? `${ops.people_count} pessoa(s) detectada(s). Não confirma ausência operacional.`
+    : "Indisponível";
   if (liveViewAsset) liveViewAsset.textContent = context.primary_label || currentMachine()?.nome || "Não configurado";
   if (liveViewPath) liveViewPath.textContent = context.path_label || "Contexto em configuração";
   liveViewMachine.textContent = currentMachine()?.nome || (machineConfig ? machineConfig.nome : "Não configurada");
@@ -435,7 +472,7 @@ function updateWizardState() {
   if (wizardRegionStatus) wizardRegionStatus.textContent = zoneStatusText();
   if (wizardMonitorStatus) {
     wizardMonitorStatus.textContent = req.monitorOk
-      ? `Monitoramento salvo: ${req.machine.nome} (${req.machine.id})`
+      ? `Monitoramento salvo: ${req.machine.nome || "ativo monitorado"}`
       : "Monitor ainda não criado.";
   }
   if (wizardCalibrationStatus && req.machine) {
@@ -466,6 +503,19 @@ function liveEventLabel(event) {
     workstation_unattended: "Posto sem operador",
   };
   return labels[event?.tipo] || "Evento operacional aberto";
+}
+
+function zoneTypeLabel(type) {
+  const labels = {
+    work_area: "Área de trabalho",
+    machine_region: "Região da máquina",
+    operator_zone: "Zona do operador",
+    restricted_zone: "Zona restrita",
+    workstation: "Posto de trabalho",
+    restricted_area: "Área restrita",
+    dwell_area: "Área de permanência",
+  };
+  return labels[type] || "Zona operacional";
 }
 
 function liveCurrentEventText(status, ops, context) {
@@ -726,16 +776,23 @@ async function pollStatus() {
   try {
     renderStatus(await requestJson(`/live-view/${sessionId}/status`));
   } catch (error) {
-    setStatus("offline", error.message);
+    setStatus("offline", friendlyLiveError(error));
   }
 }
 
 async function startLiveView() {
+  const auth = await authStatus();
+  if (!auth.authenticated) {
+    setStatus("offline", "Entre para acessar a câmera ao vivo.");
+    liveViewHint.innerHTML = '<a class="button-link" href="/settings/cameras?next=%2Flive-view#login">Entrar</a>';
+    if (liveStreamSummary) liveStreamSummary.textContent = "Live protegida por sessão.";
+    return;
+  }
   const params = new URLSearchParams(window.location.search);
   const cameraId = params.get("camera_id");
   const payload = cameraId ? { camera_id: cameraId, nome: params.get("nome") || "Live View" } : sourcePayload();
   if (!payload) {
-    setStatus("offline", "Volte à página inicial, teste o RTSP e clique em Abrir Live View.");
+    setStatus("offline", "Selecione uma câmera na grade Live ou abra uma câmera cadastrada pelo Setup.");
     return;
   }
   currentPayload = payload;
@@ -758,7 +815,7 @@ async function startLiveView() {
     setStatus("online", "Transmissão ativa.");
     drawCanvas();
   };
-  liveViewImage.onerror = () => setStatus("reconectando", "Sem imagem no momento. Tentando reconectar...");
+  liveViewImage.onerror = () => setStatus("reconectando", "Não foi possível carregar o vídeo desta câmera. Tentando reconectar.");
   requestJson(`/live-view/${sessionId}/ai/start`, { method: "POST" })
     .then((ops) => renderStatus({ status: "online", nome: payload.nome, ops }))
     .catch((error) => {
@@ -783,7 +840,7 @@ async function loadPersistedZones() {
     drawCanvas();
   } catch (error) {
     persistedZones = [];
-    setStatus("offline", `Não foi possível carregar zonas: ${error.message}`);
+    setStatus("offline", `Não foi possível carregar zonas: ${friendlyLiveError(error)}`);
   }
 }
 
@@ -808,7 +865,7 @@ async function loadMachines() {
 function renderMachines() {
   if (!machineSelect) return;
   machineSelect.innerHTML = machines.length
-    ? machines.map((machine) => `<option value="${machine.id}" ${machine.id === selectedMachineId ? "selected" : ""}>${machine.nome} · ${machine.id}</option>`).join("")
+    ? machines.map((machine) => `<option value="${machine.id}" ${machine.id === selectedMachineId ? "selected" : ""}>${machine.nome || "Ativo monitorado"}</option>`).join("")
     : '<option value="">Nenhuma máquina cadastrada</option>';
   const selected = currentMachine();
   liveViewMachine.textContent = selected ? selected.nome : machineConfig ? machineConfig.nome : "Não configurada";
@@ -842,7 +899,7 @@ function updateMachineRegionStatus() {
   if (!machineRegionStatus) return;
   const machineRegion = zoneByType("machine_region");
   machineRegionStatus.textContent = machineRegion
-    ? `Região da máquina salva (${machineRegion.id})`
+    ? "Região da máquina salva"
     : "Região da máquina ausente. Crie uma zona machine_region antes de calibrar.";
   if (wizardRegionStatus) wizardRegionStatus.textContent = zoneStatusText();
 }
@@ -887,8 +944,11 @@ function renderZoneList() {
   zoneList.innerHTML = persistedZones.map((zone) => `
     <article class="zone-card">
       <strong>${zone.nome}</strong>
-      <span>${zone.tipo} · ID: ${zone.id}</span>
-      <span>${zone.ativa ? "Ativa" : "Inativa"}</span>
+      <span>${zoneTypeLabel(zone.tipo)} · ${zone.ativa ? "Ativa" : "Inativa"}</span>
+      <details class="zone-technical-details">
+        <summary>Detalhe técnico</summary>
+        <span>ID: ${zone.id}</span>
+      </details>
       <div class="actions">
         <button type="button" data-zone-action="edit" data-zone-id="${zone.id}">Editar</button>
         <button type="button" data-zone-action="toggle" data-zone-id="${zone.id}" data-zone-active="${zone.ativa}">${zone.ativa ? "Desativar" : "Ativar"}</button>
@@ -1142,7 +1202,7 @@ async function saveWizardMonitor() {
     stoppedWithOperatorSecondsInput.value = payload.stopped_with_operator_seconds;
     await loadPersistedZones();
     await loadMachines();
-    wizardMonitorStatus.textContent = `Monitoramento salvo ✓ ${saved.id}`;
+    wizardMonitorStatus.textContent = "Monitoramento salvo ✓";
     liveViewHint.textContent = "Monitoramento salvo. Calibre a máquina para ativar com confiança.";
   } catch (error) {
     wizardMonitorStatus.textContent = `Não foi possível salvar monitoramento: ${error.message}`;
@@ -1174,15 +1234,16 @@ async function activateWizardMonitor() {
 
 liveAiStart.addEventListener("click", () => {
   if (!sessionId) return;
-  requestJson(`/live-view/${sessionId}/ai/start`, { method: "POST" }).then((ops) => renderStatus({ status: "online", ops })).catch((error) => setStatus("offline", error.message));
+  requestJson(`/live-view/${sessionId}/ai/start`, { method: "POST" }).then((ops) => renderStatus({ status: "online", ops })).catch((error) => setStatus("offline", friendlyLiveError(error)));
 });
 
 liveAiStop.addEventListener("click", () => {
   if (!sessionId) return;
-  requestJson(`/live-view/${sessionId}/ai/stop`, { method: "POST" }).then((ops) => renderStatus({ status: "online", ops })).catch((error) => setStatus("offline", error.message));
+  requestJson(`/live-view/${sessionId}/ai/stop`, { method: "POST" }).then((ops) => renderStatus({ status: "online", ops })).catch((error) => setStatus("offline", friendlyLiveError(error)));
 });
 
 openMonitorWizard?.addEventListener("click", () => {
+  monitorWizard?.setAttribute("open", "open");
   monitorWizardBody.hidden = !monitorWizardBody.hidden;
   if (!monitorWizardBody.hidden) {
     loadSetupOperation().then(() => updateWizardState());
@@ -1438,4 +1499,5 @@ window.addEventListener("beforeunload", () => {
   if (sessionId) fetch(`/live-view/${sessionId}/stop`, { method: "POST", keepalive: true }).catch(() => {});
 });
 
-startLiveView().catch((error) => setStatus("offline", error.message));
+markLiveNavigationActive();
+startLiveView().catch((error) => setStatus("offline", friendlyLiveError(error)));

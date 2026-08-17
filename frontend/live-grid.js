@@ -20,6 +20,35 @@ async function requestJson(url, options) {
   return payload;
 }
 
+function friendlyGridError(error) {
+  const raw = String(error?.message || error || "erro desconhecido");
+  if (/internal server error/i.test(raw) || raw.startsWith("500")) {
+    return "Não foi possível iniciar uma câmera. Verifique a configuração no Setup.";
+  }
+  if (/401|unauthorized|not authenticated/i.test(raw)) return "Entre para acessar a Live.";
+  if (/403|forbidden/i.test(raw)) return "Você não tem permissão para acessar esta câmera.";
+  if (/failed to fetch|networkerror/i.test(raw)) return "Não foi possível conectar à API local.";
+  return raw;
+}
+
+async function authStatus() {
+  return requestJson("/auth/status").catch(() => ({ authenticated: false }));
+}
+
+function renderAuthGate() {
+  picker.innerHTML = "";
+  grid.innerHTML = `
+    <section class="cx-live-auth-gate">
+      <span>Acesso protegido</span>
+      <strong>Entre para visualizar câmeras em tempo real.</strong>
+      <p>A Campex só carrega streams, status operacional e contexto de câmeras para usuários autenticados.</p>
+      <a class="button-link" href="/settings/cameras?next=%2Flive-grid#login">Entrar</a>
+    </section>
+  `;
+  message.textContent = "Sessão necessária para carregar a Live.";
+  resources.textContent = "Live protegida";
+}
+
 function statusLabel(status) {
   if (status === "online") return "Online";
   if (status === "conectando") return "Conectando";
@@ -247,6 +276,11 @@ grid.addEventListener("click", (event) => {
 });
 
 async function boot() {
+  const auth = await authStatus();
+  if (!auth.authenticated) {
+    renderAuthGate();
+    return;
+  }
   const overview = await requestJson("/live/overview").catch(async () => {
     const rows = await requestJson("/cameras/estado");
     return { cameras: rows.map((camera) => ({ camera, status: { context: null } })), resources: {} };
@@ -256,7 +290,7 @@ async function boot() {
   renderPicker();
   const auto = rows.filter(hasOperationalContext).slice(0, 2);
   for (const camera of auto) {
-    await startCamera(camera.id).catch((error) => { message.textContent = error.message; });
+    await startCamera(camera.id).catch((error) => { message.textContent = friendlyGridError(error); });
   }
   await refreshStatuses();
   statusTimer = setInterval(refreshStatuses, 2000);
@@ -272,5 +306,5 @@ window.addEventListener("beforeunload", () => {
 });
 
 boot().catch((error) => {
-  message.textContent = error.message;
+  message.textContent = friendlyGridError(error);
 });

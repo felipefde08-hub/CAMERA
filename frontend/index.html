@@ -10,9 +10,9 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=campex-home-state-20260728" />
+    <link rel="stylesheet" href="/static/styles.css?v=campex-setup-tabs-20260817" />
   </head>
-  <body class="campex-dashboard">
+  <body class="campex-dashboard cx-setup-mode">
     <aside class="cx-sidebar">
       <div class="cx-sidebar-top">
         <a class="cx-logo" href="/operations-view" aria-label="Campex">
@@ -67,17 +67,28 @@
 
       <section class="cx-settings-layout">
         <aside class="cx-settings-menu">
-          <a href="#cliente">Cliente</a>
-          <a href="#unidades">Unidades</a>
-          <a href="#usuarios">Usuários</a>
-          <a href="#cameras">Câmeras</a>
-          <a href="#maquinas">Máquinas e áreas</a>
-          <a href="#destinatarios">Destinatários</a>
-          <a href="#entregas">Histórico</a>
+          <a href="#cliente" data-setup-nav="cliente">Cliente</a>
+          <a href="#unidades" data-setup-nav="unidades">Unidades</a>
+          <a href="#usuarios" data-setup-nav="usuarios">Usuários</a>
+          <a href="#cameras" data-setup-nav="cameras">Câmeras</a>
+          <a href="#maquinas" data-setup-nav="maquinas">Máquinas e áreas</a>
+          <a href="#destinatarios" data-setup-nav="destinatarios">Destinatários</a>
+          <a href="#entregas" data-setup-nav="entregas">Histórico</a>
         </aside>
 
         <div class="cx-settings-content">
-      <section id="login" class="panel">
+      <section class="cx-setup-hero">
+        <div>
+          <span>Setup</span>
+          <h2>Configure a operação para a Campex monitorar com contexto.</h2>
+          <p>Organize cliente, unidades, câmeras, ativos, zonas e alertas em uma sequência clara, usando somente dados reais da instalação.</p>
+        </div>
+        <div class="cx-setup-hero-status">
+          <small>Status</small>
+          <strong id="setupHeroStatus">Verificando configuração</strong>
+        </div>
+      </section>
+      <section id="login" class="panel" data-setup-section="cliente">
         <div id="loginHeader" class="header compact-header">
           <div>
             <h2>Sessão</h2>
@@ -154,8 +165,9 @@
             <div id="firstRunStatus" class="muted">Verificando disponibilidade do First Run...</div>
           </form>
         </section>
+      </section>
 
-        <section id="setup-operacao" class="setup-v0-panel">
+        <section id="setup-operacao" class="setup-v0-panel" data-setup-section="maquinas">
           <div class="setup-v0-header">
             <div>
               <p class="eyebrow">Setup</p>
@@ -328,8 +340,8 @@
           </details>
         </section>
 
-        <div class="settings-grid">
-          <div id="cliente">
+        <div class="settings-grid cx-setup-section-grid">
+          <div id="cliente" class="panel" data-setup-section="cliente">
             <h2>Cliente</h2>
             <form id="clientForm" class="form">
               <label>
@@ -344,7 +356,7 @@
             </form>
             <div id="clientList" class="compact-list"></div>
           </div>
-          <div id="unidades">
+          <div id="unidades" class="panel" data-setup-section="unidades">
             <h2>Unidade</h2>
             <form id="unitForm" class="form">
               <label>
@@ -365,8 +377,8 @@
           </div>
         </div>
 
-        <div class="settings-grid">
-          <div id="usuarios">
+        <div class="settings-grid cx-setup-section-grid">
+          <div id="usuarios" class="panel" data-setup-section="usuarios">
             <h2>Usuários</h2>
             <form id="userForm" class="form">
               <label>
@@ -398,7 +410,7 @@
             </form>
             <div id="userList" class="compact-list"></div>
           </div>
-          <div id="maquinas">
+          <div id="maquinas" class="panel" data-setup-section="maquinas">
             <h2>Máquinas / áreas</h2>
             <form id="machineConfigForm" class="form">
               <label>
@@ -415,7 +427,8 @@
           </div>
         </div>
 
-        <h2 id="cameras">Câmeras RTSP</h2>
+        <section id="cameras" class="panel cx-setup-camera-form-panel" data-setup-section="cameras">
+        <h2>Câmeras RTSP</h2>
         <form id="cameraForm" class="form">
           <label>
             Nome da câmera
@@ -469,26 +482,26 @@
             Ativar câmera no Edge após salvar
           </label>
         </form>
-      </section>
+        </section>
 
-      <section class="panel">
+      <section class="panel cx-setup-result-panel" data-setup-section="cameras">
         <h2>Resultado</h2>
         <div id="result" class="result muted">Nenhum teste executado ainda.</div>
       </section>
 
-      <section class="panel">
+      <section class="panel cx-setup-health-panel" data-setup-section="entregas">
         <h2>Saúde da instalação</h2>
         <div id="systemHealth" class="result muted">Carregando saúde da instalação...</div>
         <h2>Checklist do piloto</h2>
         <div id="pilotChecklist" class="result muted">Carregando checklist...</div>
       </section>
 
-      <section class="panel">
+      <section class="panel cx-setup-camera-list-panel" data-setup-section="cameras">
         <h2>Câmeras cadastradas</h2>
         <div id="cameraList" class="camera-list"></div>
       </section>
 
-      <section class="panel viewer">
+      <section class="panel viewer cx-setup-viewer-panel" data-setup-section="cameras">
         <div class="viewer-header">
           <div>
             <h2 id="viewerTitle">Nenhuma câmera aberta</h2>
@@ -529,18 +542,18 @@
         <div id="machineList" class="area-list"></div>
       </section>
 
-      <section class="panel">
+      <section class="panel cx-setup-operations-panel" data-setup-section="entregas">
         <h2>Operations</h2>
         <div id="operationsList" class="event-list"></div>
       </section>
 
-      <section class="panel">
+      <section class="panel cx-setup-events-panel" data-setup-section="entregas">
         <h2>Ocorrências recentes</h2>
         <div id="activeIncident" class="incident-active muted">Nenhuma ocorrência ativa.</div>
         <div id="eventList" class="event-list"></div>
       </section>
 
-      <section class="panel">
+      <section class="panel cx-setup-realtime-panel" data-setup-section="entregas">
         <div class="alert-header">
           <h2>Alertas em tempo real</h2>
           <span id="unackedCount" class="badge offline">0 não reconhecidos</span>
@@ -554,7 +567,7 @@
         </div>
       </section>
 
-      <section id="destinatarios" class="panel">
+      <section id="destinatarios" class="panel cx-setup-recipients-panel" data-setup-section="destinatarios">
         <h2>Responsáveis por alertas</h2>
         <div id="alertSetupStatus" class="result muted">Verificando configuração de alertas...</div>
         <form id="recipientForm" class="form">
@@ -605,14 +618,14 @@
         <div id="recipientList" class="recipient-list"></div>
       </section>
 
-      <section id="entregas" class="panel">
+      <section id="entregas" class="panel cx-setup-deliveries-panel" data-setup-section="entregas">
         <h2>Entregas de e-mail</h2>
         <div id="deliveryList" class="delivery-list"></div>
       </section>
         </div>
       </section>
     </main>
-    <script src="/static/shell.js"></script>
-    <script src="/static/app.js"></script>
+    <script src="/static/shell.js?v=campex-setup-tabs-20260817"></script>
+    <script src="/static/app.js?v=campex-setup-tabs-20260817"></script>
   </body>
 </html>

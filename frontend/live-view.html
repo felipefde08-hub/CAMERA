@@ -3,16 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Campex Live View</title>
+    <title>Ao vivo | Campex</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=campex-live-config-20260729" />
+    <link rel="stylesheet" href="/static/styles.css?v=campex-live-v1-20260817" />
   </head>
-  <body class="campex-dashboard">
+  <body class="campex-dashboard cx-live-mode">
     <aside class="cx-sidebar">
       <div class="cx-sidebar-top">
         <a class="cx-logo" href="/operations-view?view=home" aria-label="Campex">
@@ -60,11 +60,12 @@
     <main class="cx-main app-content live-shell">
       <header class="cx-header cx-topbar">
         <div>
-          <h1>Live View</h1>
-          <p>Monitoramento operacional em tempo real</p>
+          <h1>Ao vivo</h1>
+          <p>Acompanhe câmeras e estado operacional em tempo real.</p>
         </div>
         <div class="cx-header-tools">
           <span id="liveViewStatus" class="badge offline">Conectando</span>
+          <a class="button-link" href="/live-grid">Ver todas as câmeras</a>
           <button class="cx-icon-button" type="button" aria-label="Ajuda"><span class="cx-nav-icon" data-icon="help"></span></button>
           <button class="cx-icon-button" type="button" aria-label="Notificações"><span class="cx-nav-icon" data-icon="alert"></span></button>
           <button class="cx-top-avatar" type="button" aria-label="Conta">C</button>
@@ -72,7 +73,7 @@
       </header>
 
       <section class="cx-live-workspace">
-        <aside class="cx-live-rail">
+        <aside class="cx-live-rail" aria-label="Câmeras em monitoramento">
           <div class="cx-panel-head">
             <div>
               <h2>Câmeras</h2>
@@ -100,7 +101,7 @@
             <canvas id="liveViewCanvas"></canvas>
           </div>
           <div id="liveViewHint" class="muted">
-            Abra a câmera, ative a IA, desenhe a região da máquina e depois calibre com a máquina ativa.
+            A câmera é exibida quando o stream real está disponível. Configuração e detalhes técnicos ficam recolhidos.
           </div>
           <div id="drawToolbar" class="draw-toolbar" hidden>
             <strong id="drawToolbarTitle">Modo de desenho</strong>
@@ -134,18 +135,18 @@
 
         <aside class="cx-live-context">
           <div>
-            <h2>Contexto operacional</h2>
-            <p>Leitura rápida da situação atual.</p>
+            <h2>Agora</h2>
+            <p>Estado operacional sustentado pelos dados reais.</p>
           </div>
           <dl class="cx-context-list">
-            <div><dt>Ativo/posto</dt><dd id="liveViewAsset">Não configurado</dd></div>
+            <div><dt>Ativo</dt><dd id="liveViewAsset">Não configurado</dd></div>
             <div><dt>Área/processo</dt><dd id="liveViewPath">Contexto em configuração</dd></div>
             <div><dt>Máquina</dt><dd id="liveViewMachine">Não configurada</dd></div>
             <div><dt>Estado</dt><dd id="liveViewMachineState">Dados indisponíveis</dd></div>
             <div><dt>Operador</dt><dd id="liveViewOperator">Dados indisponíveis</dd></div>
-            <div><dt>Situação atual</dt><dd id="liveViewSituation">Aguardando configuração</dd></div>
+            <div><dt>Atividade</dt><dd id="liveViewSituation">Aguardando configuração</dd></div>
             <div><dt>Tempo no estado</dt><dd id="liveViewStateTime">0s</dd></div>
-            <div><dt>Pessoas detectadas</dt><dd id="liveViewPeople">0</dd></div>
+            <div><dt>Detecção humana</dt><dd id="liveViewPeople">Indisponível</dd></div>
           </dl>
           <section class="live-current-event">
             <strong>Evento atual</strong>
@@ -156,14 +157,14 @@
             <strong>Último alerta</strong>
             <span id="liveLastAlert">Nenhum alerta entregue nesta sessão.</span>
           </section>
-          <section id="monitorWizard" class="zone-card live-monitor-wizard">
-            <div class="cx-panel-head">
-              <div>
+          <details id="monitorWizard" class="zone-card live-monitor-wizard">
+            <summary>
+              <span>
                 <strong>Configurar monitoramento</strong>
-                <span id="wizardSummary">Guie a Campex para entender este ponto da operação.</span>
-              </div>
-            </div>
-            <button type="button" id="openMonitorWizard" class="primary">Configurar monitoramento</button>
+                <small id="wizardSummary">Zonas, contexto e calibração ficam neste modo.</small>
+              </span>
+            </summary>
+            <button type="button" id="openMonitorWizard" class="primary">Editar configuração</button>
             <div id="monitorWizardBody" class="live-wizard-body" hidden>
               <div class="live-wizard-step">
                 <small>1. Contexto operacional</small>
@@ -255,7 +256,7 @@
                 <span id="wizardActivationStatus">Complete as etapas acima.</span>
               </div>
             </div>
-          </section>
+          </details>
           <section id="liveCriticalAlert" class="live-critical-alert" hidden>
             <strong>Operador fora da zona</strong>
             <span id="liveCriticalCamera">Câmera: —</span>
@@ -324,6 +325,13 @@
               <div><dt>Relação</dt><dd id="liveViewRelation">Aguardando configuração</dd></div>
             </dl>
           </details>
+          <details class="zone-card live-action-drawer">
+            <summary>
+              <span>
+                <strong>Ações da câmera</strong>
+                <small>IA, zonas e atalhos de suporte.</small>
+              </span>
+            </summary>
           <div class="actions viewer-actions cx-action-stack">
             <button type="button" id="liveAiStart">Ativar IA</button>
             <button type="button" id="liveAiStop">Desativar IA</button>
@@ -332,6 +340,7 @@
             <a class="button-link" href="/live-grid">Abrir grade multi-câmera</a>
             <a class="button-link" href="/operations-view" target="_blank" rel="noreferrer">Abrir Operations</a>
           </div>
+          </details>
           <section class="zone-card live-realtime-panel">
             <div class="cx-panel-head">
               <div>
@@ -350,7 +359,7 @@
         <span id="liveToastText">Novo alerta recebido.</span>
       </div>
     </main>
-    <script src="/static/shell.js"></script>
-    <script src="/static/live-view.js"></script>
+    <script src="/static/shell.js?v=campex-live-v1-20260817"></script>
+    <script src="/static/live-view.js?v=campex-live-v1-20260817"></script>
   </body>
 </html>

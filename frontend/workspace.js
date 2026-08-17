@@ -1421,7 +1421,7 @@ async function renderOperationsReadModelPage(config) {
 function intelligenceBriefingText(payload) {
   const lines = payload.briefing || [];
   if (!lines.length) return "Ainda não existem eventos operacionais classificados suficientes neste período.";
-  return lines.join(" ");
+  return humanInsightText(lines.join(" "));
 }
 
 function intelligenceKpiValue(kpi) {
@@ -1430,15 +1430,59 @@ function intelligenceKpiValue(kpi) {
   return "Sem dados";
 }
 
+function humanTechnicalLabel(value, fallback = "Não informado") {
+  const text = String(value || "").trim();
+  if (!text || text === "null" || text === "undefined") return fallback;
+  if (text === "não informado") return "Não informado";
+  const technical = /^(mach|machine|asset|area|proc|process|cam|camera|evt|event|rule|unit|site|mon)_[a-z0-9_-]+$/i;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f-]{13,}$/i;
+  if (technical.test(text) || uuid.test(text)) return fallback;
+  return text;
+}
+
+function humanInsightText(value) {
+  return sanitize(value || "")
+    .replace(/\bmach_[a-z0-9_-]+\b/gi, "ativo monitorado")
+    .replace(/\bmachine_[a-z0-9_-]+\b/gi, "ativo monitorado")
+    .replace(/\basset_[a-z0-9_-]+\b/gi, "ativo monitorado")
+    .replace(/\barea_[a-z0-9_-]+\b/gi, "área monitorada")
+    .replace(/\bproc_[a-z0-9_-]+\b/gi, "processo monitorado")
+    .replace(/\bcam_[a-z0-9_-]+\b/gi, "câmera monitorada")
+    .replace(/\bevt_[a-z0-9_-]+\b/gi, "evento rastreável")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f-]{13,}\b/gi, "registro rastreável")
+    .replace(/\bmachine_stoppage\b/g, "parada operacional")
+    .replace(/\bworkstation_unattended\b/g, "ausência operacional")
+    .replace(/\bmachine_running_without_operator\b/g, "máquina ativa sem operador")
+    .replace(/\bmachine_stopped_with_operator\b/g, "máquina parada com operador");
+}
+
+function humanKpiLabel(label) {
+  const labels = {
+    "Duração de interrupções": "Interrupções",
+    "Frequência de interrupções": "Frequência",
+    "Duração média": "Duração média",
+    "Espera": "Espera",
+    "Ausência": "Ausência operacional",
+    "Recorrência": "Recorrência",
+  };
+  return labels[label] || humanInsightText(label || "Indicador");
+}
+
+function insightTraceAction(item, label = "Investigar") {
+  const count = (item?.event_uuids || []).filter(Boolean).length;
+  const text = count ? `${label} ${count} evento${count === 1 ? "" : "s"}` : label;
+  return traceButton(text, item?.event_uuids);
+}
+
 function renderInsightCard(item) {
   return `
     <article class="cx-intel-card">
-      <div>
-        <strong>${item.statement}</strong>
-        <span>${item.number || "—"}</span>
+      <div class="cx-intel-card-top">
+        <strong>${humanInsightText(item.statement)}</strong>
+        <span>${humanInsightText(item.number || "Verificável")}</span>
       </div>
-      <p><b>Por que a Campex está destacando isso?</b> ${item.why || "Insight gerado por regra determinística a partir dos eventos do período."}</p>
-      ${traceButton("Investigar", item.event_uuids)}
+      <p><b>Por que a Campex está destacando isso?</b> ${humanInsightText(item.why || "Insight gerado por regra determinística a partir dos eventos do período.")}</p>
+      <div class="cx-intel-trace">${insightTraceAction(item)}</div>
     </article>
   `;
 }
@@ -1452,11 +1496,82 @@ function renderCauseRows(causes = []) {
   if (!causes.length) return `<p class="muted">Nenhuma causa confirmada foi registrada por humanos neste período.</p>`;
   return causes.map((cause) => `
     <div class="cx-intel-cause">
-      <strong>${cause.key}</strong>
+      <strong>${humanTechnicalLabel(cause.key, "Causa não informada")}</strong>
       <span>${secondsLabel(cause.total_duration_seconds)} · ${cause.total_events} evento(s)</span>
-      ${traceButton("Eventos", cause.event_uuids)}
+      ${traceButton("Ver eventos", cause.event_uuids)}
     </div>
   `).join("");
+}
+
+function renderIntelligenceSummary(payload, allInsights) {
+  const affectedAssets = new Set();
+  allInsights.forEach((item) => {
+    const asset = item?.metrics?.asset_id || item?.metrics?.asset_name || item?.metrics?.asset_label;
+    if (asset) affectedAssets.add(String(asset));
+  });
+  const comparison = payload.comparison?.metrics?.total_duration_seconds;
+  return `
+    <section class="cx-intel-summary">
+      <article>
+        <span>Insights relevantes</span>
+        <strong>${allInsights.length || "Sem dados"}</strong>
+      </article>
+      <article>
+        <span>Ativos afetados</span>
+        <strong>${affectedAssets.size || "Indisponível"}</strong>
+      </article>
+      <article>
+        <span>Eventos analisados</span>
+        <strong>${payload.data_quality?.classified_events ?? "Indisponível"}</strong>
+      </article>
+      <article>
+        <span>Comparação</span>
+        <strong>${comparison ? comparisonText(comparison) : "Sem base anterior"}</strong>
+      </article>
+    </section>
+  `;
+}
+
+function intelligenceAssetLabel(item) {
+  const metrics = item?.metrics || {};
+  return humanTechnicalLabel(
+    metrics.asset_name || metrics.asset_label || metrics.asset || metrics.asset_id,
+    "Ativo sem nome disponível"
+  );
+}
+
+function renderImpactedAssets(payload, allInsights) {
+  const rows = allInsights
+    .filter((item) => item?.metrics?.asset_id || item?.metrics?.asset_name || item?.metrics?.asset_label || item?.metrics?.asset)
+    .slice(0, 4);
+  if (!rows.length) return `<div class="cx-empty-state"><strong>Nenhum ativo se destacou no período.</strong><p>A Campex precisa de eventos classificados para montar concentração por ativo.</p></div>`;
+  return `<div class="cx-intel-impact-list">${rows.map((item) => `
+    <div>
+      <strong>${intelligenceAssetLabel(item)}</strong>
+      <span>${humanInsightText(item.number || item.statement)}</span>
+      ${insightTraceAction(item, "Ver")}
+    </div>
+  `).join("")}</div>`;
+}
+
+function renderIntelligenceComparison(payload) {
+  const metrics = payload.comparison?.metrics || {};
+  const rows = [
+    ["Eventos", metrics.total_events],
+    ["Duração", metrics.total_duration_seconds],
+    ["Duração média", metrics.average_duration_seconds],
+  ];
+  return rows.map(([label, metric]) => {
+    const current = label === "Eventos" ? metric?.current : secondsLabel(metric?.current);
+    const previous = label === "Eventos" ? metric?.previous : secondsLabel(metric?.previous);
+    return `
+      <div class="cx-intel-comparison-row">
+        <span>${label}</span>
+        <strong>${metric ? current : "Indisponível"}</strong>
+        <small>${metric ? `anterior: ${previous} · ${comparisonText(metric)}` : "Sem base comparável"}</small>
+      </div>
+    `;
+  }).join("");
 }
 
 async function renderIntelligencePage(config) {
@@ -1465,8 +1580,8 @@ async function renderIntelligencePage(config) {
   const allInsights = [...(payload.attention || []), ...(payload.patterns || [])];
   rowsCache = allInsights;
   title.textContent = "Intelligence";
-  heading.textContent = "O que a Campex entendeu sobre a operação?";
-  subtitle.textContent = "Insights determinísticos gerados a partir dos eventos operacionais do período.";
+  heading.textContent = "Intelligence";
+  subtitle.textContent = "Padrões, comparações e resumos verificáveis da operação.";
   tableTitle.textContent = "Rastreabilidade dos insights";
   tableHint.textContent = "Cada insight pode ser rastreado até os eventos que o originaram.";
   primaryAction.textContent = "Atualizar";
@@ -1484,7 +1599,7 @@ async function renderIntelligencePage(config) {
   const unknownCount = Number(payload.data_quality?.unknown_events || 0);
   cards.innerHTML = `
     <section class="cx-intel-page">
-      <section class="cx-ops-header">
+      <section class="cx-intel-topline">
         <div>
           <small>Período</small>
           <strong>${formatOperationsPeriod(payload.period)}</strong>
@@ -1505,39 +1620,53 @@ async function renderIntelligencePage(config) {
       ${coverageWarning(payload.coverage)}
       ${unknownCount ? `<div class="cx-ops-quality"><strong>${unknownCount} evento(s) sem classificação operacional.</strong><span>Preservados para auditoria, fora dos insights oficiais.</span></div>` : ""}
       <section class="cx-intel-briefing">
-        <small>Briefing do período</small>
+        <small>Leitura verificável do período</small>
         <strong>${intelligenceBriefingText(payload)}</strong>
       </section>
-      <section class="cx-intel-kpis">
+      ${renderIntelligenceSummary(payload, allInsights)}
+      <section class="cx-intel-kpis" aria-label="Indicadores analíticos">
         ${(payload.kpis || []).map((kpi) => `
           <article>
-            <span>${kpi.label}</span>
+            <span>${humanKpiLabel(kpi.label)}</span>
             <strong>${intelligenceKpiValue(kpi)}</strong>
-            ${traceButton("Eventos", kpi.event_uuids)}
+            ${traceButton("Ver eventos", kpi.event_uuids)}
           </article>
         `).join("")}
       </section>
       <section class="cx-intel-layout">
         <div class="cx-intel-column">
-          <section class="cx-ops-block">
+          <section class="cx-intel-module">
             <h3>O que merece atenção</h3>
             ${renderInsightList(payload.attention, "Sem destaques sustentados pelos dados do período.")}
           </section>
-          <section class="cx-ops-block">
+          <section class="cx-intel-module">
             <h3>Padrões verificáveis</h3>
             ${renderInsightList(payload.patterns, "Ainda não há padrões matematicamente verificáveis.")}
           </section>
+          <section class="cx-intel-module">
+            <h3>Rastreabilidade dos insights</h3>
+            <p class="muted">Cada número exibido aqui aponta para eventos reais. A Campex mostra a evidência do cálculo, não uma conclusão solta.</p>
+            ${allInsights.length ? `<div class="cx-intel-investigation">${allInsights.slice(0, 5).map((item) => `
+              <div>
+                <span>${humanInsightText(item.statement)}</span>
+                ${insightTraceAction(item, "Investigar")}
+              </div>
+            `).join("")}</div>` : `<div class="cx-empty-state"><strong>Sem rastreabilidade disponível.</strong><p>Aguardando eventos classificados neste período.</p></div>`}
+          </section>
         </div>
         <aside class="cx-intel-column">
-          <section class="cx-ops-block">
+          <section class="cx-intel-module">
+            <h3>Ativos mais impactados</h3>
+            ${renderImpactedAssets(payload, allInsights)}
+          </section>
+          <section class="cx-intel-module">
             <h3>Causas confirmadas</h3>
             <p class="muted">Somente informações registradas por pessoas entram aqui. Observações da câmera não viram causa automaticamente.</p>
             ${renderCauseRows(payload.confirmed_causes)}
           </section>
-          <section class="cx-ops-block">
-            <h3>Comparação</h3>
-            <p>Eventos: ${comparisonText(payload.comparison?.metrics?.total_events || {})}</p>
-            <p>Duração: ${comparisonText(payload.comparison?.metrics?.total_duration_seconds || {})}</p>
+          <section class="cx-intel-module">
+            <h3>Comparação com período anterior</h3>
+            ${renderIntelligenceComparison(payload)}
           </section>
         </aside>
       </section>
@@ -1547,10 +1676,10 @@ async function renderIntelligencePage(config) {
   head.innerHTML = `<tr>${config.columns.map((column) => `<th>${column}</th>`).join("")}</tr>`;
   body.innerHTML = rowsCache.length ? rowsCache.map((item) => `
     <tr>
-      <td>${item.statement}</td>
-      <td>${item.number || "—"}</td>
-      <td>${item.why || "—"}</td>
-      <td>${traceButton("Eventos", item.event_uuids)}</td>
+      <td>${humanInsightText(item.statement)}</td>
+      <td>${humanInsightText(item.number || "—")}</td>
+      <td>${humanInsightText(item.why || "—")}</td>
+      <td>${traceButton("Ver eventos", item.event_uuids)}</td>
       <td><a class="cx-link" href="/events">Investigar</a></td>
     </tr>
   `).join("") : `<tr><td colspan="${config.columns.length}">${emptyState(config)}</td></tr>`;
@@ -2539,6 +2668,51 @@ function renderEventsAuthState() {
   `;
 }
 
+function renderIntelligenceAuthState() {
+  title.textContent = "Intelligence";
+  heading.textContent = "Intelligence";
+  subtitle.textContent = "Padrões, comparações e resumos verificáveis da operação.";
+  tableTitle.textContent = "";
+  tableHint.textContent = "";
+  primaryAction.textContent = "Entrar";
+  primaryAction.onclick = () => {
+    window.location.href = "/settings/cameras?next=%2Finsights#login";
+  };
+  renderTabs({ tabs: [] });
+  renderFilters({ filters: [] });
+  rowsCache = [];
+  grid.style.display = "none";
+  head.innerHTML = "";
+  body.innerHTML = "";
+  body.closest("table")?.setAttribute("aria-hidden", "true");
+  document.querySelector(".cx-panel")?.classList.add("cx-ops-hide-panel");
+  cards.innerHTML = `
+    <section class="cx-intel-page">
+      <section class="cx-intel-topline">
+        <div><small>Período</small><strong>Protegido</strong></div>
+        <div><small>Cobertura</small><strong>Indisponível</strong></div>
+        <div><small>Eventos analisados</small><strong>Indisponível</strong></div>
+        <div><small>Última atualização</small><strong>Sessão necessária</strong></div>
+      </section>
+      <section class="cx-intel-briefing">
+        <small>Intelligence</small>
+        <strong>Entre para acessar padrões, comparações e resumos verificáveis da operação.</strong>
+      </section>
+      <section class="cx-intel-summary">
+        <article><span>Insights relevantes</span><strong>Protegido</strong></article>
+        <article><span>Ativos afetados</span><strong>Protegido</strong></article>
+        <article><span>Eventos analisados</span><strong>Protegido</strong></article>
+        <article><span>Comparação</span><strong>Protegido</strong></article>
+      </section>
+      <section class="cx-intel-module">
+        <h3>Dados protegidos</h3>
+        <p>A Campex não carrega insights, causas, rastreabilidade ou eventos do cliente sem autenticação.</p>
+        <a class="cx-primary-action" href="/settings/cameras?next=%2Finsights#login">Entrar</a>
+      </section>
+    </section>
+  `;
+}
+
 function renderHomeAuthState() {
   title.textContent = "Início";
   heading.textContent = "Visão atual da sua operação.";
@@ -2569,67 +2743,21 @@ function renderHomeAuthState() {
       <header class="cx-home-header">
         <div>
           <span>Início</span>
-          <h2>Visão em tempo real da operação, incidentes e atividade.</h2>
-          <p>A Campex protege os dados operacionais do cliente. Faça login para carregar a leitura real da instalação.</p>
+          <h2>Entre para acessar a operação da Campex.</h2>
+          <p>Os dados de ativos, incidentes, evidências e inteligência ficam disponíveis apenas para usuários autenticados.</p>
         </div>
         <div class="cx-home-period">
           <small>Status</small>
           <strong>Sessão necessária</strong>
         </div>
       </header>
-      <section class="cx-home-now">
-        <div class="cx-home-section-head">
-          <span>Operação agora</span>
-          ${badge("Indisponível")}
-        </div>
-        ${renderHomeProtectedMetrics()}
-        <div class="cx-home-empty compact">
-          <strong>Entre para acessar os dados da operação.</strong>
+      <section class="cx-home-auth-gate">
+        <div>
+          <span>Acesso protegido</span>
+          <strong>Entre para carregar a leitura operacional real.</strong>
           <p>Sem autenticação, a Campex não carrega tenant, ativos, incidentes, briefing, impacto ou cobertura.</p>
-          <a class="cx-primary-action" href="/settings/cameras?next=%2Foperations-view%3Fview%3Dhome#login">Entrar</a>
         </div>
-      </section>
-      <section class="cx-home-primary-grid">
-        <section class="cx-home-attention">
-          <div class="cx-home-section-head"><span>O que merece atenção</span><small>Protegido</small></div>
-          <article class="cx-home-attention-card unknown">
-            <span>Sessão necessária</span>
-            <strong>Aguardando login.</strong>
-            <p>Incidentes críticos reais aparecem aqui após a autenticação.</p>
-          </article>
-        </section>
-        <section class="cx-home-activity">
-          <div class="cx-home-section-head"><span>Atividade operacional</span><small>Protegido</small></div>
-          ${renderHomeActivityLegend()}
-          <div class="cx-home-empty"><strong>Aguardando dados da operação.</strong><p>A atividade recente aparecerá quando houver observações suficientes.</p></div>
-        </section>
-      </section>
-      <section class="cx-home-balanced-grid">
-        <section class="cx-home-section">
-          <div class="cx-home-section-head"><span>Ativos / áreas</span><small>Protegido</small></div>
-          <div class="cx-home-empty"><strong>Dados protegidos.</strong><p>Ativos reais aparecem após login.</p></div>
-        </section>
-        <section class="cx-home-section">
-          <div class="cx-home-section-head"><span>Incidentes recentes</span><small>Protegido</small></div>
-          <div class="cx-home-empty"><strong>Dados protegidos.</strong><p>Incidentes reais aparecem após login.</p></div>
-        </section>
-      </section>
-      <section class="cx-home-balanced-grid">
-        <section class="cx-home-section">
-          <div class="cx-home-section-head"><span>Resumo do período</span><small>Protegido</small></div>
-          <div class="cx-home-empty"><strong>Dados protegidos.</strong><p>O briefing real aparece após login.</p></div>
-        </section>
-        <section class="cx-home-section">
-          <div class="cx-home-section-head"><span>Impacto operacional</span><small>Protegido</small></div>
-          <div class="cx-home-impact">
-            <article><span>Impacto operacional</span><strong>Não disponível</strong><small>Entre para carregar dados reais</small></article>
-            <article><span>Impacto financeiro</span><strong>Não configurado</strong><small>Protegido</small></article>
-          </div>
-        </section>
-      </section>
-      <section class="cx-home-quality-section">
-        <div class="cx-home-section-head"><span>Qualidade dos dados</span><small>Protegido</small></div>
-        <div class="cx-home-quality"><p>Cobertura, gaps e dados insuficientes dependem do tenant autenticado.</p></div>
+        <a class="cx-primary-action" href="/settings/cameras?next=%2Foperations-view%3Fview%3Dhome#login">Entrar</a>
       </section>
     </section>
   `;
@@ -2774,9 +2902,10 @@ async function loadPage(path = window.location.pathname) {
   try {
     const auth = await authStatus();
     if (!auth.authenticated && !auth.bootstrap && config.endpoint !== "/health") {
-      if (key === "/home-view" || key === "/operations-view" || key === "/events") {
+      if (key === "/home-view" || key === "/operations-view" || key === "/events" || key === "/insights") {
         if (key === "/home-view") renderHomeAuthState();
         else if (key === "/events") renderEventsAuthState();
+        else if (key === "/insights") renderIntelligenceAuthState();
         else renderOperationsAuthState("Operations");
         document.querySelector(".cx-main")?.scrollTo({ top: 0, behavior: "smooth" });
         return;
