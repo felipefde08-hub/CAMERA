@@ -9,7 +9,7 @@ from app import api as api_module
 from app.api import api
 from app.auth import create_user
 from app.database import connect, init_db
-from app.models import criar_camera, criar_cliente, criar_machine_monitor, criar_unidade
+from app.models import atualizar_machine_monitor, criar_camera, criar_cliente, criar_machine_monitor, criar_unidade, obter_camera
 
 
 def _isolated_client(tmp_path: Path):
@@ -213,6 +213,31 @@ def test_empty_installation_smoke_reaches_configured_monitor_without_physical_re
         calibration_status = restarted_client.get(f"/machine-monitors/{restarted_monitor['id']}/calibration/status")
         assert calibration_status.status_code == 200
         assert calibration_status.json()["stream"]["status"] == "idle"
+    finally:
+        patcher.stop()
+
+
+def test_live_context_resolves_from_monitor_when_camera_context_is_missing(tmp_path: Path) -> None:
+    client, _db_path, patcher, test_connect = _isolated_client(tmp_path)
+    try:
+        with test_connect() as connection:
+            cliente_id = criar_cliente(connection, "Cliente")
+            unidade_id = criar_unidade(connection, cliente_id, "Unidade")
+            create_user(connection, "admin@cliente.test", "senha-segura", "admin_campex", cliente_id, "Admin")
+            area_id = api_module.criar_operational_area(connection, cliente_id=cliente_id, unidade_id=unidade_id, nome="Corte")
+            process_id = api_module.criar_operational_process(connection, cliente_id=cliente_id, unidade_id=unidade_id, area_id=area_id, nome="Linha A")
+            asset_id = api_module.criar_operational_asset(connection, cliente_id=cliente_id, unidade_id=unidade_id, area_id=area_id, process_id=process_id, nome="A6")
+            camera_id = criar_camera(connection, unidade_id, "Câmera A6", cliente_id=cliente_id, config_ref="video.mp4")
+            monitor_id = criar_machine_monitor(connection, cliente_id, unidade_id, camera_id, "A6", _polygon(), _polygon())
+            atualizar_machine_monitor(connection, monitor_id, area_context_id=area_id, process_id=process_id, asset_id=asset_id)
+            camera = obter_camera(connection, camera_id)
+
+            context = api_module._live_context(connection, camera, {"status": "online", "ai_status": "ativa"})
+
+        assert context["area_id"] == area_id
+        assert context["process_id"] == process_id
+        assert context["asset_id"] == asset_id
+        assert context["primary_label"] == "A6"
     finally:
         patcher.stop()
 

@@ -13,6 +13,8 @@ OBSERVATION_TYPES = {
     "person_track",
     "person_presence",
     "zone_occupancy",
+    "lighting_state",
+    "operational_activity",
     "phone_candidate",
     "vehicle_presence",
     "person_vehicle_proximity",
@@ -277,6 +279,101 @@ class SafetyTemporalTracker:
         self._proximity.clear()
 
 
+@dataclass
+class LightingState:
+    state: str = "UNKNOWN"
+    pending_state: str | None = None
+    pending_count: int = 0
+    brightness: float | None = None
+    confidence: float = 0.0
+    data_quality: str = "insufficient_data"
+
+
+class LightingStateDetector:
+    def __init__(
+        self,
+        *,
+        off_threshold: float = 35.0,
+        on_threshold: float = 55.0,
+        min_persistent_frames: int = 3,
+    ) -> None:
+        self.off_threshold = float(off_threshold)
+        self.on_threshold = float(on_threshold)
+        self.min_persistent_frames = max(1, int(min_persistent_frames))
+        self._state = LightingState()
+
+    def update(
+        self,
+        frame: Any,
+        *,
+        camera_online: bool = True,
+        inference_available: bool = True,
+    ) -> LightingState:
+        if not camera_online:
+            self._state = LightingState(state="UNKNOWN", data_quality="sensor_unavailable")
+            return self._state
+        brightness = _mean_brightness(frame)
+        if brightness is None or not inference_available:
+            self._state = LightingState(
+                state="UNKNOWN",
+                brightness=brightness,
+                confidence=0.0,
+                data_quality="insufficient_data",
+            )
+            return self._state
+        if brightness <= self.off_threshold:
+            candidate = "OFF"
+        elif brightness >= self.on_threshold:
+            candidate = "ON"
+        else:
+            candidate = "UNKNOWN"
+        if candidate == "UNKNOWN":
+            self._state = LightingState(
+                state="UNKNOWN",
+                brightness=brightness,
+                confidence=0.25,
+                data_quality="insufficient_data",
+            )
+            return self._state
+        if candidate == self._state.state:
+            self._state.pending_state = None
+            self._state.pending_count = 0
+        elif candidate == self._state.pending_state:
+            self._state.pending_count += 1
+        else:
+            self._state.pending_state = candidate
+            self._state.pending_count = 1
+        if self._state.state == "UNKNOWN" or self._state.pending_count >= self.min_persistent_frames:
+            self._state.state = candidate
+            self._state.pending_state = None
+            self._state.pending_count = 0
+        distance = abs(brightness - (self.off_threshold if self._state.state == "OFF" else self.on_threshold))
+        confidence = min(0.95, max(0.5, distance / 80.0))
+        self._state.brightness = round(float(brightness), 3)
+        self._state.confidence = round(confidence, 4)
+        self._state.data_quality = "observed"
+        return self._state
+
+    def reset(self) -> None:
+        self._state = LightingState()
+
+
+def _mean_brightness(frame: Any) -> float | None:
+    if frame is None:
+        return None
+    try:
+        import numpy as np
+
+        array = np.asarray(frame)
+        if array.size == 0:
+            return None
+        if array.ndim == 3:
+            array = array[..., :3].mean(axis=2)
+        return float(array.mean())
+    except Exception:
+        return None
+
+
 def _coerce_timestamp(value: datetime | str | None) -> datetime:
     if value is None:
         return datetime.now(timezone.utc)
@@ -479,6 +576,75 @@ def zone_occupancy_observation(
         source=source,
         data_quality=quality,
         metadata={**metadata, "zone_type": zone_type, "people_count": count, "vehicle_count": vehicle_count},
+    )
+
+
+def lighting_state_observation(
+    *,
+    camera_id: str,
+    state: str,
+    brightness: float | None,
+    confidence: float,
+    data_quality: str = "observed",
+    source: str = "lighting_state_detector",
+    cliente_id: str | None = None,
+    unidade_id: str | None = None,
+    area_id: str | None = None,
+    process_id: str | None = None,
+    asset_id: str | None = None,
+    timestamp: datetime | str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> Observation:
+    value = state if state in {"ON", "OFF"} else "UNKNOWN"
+    quality = data_quality if value != "UNKNOWN" else data_quality if data_quality == "sensor_unavailable" else "insufficient_data"
+    return Observation(
+        observation_type="lighting_state",
+        camera_id=camera_id,
+        cliente_id=cliente_id,
+        unidade_id=unidade_id,
+        area_id=area_id,
+        process_id=process_id,
+        asset_id=asset_id,
+        timestamp=timestamp,
+        value=value,
+        confidence=confidence,
+        source=source,
+        data_quality=quality,
+        metadata={**(metadata or {}), "brightness": brightness},
+    )
+
+
+def operational_activity_observation(
+    *,
+    camera_id: str,
+    state: str,
+    facts: list[str],
+    confidence: float,
+    data_quality: str = "inferred",
+    source: str = "operational_read_model",
+    cliente_id: str | None = None,
+    unidade_id: str | None = None,
+    area_id: str | None = None,
+    process_id: str | None = None,
+    asset_id: str | None = None,
+    timestamp: datetime | str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> Observation:
+    value = state if state in {"NORMAL_ACTIVITY", "LOW_ACTIVITY", "NO_ACTIVITY"} else "UNKNOWN"
+    return Observation(
+        observation_type="operational_activity",
+        camera_id=camera_id,
+        cliente_id=cliente_id,
+        unidade_id=unidade_id,
+        area_id=area_id,
+        process_id=process_id,
+        asset_id=asset_id,
+        timestamp=timestamp,
+        value=value,
+        confidence=confidence if value != "UNKNOWN" else 0.0,
+        source=source,
+        data_quality=data_quality if value != "UNKNOWN" else "insufficient_data",
+        metadata={**(metadata or {}), "facts": facts},
     )
 
 

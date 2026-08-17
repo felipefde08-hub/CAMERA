@@ -15,7 +15,7 @@
   <body class="campex-dashboard">
     <aside class="cx-sidebar">
       <div class="cx-sidebar-top">
-        <a class="cx-logo" href="/operations-view" aria-label="Campex">
+        <a class="cx-logo" href="/operations-view?view=home" aria-label="Campex">
           <img src="/static/campex-logo-oficial.png" alt="Campex" />
           <strong>Campex</strong>
         </a>
@@ -30,6 +30,7 @@
         <span class="cx-workspace-arrow">⌄</span>
       </button>
       <nav class="cx-nav cx-nav-grouped" aria-label="Navegação principal">
+        <a href="/operations-view?view=home"><span class="cx-nav-icon" data-icon="home"></span>Início</a>
         <a href="/operations-view"><span class="cx-nav-icon" data-icon="operations"></span>Operations</a>
         <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Events</a>
         <a href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Intelligence</a>
@@ -40,11 +41,13 @@
       <div class="cx-account">
         <a href="/help" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
         <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="status"></span>Sistema online</a>
-        <div class="cx-avatar">C</div>
-        <div>
-          <strong>Operador</strong>
-          <span>Campex</span>
-        </div>
+        <button class="cx-profile-trigger" type="button">
+          <span class="cx-avatar">C</span>
+          <span>
+            <strong class="cx-profile-name">Operador</strong>
+            <small class="cx-profile-role">Campex</small>
+          </span>
+        </button>
       </div>
     </aside>
     <main class="cx-main app-content live-grid-shell">

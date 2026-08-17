@@ -788,7 +788,7 @@ def calibration_stats(samples: list[float]) -> dict[str, object]:
 def calibration_separation(active: dict[str, object] | None, stopped: dict[str, object] | None) -> dict[str, object]:
     result = machine_calibration_separation(active, stopped)
     if result["result"] == "CALIBRATION_REQUIRED":
-        return {**result, "result": "INVALID"}
+        return result
     return result
 
 

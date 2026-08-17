@@ -52,6 +52,23 @@ def safe_error(exc: Exception) -> str:
     return text[:300]
 
 
+def email_configuration_status() -> dict[str, Any]:
+    mode = os.getenv("CAMPEX_EMAIL_MODE", "").strip().lower()
+    if mode == "console":
+        return {"status": "CONFIGURED", "mode": "console", "missing": []}
+    if mode == "smtp":
+        required = ["CAMPEX_SMTP_HOST", "CAMPEX_SMTP_USERNAME", "CAMPEX_SMTP_PASSWORD"]
+        missing = [name for name in required if not os.getenv(name)]
+        return {
+            "status": "CONFIGURED" if not missing else "NOT_CONFIGURED",
+            "mode": "smtp",
+            "missing": missing,
+        }
+    if not mode:
+        return {"status": "NOT_CONFIGURED", "mode": "", "missing": ["CAMPEX_EMAIL_MODE"]}
+    return {"status": "FAILED", "mode": mode, "missing": [], "error": "CAMPEX_EMAIL_MODE invalido."}
+
+
 def subscribe() -> queue.Queue[dict[str, Any]]:
     subscriber: queue.Queue[dict[str, Any]] = queue.Queue()
     with _subscribers_lock:
@@ -133,6 +150,99 @@ def event_type_allowed(event_type: str | None, enabled_types: list[str] | None) 
     return str(event_type or "") in enabled_types
 
 
+def alert_decision_payload(decision: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "critical_alert_decision",
+        "decision_id": decision["decision_id"],
+        "incident_key": decision["incident_key"],
+        "alert_type": decision.get("alert_type"),
+        "severity": decision.get("severity"),
+        "priority": decision.get("priority") or decision.get("severity"),
+        "title": decision.get("title"),
+        "summary": decision.get("summary"),
+        "camera_id": decision.get("camera_id"),
+        "asset_id": decision.get("asset_id"),
+        "event_refs": decision.get("event_refs") or [],
+        "anomaly_refs": decision.get("anomaly_refs") or [],
+        "understanding_refs": decision.get("understanding_refs") or [],
+        "evidence_refs": decision.get("evidence_refs") or [],
+        "reason_codes": decision.get("reason_codes") or [],
+        "cause_inferred": False,
+        "created_at": decision.get("created_at") or now_iso(),
+    }
+
+
+def listar_recipients_para_decisao(connection, decision: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT *
+        FROM alert_recipients
+        WHERE ativo = 1
+          AND (cliente_id IS NULL OR cliente_id = ?)
+          AND (camera_id IS NULL OR camera_id = ?)
+        ORDER BY criado_em DESC
+        """,
+        (decision.get("tenant_id"), decision.get("camera_id")),
+    ).fetchall()
+    recipients = []
+    for row in rows:
+        recipient = dict(row)
+        recipient["ativo"] = bool(recipient["ativo"])
+        recipient["event_types"] = json.loads(recipient.get("event_types") or "[]")
+        if not severity_allowed(decision.get("severity"), recipient.get("severidade_minima")):
+            continue
+        if not event_type_allowed(decision.get("alert_type"), recipient.get("event_types")):
+            continue
+        recipients.append(recipient)
+    return recipients
+
+
+def enqueue_alert_decision_delivery(decision_id: str, *, canal: str = "email") -> list[str]:
+    with connect() as connection:
+        init_db(connection)
+        from app.operational_alerting import get_alert_decision
+
+        decision = get_alert_decision(connection, decision_id)
+        if decision is None or decision.get("decision") != "ALERT":
+            return []
+        return enqueue_alert_decisions_with_connection(connection, [decision], canal=canal)
+
+
+def enqueue_alert_decisions(decisions: list[dict[str, Any]], *, canal: str = "email") -> list[str]:
+    with connect() as connection:
+        init_db(connection)
+        return enqueue_alert_decisions_with_connection(connection, decisions, canal=canal)
+
+
+def enqueue_alert_decisions_with_connection(connection, decisions: list[dict[str, Any]], *, canal: str = "email") -> list[str]:
+    delivery_ids: list[str] = []
+    for decision in decisions:
+        if decision.get("decision") != "ALERT":
+            continue
+        recipients = listar_recipients_para_decisao(connection, decision)
+        payload = alert_decision_payload(decision)
+        created_for_decision = [
+            criar_alert_delivery(
+                connection,
+                recipient["id"],
+                evento_id=None,
+                canal=canal,
+                decision_id=decision["decision_id"],
+                incident_key=decision["incident_key"],
+                alert_type=decision.get("alert_type"),
+                severity=decision.get("severity"),
+                payload=payload,
+            )
+            for recipient in recipients
+        ]
+        if created_for_decision:
+            publish_alert(payload)
+        for delivery_id in created_for_decision:
+            schedule_delivery(delivery_id)
+        delivery_ids.extend(created_for_decision)
+    return delivery_ids
+
+
 def enqueue_event_alert(event_id: str, phase: str = "start") -> None:
     canal = "email_normalizacao" if phase == "normalization" else "email"
     with connect() as connection:
@@ -184,7 +294,7 @@ def _delivery_worker(delivery_id: str) -> None:
                 _mark_delivery(delivery, "failed", "Destinatario nao encontrado.")
                 return
             try:
-                send_email_alert(recipient, event, bool(delivery.get("is_test")))
+                send_email_alert(recipient, event, bool(delivery.get("is_test")), decision_payload=delivery.get("payload") if delivery.get("decision_id") else None)
                 _mark_delivery(delivery, "sent", None)
                 return
             except Exception as exc:
@@ -228,14 +338,23 @@ def _mark_delivery(
         publish_alert({"type": "delivery_updated", "delivery": alert_delivery_public_dict(updated)})
 
 
-def send_email_alert(recipient: dict[str, Any], event: dict[str, Any] | None, is_test: bool = False) -> None:
-    mode = os.getenv("CAMPEX_EMAIL_MODE", "console").lower()
+def send_email_alert(
+    recipient: dict[str, Any],
+    event: dict[str, Any] | None,
+    is_test: bool = False,
+    decision_payload: dict[str, Any] | None = None,
+) -> None:
+    config = email_configuration_status()
+    if config["status"] != "CONFIGURED":
+        if config["status"] == "NOT_CONFIGURED":
+            raise RuntimeError(f"EMAIL_NOT_CONFIGURED: faltam {', '.join(config.get('missing') or [])}.")
+        raise RuntimeError(str(config.get("error") or "CAMPEX_EMAIL_MODE invalido."))
+    mode = str(config["mode"])
     if mode == "console":
-        print(f"Campex email console: alerta para {recipient['email']} ({'teste' if is_test else 'ocorrencia'})")
+        label = "decisao" if decision_payload else "teste" if is_test else "ocorrencia"
+        print(f"Campex email console: alerta para {recipient['email']} ({label})")
         return
-    if mode != "smtp":
-        raise RuntimeError("CAMPEX_EMAIL_MODE invalido.")
-    message = build_email_message(recipient, event, is_test)
+    message = build_email_message(recipient, event, is_test, decision_payload=decision_payload)
     host = os.getenv("CAMPEX_SMTP_HOST")
     port = env_int("CAMPEX_SMTP_PORT", 587)
     username = os.getenv("CAMPEX_SMTP_USERNAME")
@@ -254,9 +373,41 @@ def send_email_alert(recipient: dict[str, Any], event: dict[str, Any] | None, is
             smtp.send_message(message)
 
 
-def build_email_message(recipient: dict[str, Any], event: dict[str, Any] | None, is_test: bool = False) -> EmailMessage:
+def build_email_message(
+    recipient: dict[str, Any],
+    event: dict[str, Any] | None,
+    is_test: bool = False,
+    decision_payload: dict[str, Any] | None = None,
+) -> EmailMessage:
     sender = os.getenv("CAMPEX_EMAIL_FROM", "campex@localhost")
     app_url = os.getenv("CAMPEX_APP_URL", "http://127.0.0.1:8000")
+    if decision_payload:
+        subject = f"[Campex] {decision_payload.get('title') or 'Alerta operacional crítico'}"
+        lines = [
+            str(decision_payload.get("title") or "Alerta operacional crítico"),
+            str(decision_payload.get("summary") or "Decisão de alerta operacional."),
+            f"Destinatario: {recipient['nome']}",
+            f"Decision ID: {decision_payload.get('decision_id')}",
+            f"Incident key: {decision_payload.get('incident_key')}",
+            f"Tipo: {decision_payload.get('alert_type')}",
+            f"Severidade: {decision_payload.get('severity')}",
+            f"Camera: {decision_payload.get('camera_id')}",
+            f"Ativo: {decision_payload.get('asset_id')}",
+            f"Eventos: {', '.join(decision_payload.get('event_refs') or []) or 'nenhum'}",
+            f"Evidencias: {len(decision_payload.get('evidence_refs') or [])}",
+            f"Entendimentos visuais: {', '.join(decision_payload.get('understanding_refs') or []) or 'nenhum'}",
+            "Causa inferida: não",
+            f"Link: {app_url}/events",
+        ]
+        uncertainties = decision_payload.get("uncertainties") or []
+        if uncertainties:
+            lines.append("Incertezas: " + "; ".join(str(item) for item in uncertainties[:3]))
+        message = EmailMessage()
+        message["From"] = sender
+        message["To"] = recipient["email"]
+        message["Subject"] = subject
+        message.set_content("\n".join(lines))
+        return message
     event_id = event["id"] if event else "teste"
     event_title = event_alert_payload(event)["titulo"] if event else "Alerta de teste da Campex"
     subject = "[Campex] Alerta de teste" if is_test else f"[Campex] {event_title}"

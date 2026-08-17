@@ -120,6 +120,23 @@ class AlertsStage6Test(unittest.TestCase):
         smtp.assert_not_called()
         printer.assert_called_once()
 
+    def test_email_configuration_distinguishes_not_configured_failed_and_sent(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            status = alerts.email_configuration_status()
+            self.assertEqual(status["status"], "NOT_CONFIGURED")
+            self.assertIn("CAMPEX_EMAIL_MODE", status["missing"])
+            with self.assertRaisesRegex(RuntimeError, "EMAIL_NOT_CONFIGURED"):
+                alerts.send_email_alert({"nome": "Pessoa", "email": "pessoa@example.com"}, None, is_test=True)
+
+        with patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "invalid"}, clear=True):
+            status = alerts.email_configuration_status()
+            self.assertEqual(status["status"], "FAILED")
+
+        with patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console"}, clear=True), patch("builtins.print"):
+            status = alerts.email_configuration_status()
+            self.assertEqual(status["status"], "CONFIGURED")
+            alerts.send_email_alert({"nome": "Pessoa", "email": "pessoa@example.com"}, None, is_test=True)
+
     def test_smtp_mode_uses_safe_configuration(self) -> None:
         env = {
             "CAMPEX_EMAIL_MODE": "smtp",

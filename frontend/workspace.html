@@ -10,12 +10,12 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=campex-v0-audit-20260810" />
+    <link rel="stylesheet" href="/static/styles.css?v=campex-events-v1-20260815" />
   </head>
   <body class="campex-dashboard campex-light">
     <aside class="cx-sidebar">
       <div class="cx-sidebar-top">
-        <a class="cx-logo" href="/operations-view" aria-label="Campex">
+        <a class="cx-logo" href="/operations-view?view=home" aria-label="Campex">
           <img src="/static/campex-logo-oficial.png" alt="Campex" />
           <strong>Campex</strong>
         </a>
@@ -30,6 +30,7 @@
         <span class="cx-workspace-arrow">⌄</span>
       </button>
       <nav class="cx-nav cx-nav-grouped" aria-label="Navegação principal">
+        <a data-route="/operations-view?view=home" href="/operations-view?view=home"><span class="cx-nav-icon" data-icon="home"></span>Início</a>
         <a data-route="/operations-view" href="/operations-view"><span class="cx-nav-icon" data-icon="operations"></span>Operations</a>
         <a data-route="/events" href="/events"><span class="cx-nav-icon" data-icon="events"></span>Events</a>
         <a data-route="/insights" href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Intelligence</a>
@@ -40,11 +41,13 @@
       <div class="cx-account">
         <a href="/help" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
         <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="status"></span>Sistema online</a>
-        <div class="cx-avatar">C</div>
-        <div>
-          <strong>Campex</strong>
-          <span>Piloto local</span>
-        </div>
+        <button class="cx-profile-trigger" type="button">
+          <span class="cx-avatar">C</span>
+          <span>
+            <strong class="cx-profile-name">Campex</strong>
+            <small class="cx-profile-role">Piloto local</small>
+          </span>
+        </button>
       </div>
     </aside>
     <main class="cx-main">
@@ -57,7 +60,7 @@
           <input id="workspaceSearch" placeholder="Buscar" />
           <button class="cx-icon-button" type="button" aria-label="Ajuda"><span class="cx-nav-icon" data-icon="help"></span></button>
           <button class="cx-icon-button" type="button" aria-label="Notificações"><span class="cx-nav-icon" data-icon="alert"></span></button>
-          <div class="cx-top-avatar">C</div>
+          <button class="cx-top-avatar" type="button" aria-label="Conta">C</button>
           <a class="cx-primary-action" href="/settings/cameras">Configurar</a>
         </div>
       </header>
@@ -96,7 +99,7 @@
         <div id="workspaceDrawerContent"></div>
       </aside>
     </main>
-    <script src="/static/shell.js?v=campex-v0-audit-20260810"></script>
-    <script src="/static/workspace.js?v=campex-v0-audit-20260810"></script>
+    <script src="/static/shell.js?v=campex-events-v1-20260815"></script>
+    <script src="/static/workspace.js?v=campex-events-v1-20260815"></script>
   </body>
 </html>

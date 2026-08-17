@@ -16,7 +16,7 @@ def test_operations_view_route_serves_workspace_shell() -> None:
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "workspace.js" in response.text
-    assert "campex-v0-audit-20260810" in response.text
+    assert "campex-events-v1-20260815" in response.text
     assert "SQLite persistente" not in response.text
     assert "Sem credenciais no navegador" not in response.text
     assert "<h2 id=\"workspaceTableTitle\">Registros</h2>" not in response.text
@@ -25,13 +25,16 @@ def test_operations_view_route_serves_workspace_shell() -> None:
 def test_operations_view_uses_read_model_endpoints_for_aggregations() -> None:
     script = Path(ROOT / "frontend" / "workspace.js").read_text(encoding="utf-8")
     start = script.index("async function renderOperationsReadModelPage")
-    end = script.index("async function loadAlertsWorkspace")
+    end = script.index("function intelligenceBriefingText")
     operations_block = script[start:end]
 
     assert "/operations/read-model/current" in operations_block
     assert "/operations/read-model/summary" in operations_block
-    assert "/operations/read-model/losses" in operations_block
-    assert "/operations/read-model/comparison" in operations_block
+    assert "/operations/timeline" in operations_block
+    assert "/setup/operation" in operations_block
+    assert "/eventos" in operations_block
+    assert "/operations/read-model/losses" not in operations_block
+    assert "/operations/read-model/comparison" not in operations_block
     assert "/operations/summary" not in operations_block
     assert "/operations/events" not in operations_block
 
@@ -39,22 +42,31 @@ def test_operations_view_uses_read_model_endpoints_for_aggregations() -> None:
 def test_operations_view_replaces_legacy_dashboard_content() -> None:
     script = Path(ROOT / "frontend" / "workspace.js").read_text(encoding="utf-8")
     start = script.index("async function renderOperationsReadModelPage")
-    end = script.index("async function loadAlertsWorkspace")
+    end = script.index("function intelligenceBriefingText")
     operations_block = script[start:end]
 
     for expected in [
         "Operations",
-        "Como está sua operação?",
-        "Briefing operacional",
-        "O que merece atenção",
-        "Operação agora",
-        "Principais perdas",
-        "Comparação",
-        "Sem dados operacionais suficientes neste período.",
+        "Acompanhe o estado operacional dos ativos e áreas monitoradas.",
+        "Resumo operacional",
+        "Ativos monitorados",
+        "Atividade recente",
+        "Qualidade dos dados",
+        "Dados insuficientes",
     ]:
         assert expected in operations_block
 
+    for table_label in ["Estado atual", "Tempo no estado", "Incidente ativo"]:
+        assert table_label in script[
+            script.index("function renderOperationsAssetList"):
+            script.index("function renderOperationsRecentActivity")
+        ]
+
     for legacy_label in [
+        "Como está sua operação?",
+        "Briefing operacional",
+        "Principais perdas",
+        "Comparação",
         "Adicionar câmera",
         "Revisar eventos",
         "Configurar alerta",
@@ -66,8 +78,8 @@ def test_operations_view_replaces_legacy_dashboard_content() -> None:
     ]:
         assert legacy_label not in operations_block
 
-    for family_label in ["Interrupções", "Esperas", "Ausências", "Fluxo", "Eventos abertos"]:
-        assert family_label in script
+    for family_label in ["Interrupções", "Esperas", "Ausências", "Fluxo"]:
+        assert family_label in operations_block or family_label in script
 
 
 def test_operations_formats_period_and_keeps_unknown_secondary() -> None:
@@ -81,38 +93,69 @@ def test_operations_formats_period_and_keeps_unknown_secondary() -> None:
     assert "function renderUnknownQualityNote" in script
     assert "não entram nos indicadores oficiais da Operations" in script
     assert "Sem eventos operacionais classificados suficientes neste período." in script
-    assert "officialFamilyRows(summary)[0]" in script
-    assert "...officialFamilyRows(summary).map" in script
+    assert "officialFamilyRows(summary)" in script
+    assert "event_family = unknown" not in script[
+        script.index("async function renderOperationsReadModelPage"):
+        script.index("function intelligenceBriefingText")
+    ]
 
 
 def test_operations_current_uses_canonical_context_labels() -> None:
     script = Path(ROOT / "frontend" / "workspace.js").read_text(encoding="utf-8")
 
-    assert "function eventContextLabel" in script
-    assert "asset_name || event.asset_id" in script
-    assert "process_name || event.process_id" in script
-    assert "area_name || event.area_context_id" in script
-    assert "camera_name || event.camera_id" in script
+    block = script[
+        script.index("function operationsAssetRows"):
+        script.index("function operationsFilterRows")
+    ]
+
+    assert "asset.nome || asset.name" in block
+    assert "asset.area_name || asset.area || asset.area_id || asset.area_context_id" in block
+    assert "eventContextLabel(event)" in block
     assert "Contexto operacional não informado" in script
-    assert "Ativo operacional" not in script[
-        script.index("function renderOperationsCurrent"):
-        script.index("function renderOperationsRanking")
+    assert "Ativo operacional" in block
+
+
+def test_operations_view_maps_technical_states_to_human_labels() -> None:
+    script = Path(ROOT / "frontend" / "workspace.js").read_text(encoding="utf-8")
+    block = script[
+        script.index("function operationsStateLabel"):
+        script.index("function operationsStateTone")
     ]
-    assert "Sem classificação" not in script[
-        script.index("function renderOperationsCurrent"):
-        script.index("function renderOperationsRanking")
-    ]
+
+    for expected in [
+        'RUNNING: "Em operação"',
+        'STOPPED: "Parado"',
+        'LOW_ACTIVITY: "Baixa atividade"',
+        'UNKNOWN: "Dados insuficientes"',
+        'OFFLINE: "Offline"',
+    ]:
+        assert expected in block
+
+    assert "operationsStateDot" in script
+    assert "cx-ops-state" in script
+
+
+def test_operations_filters_are_functional() -> None:
+    script = Path(ROOT / "frontend" / "workspace.js").read_text(encoding="utf-8")
+
+    assert "let operationsSelectedState" in script
+    assert "let operationsSelectedAsset" in script
+    assert "function operationsFilterRows" in script
+    assert "#operationsStateFilter" in script
+    assert "#operationsAssetFilter" in script
+    assert "operationsSelectedState = stateSelect.value" in script
+    assert "operationsSelectedAsset = assetSelect.value" in script
 
 
 def test_operations_load_page_does_not_inject_legacy_shell_cards() -> None:
     script = Path(ROOT / "frontend" / "workspace.js").read_text(encoding="utf-8")
 
     assert "function usesProductMemoryShell" in script
-    assert 'path === "/operations-view" || path === "/events" || path === "/insights"' in script
+    assert 'path === "/home-view" || path === "/operations-view" || path === "/events" || path === "/insights"' in script
     assert "cards.innerHTML = usesProductMemoryShell(path) ? \"\"" in script
     assert "renderOperationsAuthState" in script
     assert "Entre para acessar os dados da operação." in script
-    assert "/settings/cameras?next=%2Foperations-view#login" in script
+    assert "/settings/cameras?next=${target}#login" in script
 
     for legacy_label in [
         "Registros",

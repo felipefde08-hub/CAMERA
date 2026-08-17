@@ -15,7 +15,7 @@
   <body class="campex-dashboard">
     <aside class="cx-sidebar">
       <div class="cx-sidebar-top">
-        <a class="cx-logo" href="/operations-view" aria-label="Campex">
+        <a class="cx-logo" href="/operations-view?view=home" aria-label="Campex">
           <img src="/static/campex-logo-oficial.png" alt="Campex" />
           <strong>Campex</strong>
         </a>
@@ -30,6 +30,7 @@
         <span class="cx-workspace-arrow">⌄</span>
       </button>
       <nav class="cx-nav cx-nav-grouped" aria-label="Navegação principal">
+        <a href="/operations-view?view=home"><span class="cx-nav-icon" data-icon="home"></span>Início</a>
         <a href="/operations-view"><span class="cx-nav-icon" data-icon="operations"></span>Operations</a>
         <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Events</a>
         <a href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Intelligence</a>
@@ -39,19 +40,21 @@
       </nav>
       <div class="cx-route-registry" hidden aria-hidden="true">
         <a href="/operations-view">Operations</a>
-        <a href="/cameras">Câmeras operacionais</a>
-        <a href="/history">Histórico</a>
-        <a href="/integrations">Integrações</a>
-        <a href="/users">Usuários</a>
+        <a href="/events">Events</a>
+        <a href="/insights">Intelligence</a>
+        <a href="/live-grid">Live</a>
+        <a href="/settings/cameras">Setup</a>
       </div>
       <div class="cx-account">
         <a href="/help" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
         <a href="/settings/cameras" class="cx-footer-link"><span class="cx-nav-icon" data-icon="status"></span>Sistema online</a>
-        <div class="cx-avatar">C</div>
-        <div>
-          <strong>Operador</strong>
-          <span>Campex</span>
-        </div>
+        <button class="cx-profile-trigger" type="button">
+          <span class="cx-avatar">C</span>
+          <span>
+            <strong class="cx-profile-name">Operador</strong>
+            <small class="cx-profile-role">Campex</small>
+          </span>
+        </button>
       </div>
     </aside>
     <main class="cx-main app-content live-shell">
@@ -64,7 +67,7 @@
           <span id="liveViewStatus" class="badge offline">Conectando</span>
           <button class="cx-icon-button" type="button" aria-label="Ajuda"><span class="cx-nav-icon" data-icon="help"></span></button>
           <button class="cx-icon-button" type="button" aria-label="Notificações"><span class="cx-nav-icon" data-icon="alert"></span></button>
-          <div class="cx-top-avatar">FE</div>
+          <button class="cx-top-avatar" type="button" aria-label="Conta">C</button>
         </div>
       </header>
 
@@ -258,7 +261,7 @@
             <span id="liveCriticalCamera">Câmera: —</span>
             <span id="liveCriticalTime">Horário: —</span>
             <span id="liveCriticalDuration">Tempo de ausência: 0s</span>
-            <a id="liveCriticalEvidence" href="#" target="_blank" rel="noreferrer" hidden>Ver evidência</a>
+            <a id="liveCriticalEvidence" target="_blank" rel="noreferrer" hidden>Ver evidência</a>
           </section>
           <details class="zone-card monitor-config-card live-config-mode">
             <summary>

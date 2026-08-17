@@ -1413,6 +1413,10 @@ button[type="button"] {
   font-size: 12px;
 }
 
+.cx-home-mode .cx-header > div:first-child,
+.cx-home-mode .cx-page-title,
+.cx-home-mode .cx-header-tools > .cx-primary-action,
+.cx-home-mode .cx-workspace-filters,
 .cx-operations-mode .cx-header > div:first-child,
 .cx-operations-mode .cx-page-title,
 .cx-operations-mode .cx-header-tools > .cx-primary-action,
@@ -1420,13 +1424,282 @@ button[type="button"] {
   display: none;
 }
 
+.cx-home-mode .cx-work-cards,
 .cx-operations-mode .cx-work-cards {
   display: block;
   margin: 0 0 18px;
 }
 
+.cx-home-mode .cx-panel.cx-ops-hide-panel,
 .cx-operations-mode .cx-panel.cx-ops-hide-panel {
   display: none;
+}
+
+.cx-home-page,
+.cx-home-layout,
+.cx-home-main-column,
+.cx-home-side-column,
+.cx-home-list {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+
+.cx-home-page {
+  color: var(--campex-text);
+}
+
+.cx-home-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 300px);
+  gap: 24px;
+  align-items: end;
+  padding: 8px 0 6px;
+}
+
+.cx-home-header span,
+.cx-home-section-head span,
+.cx-home-metrics span,
+.cx-home-impact span {
+  display: block;
+  color: var(--campex-blue);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cx-home-header h2 {
+  margin: 6px 0 0;
+  color: var(--campex-text);
+  font-size: clamp(30px, 4vw, 42px);
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.04;
+}
+
+.cx-home-header p {
+  max-width: 760px;
+  margin: 12px 0 0;
+  color: var(--campex-muted);
+  font-size: 15px;
+}
+
+.cx-home-period {
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: linear-gradient(145deg, #ffffff 0%, #f3f6fb 100%);
+  box-shadow: inset 0 0 0 1px rgba(17, 19, 24, 0.06);
+}
+
+.cx-home-period small,
+.cx-home-section-head small,
+.cx-home-metrics small,
+.cx-home-impact small,
+.cx-home-asset small,
+.cx-home-incident small {
+  display: block;
+  color: var(--campex-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.cx-home-period strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--campex-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.cx-home-section {
+  padding: 22px;
+  border-radius: 22px;
+  background: var(--campex-surface);
+  box-shadow: 0 1px 0 rgba(17, 19, 24, 0.05);
+}
+
+.cx-home-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.cx-home-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.cx-home-metrics article,
+.cx-home-impact article {
+  min-width: 0;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--campex-border);
+}
+
+.cx-home-metrics strong,
+.cx-home-impact strong {
+  display: block;
+  margin: 7px 0 4px;
+  color: var(--campex-text);
+  font-size: clamp(20px, 2.2vw, 30px);
+  font-weight: 650;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.cx-home-layout {
+  grid-template-columns: minmax(0, 1.45fr) minmax(340px, 0.82fr);
+  align-items: start;
+}
+
+.cx-home-attention-card,
+.cx-home-briefing,
+.cx-home-empty,
+.cx-home-asset,
+.cx-home-incident,
+.cx-home-quality {
+  border-radius: 16px;
+  background: #f7f8fa;
+}
+
+.cx-home-attention-card {
+  display: grid;
+  gap: 11px;
+  padding: 20px;
+}
+
+.cx-home-attention-card.critical {
+  background: #fff1f1;
+  box-shadow: inset 4px 0 0 var(--danger);
+}
+
+.cx-home-attention-card.normal {
+  background: #f0fbf4;
+  box-shadow: inset 4px 0 0 var(--success);
+}
+
+.cx-home-attention-card.unknown {
+  background: #f5f7fb;
+  box-shadow: inset 4px 0 0 var(--neutral);
+}
+
+.cx-home-attention-card strong,
+.cx-home-briefing strong,
+.cx-home-empty strong,
+.cx-home-asset strong,
+.cx-home-incident strong {
+  color: var(--campex-text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.cx-home-attention-card p,
+.cx-home-briefing p,
+.cx-home-empty p,
+.cx-home-quality p {
+  margin: 0;
+  color: var(--campex-muted);
+}
+
+.cx-home-meta {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--campex-muted);
+  font-size: 12.5px;
+}
+
+.cx-home-activity-strip {
+  display: flex;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.cx-home-activity-strip span {
+  display: grid;
+  min-width: 120px;
+  gap: 5px;
+  padding: 12px;
+  border-radius: 14px;
+  background: #f7f8fa;
+  color: var(--campex-text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.cx-home-activity-strip i {
+  width: 9px;
+  height: 9px;
+  border-radius: 99px;
+  background: var(--neutral);
+}
+
+.cx-home-activity-strip .active i,
+.cx-home-activity-strip .present i,
+.cx-home-activity-strip .normal_activity i,
+.cx-home-activity-strip .online i {
+  background: var(--success);
+}
+
+.cx-home-activity-strip .stopped i,
+.cx-home-activity-strip .absent i,
+.cx-home-activity-strip .no_activity i,
+.cx-home-activity-strip .offline i {
+  background: var(--danger);
+}
+
+.cx-home-activity-strip .low_activity i {
+  background: var(--warning);
+}
+
+.cx-home-asset,
+.cx-home-incident {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px;
+}
+
+.cx-home-asset span {
+  display: block;
+  margin-top: 2px;
+  color: var(--campex-muted);
+  font-size: 12.5px;
+}
+
+.cx-home-impact {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  padding: 22px;
+  border-radius: 22px;
+  background: #0d1424;
+}
+
+.cx-home-impact span,
+.cx-home-impact small {
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.cx-home-impact strong {
+  color: #ffffff;
+}
+
+.cx-home-quality {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+}
+
+.cx-secondary-action {
+  display: inline-flex;
+  width: max-content;
+  margin-top: 12px;
+  color: var(--campex-blue);
+  font-weight: 600;
+  text-decoration: none;
 }
 
 .cx-ops-page,
@@ -1782,6 +2055,15 @@ button[type="button"] {
 }
 
 @media (max-width: 1120px) {
+  .cx-home-header,
+  .cx-home-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .cx-home-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .cx-intel-kpis {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -1792,6 +2074,18 @@ button[type="button"] {
 }
 
 @media (max-width: 720px) {
+  .cx-home-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .cx-home-section {
+    padding: 18px;
+  }
+
+  .cx-home-activity-strip {
+    display: grid;
+  }
+
   .cx-intel-kpis {
     grid-template-columns: 1fr;
   }
@@ -1813,7 +2107,9 @@ button[type="button"] {
   color: var(--campex-text);
 }
 
-.cx-operations-mode #workspaceSearch {
+.cx-home-mode #workspaceSearch,
+.cx-operations-mode #workspaceSearch,
+.cx-events-mode #workspaceSearch {
   display: none;
 }
 
@@ -4148,6 +4444,92 @@ label {
   background: #f4f6f9 !important;
 }
 
+.cx-profile-trigger {
+  display: grid;
+  grid-template-columns: 36px 1fr;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 8px;
+  border: 1px solid transparent !important;
+  border-radius: 10px;
+  background: transparent !important;
+  padding: 4px 6px;
+  color: var(--campex-text) !important;
+  text-align: left;
+}
+
+.cx-profile-trigger:hover {
+  border-color: var(--campex-border) !important;
+  background: #f4f6f9 !important;
+}
+
+.cx-profile-trigger > span:last-child {
+  display: grid;
+  min-width: 0;
+}
+
+.cx-profile-trigger strong,
+.cx-profile-trigger small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cx-profile-trigger small {
+  color: var(--campex-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.cx-top-avatar {
+  border: 0;
+  padding: 0;
+}
+
+.cx-popover a,
+.cx-popover button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 34px;
+  border: 0 !important;
+  border-radius: 8px;
+  background: transparent !important;
+  color: var(--campex-text) !important;
+  padding: 0 8px;
+  text-align: left;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.cx-popover a:hover,
+.cx-popover button:hover {
+  background: #f4f6f9 !important;
+}
+
+.cx-popover-note {
+  display: block;
+  border-radius: 8px;
+  padding: 7px 8px;
+  color: var(--campex-muted);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.campex-dashboard.sidebar-collapsed .cx-profile-trigger {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding-inline: 0;
+}
+
+.campex-dashboard.sidebar-collapsed .cx-profile-trigger > span:last-child {
+  display: none;
+}
+
 .cx-event-timeline,
 .cx-rule-steps {
   display: grid;
@@ -5033,5 +5415,2136 @@ label {
 
   .setup-v0-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Home V1 final overrides. These rules intentionally sit after the legacy home
+   styles so /operations-view?view=home is not visually pulled back into the old
+   dashboard layout. */
+.campex-dashboard.cx-home-mode .cx-main {
+  background:
+    radial-gradient(circle at 12% -8%, rgba(36, 84, 244, 0.08), transparent 34%),
+    #f6f7f9;
+}
+
+.campex-dashboard.cx-home-mode .cx-content {
+  max-width: 1360px;
+  padding-top: 34px;
+}
+
+.campex-dashboard.cx-home-mode .cx-work-cards {
+  margin: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-page {
+  display: grid;
+  gap: 20px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, 280px);
+  align-items: end;
+  gap: 26px;
+  margin: 0 0 4px;
+  padding: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header > div:first-child {
+  display: block;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header span,
+.campex-dashboard.cx-home-mode .cx-home-section-head span,
+.campex-dashboard.cx-home-mode .cx-home-metrics span,
+.campex-dashboard.cx-home-mode .cx-home-impact span {
+  display: block;
+  color: var(--campex-blue);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header h2 {
+  margin: 7px 0 0;
+  color: var(--campex-text);
+  font-size: clamp(34px, 3.4vw, 48px);
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.02;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header p {
+  max-width: 820px;
+  margin: 14px 0 0;
+  color: #4f5968;
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-period {
+  padding: 18px 20px;
+  border: 1px solid rgba(17, 19, 24, 0.06);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 14px 36px rgba(13, 20, 36, 0.06);
+}
+
+.campex-dashboard.cx-home-mode .cx-home-period strong span {
+  color: var(--campex-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-section {
+  margin-top: 0;
+  padding: 24px;
+  border: 1px solid rgba(17, 19, 24, 0.055);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 16px 40px rgba(13, 20, 36, 0.055);
+}
+
+.campex-dashboard.cx-home-mode .cx-home-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-section-head small {
+  max-width: 50%;
+  color: var(--campex-muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics article,
+.campex-dashboard.cx-home-mode .cx-home-impact article {
+  display: grid;
+  gap: 6px;
+  min-height: 112px;
+  align-content: start;
+  padding: 16px 0 0;
+  border: 0;
+  border-top: 1px solid rgba(17, 19, 24, 0.08);
+  border-radius: 0;
+  background: transparent;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics strong,
+.campex-dashboard.cx-home-mode .cx-home-impact strong {
+  margin: 0;
+  color: var(--campex-text);
+  font-size: clamp(25px, 2.5vw, 36px);
+  font-weight: 650;
+  line-height: 1.06;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.75fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-main-column,
+.campex-dashboard.cx-home-mode .cx-home-side-column,
+.campex-dashboard.cx-home-mode .cx-home-list {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card,
+.campex-dashboard.cx-home-mode .cx-home-briefing,
+.campex-dashboard.cx-home-mode .cx-home-empty,
+.campex-dashboard.cx-home-mode .cx-home-asset,
+.campex-dashboard.cx-home-mode .cx-home-incident,
+.campex-dashboard.cx-home-mode .cx-home-quality {
+  border: 1px solid rgba(17, 19, 24, 0.045);
+  border-radius: 18px;
+  background: #f8f9fb;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card {
+  display: grid;
+  gap: 12px;
+  padding: 22px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card.critical {
+  background: #fff3f3;
+  box-shadow: inset 4px 0 0 var(--danger);
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card.normal {
+  background: #f1fbf5;
+  box-shadow: inset 4px 0 0 var(--success);
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card.unknown {
+  background: #f7f8fb;
+  box-shadow: inset 4px 0 0 #9aa3b2;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card strong,
+.campex-dashboard.cx-home-mode .cx-home-briefing strong,
+.campex-dashboard.cx-home-mode .cx-home-empty strong,
+.campex-dashboard.cx-home-mode .cx-home-asset strong,
+.campex-dashboard.cx-home-mode .cx-home-incident strong {
+  color: var(--campex-text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card p,
+.campex-dashboard.cx-home-mode .cx-home-briefing p,
+.campex-dashboard.cx-home-mode .cx-home-empty p,
+.campex-dashboard.cx-home-mode .cx-home-quality p {
+  margin: 0;
+  color: var(--campex-muted);
+  line-height: 1.48;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-briefing,
+.campex-dashboard.cx-home-mode .cx-home-quality,
+.campex-dashboard.cx-home-mode .cx-home-empty {
+  padding: 18px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-strip {
+  display: flex;
+  gap: 10px;
+  min-height: 106px;
+  overflow: auto;
+  padding-bottom: 2px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-strip span {
+  display: grid;
+  min-width: 138px;
+  gap: 7px;
+  padding: 14px;
+  border: 1px solid rgba(17, 19, 24, 0.045);
+  border-radius: 18px;
+  background: #f8f9fb;
+  color: var(--campex-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-asset,
+.campex-dashboard.cx-home-mode .cx-home-incident {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 15px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-impact {
+  display: grid;
+  gap: 12px;
+  padding: 24px;
+  border-radius: 24px;
+  background: #0d1424;
+  box-shadow: 0 18px 42px rgba(13, 20, 36, 0.16);
+}
+
+.campex-dashboard.cx-home-mode .cx-panel {
+  display: none;
+}
+
+.campex-dashboard.cx-home-mode .cx-sidebar {
+  background: #ffffff;
+}
+
+.campex-dashboard.cx-home-mode .cx-brand {
+  margin-bottom: 14px;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav a {
+  min-height: 38px;
+  border-radius: 11px;
+  font-weight: 500;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav a.active {
+  background: var(--campex-blue-soft);
+  color: var(--campex-blue);
+}
+
+@media (max-width: 980px) {
+  .campex-dashboard.cx-home-mode .cx-home-header,
+  .campex-dashboard.cx-home-mode .cx-home-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .campex-dashboard.cx-home-mode .cx-home-section-head small {
+    max-width: none;
+  }
+}
+
+/* Home V1 recomposition: operational surface, not a card dashboard. */
+.campex-dashboard.cx-home-mode .cx-main {
+  background: #f5f6f8;
+}
+
+.campex-dashboard.cx-home-mode .cx-content {
+  max-width: 1340px;
+  padding: 30px 42px 48px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-page {
+  gap: 0;
+  color: #111318;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 28px;
+  border-bottom: 1px solid #dde2ea;
+  padding-bottom: 22px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header span,
+.campex-dashboard.cx-home-mode .cx-home-section-head span,
+.campex-dashboard.cx-home-mode .cx-home-metrics span,
+.campex-dashboard.cx-home-mode .cx-home-impact span {
+  color: #4d5664;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header h2 {
+  margin-top: 5px;
+  font-size: 30px;
+  font-weight: 620;
+  line-height: 1.12;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header p {
+  max-width: 720px;
+  margin-top: 8px;
+  color: #5f6876;
+  font-size: 14.5px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-period {
+  min-width: 210px;
+  border: 0;
+  border-left: 1px solid #dde2ea;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 2px 0 2px 22px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-period strong {
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-now,
+.campex-dashboard.cx-home-mode .cx-home-attention,
+.campex-dashboard.cx-home-mode .cx-home-activity,
+.campex-dashboard.cx-home-mode .cx-home-quality-section {
+  border-bottom: 1px solid #dde2ea;
+  padding: 24px 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-section {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-section-head {
+  margin-bottom: 14px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-section-head small {
+  max-width: 58%;
+  color: #7a8290;
+  text-transform: none;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  border-top: 1px solid #e6e9ee;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics article {
+  min-height: 98px;
+  border-top: 0;
+  border-right: 1px solid #e0e4eb;
+  padding: 18px 22px 12px 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics article + article {
+  padding-left: 22px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics article:last-child {
+  border-right: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics strong {
+  margin-top: 6px;
+  font-size: clamp(27px, 2.4vw, 34px);
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics small,
+.campex-dashboard.cx-home-mode .cx-home-impact small,
+.campex-dashboard.cx-home-mode .cx-home-asset small,
+.campex-dashboard.cx-home-mode .cx-home-incident small {
+  color: #707987;
+  font-size: 12.5px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention {
+  position: relative;
+  padding-left: 18px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention::before {
+  content: "";
+  position: absolute;
+  top: 25px;
+  bottom: 25px;
+  left: 0;
+  width: 3px;
+  background: #9aa3b2;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card,
+.campex-dashboard.cx-home-mode .cx-home-briefing,
+.campex-dashboard.cx-home-mode .cx-home-empty,
+.campex-dashboard.cx-home-mode .cx-home-quality {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card {
+  gap: 8px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card.critical,
+.campex-dashboard.cx-home-mode .cx-home-attention-card.normal,
+.campex-dashboard.cx-home-mode .cx-home-attention-card.unknown {
+  background: transparent;
+  box-shadow: none;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card span {
+  color: #6b7481;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card strong {
+  font-size: 21px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card p {
+  max-width: 760px;
+  font-size: 14.5px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity {
+  min-height: 156px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-strip {
+  min-height: 92px;
+  border-top: 1px solid #e6e9ee;
+  padding-top: 14px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-strip span {
+  min-width: 150px;
+  border: 0;
+  border-right: 1px solid #e0e4eb;
+  border-radius: 0;
+  background: transparent;
+  padding: 0 16px 0 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-balanced-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 34px;
+  border-bottom: 1px solid #dde2ea;
+  padding: 24px 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-balanced-grid > .cx-home-section + .cx-home-section {
+  border-left: 1px solid #dde2ea;
+  padding-left: 34px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-list {
+  gap: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-asset,
+.campex-dashboard.cx-home-mode .cx-home-incident {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 18px;
+  border: 0;
+  border-bottom: 1px solid #e6e9ee;
+  border-radius: 0;
+  background: transparent;
+  padding: 13px 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-asset:last-child,
+.campex-dashboard.cx-home-mode .cx-home-incident:last-child {
+  border-bottom: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-asset strong,
+.campex-dashboard.cx-home-mode .cx-home-incident strong {
+  font-size: 15px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-asset span,
+.campex-dashboard.cx-home-mode .cx-home-incident small {
+  color: #6f7886;
+  font-size: 12.5px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-incident > small,
+.campex-dashboard.cx-home-mode .cx-home-incident > button {
+  grid-column: 1 / -1;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-incident .cx-linklike {
+  justify-self: start;
+  min-height: auto;
+  margin-top: 2px;
+  padding: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-impact {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-impact article {
+  min-height: 92px;
+  border-top: 1px solid #e6e9ee;
+  border-right: 1px solid #e0e4eb;
+  padding: 16px 18px 0 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-impact article + article {
+  padding-left: 18px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-impact article:last-child {
+  border-right: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-impact strong {
+  color: #111318;
+  font-size: clamp(22px, 2vw, 30px);
+}
+
+.campex-dashboard.cx-home-mode .cx-home-quality {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 18px;
+  border-top: 1px solid #e6e9ee;
+  padding-top: 14px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-quality p {
+  border-right: 1px solid #e0e4eb;
+  padding-right: 18px;
+  font-size: 13px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-quality p:last-child {
+  border-right: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-badge {
+  border-radius: 999px;
+  padding: 3px 8px;
+}
+
+.campex-dashboard.cx-home-mode .cx-sidebar {
+  border-right-color: #e1e5ec;
+}
+
+.campex-dashboard.cx-home-mode .cx-workspace-switcher {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 10px 2px 14px !important;
+}
+
+.campex-dashboard.cx-home-mode .cx-workspace-switcher:hover,
+.campex-dashboard.cx-home-mode .cx-workspace-switcher:focus-visible {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.campex-dashboard.cx-home-mode .cx-workspace-initials {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav {
+  gap: 1px;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav a {
+  border-radius: 0;
+  background: transparent;
+  min-height: 37px;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav a.active {
+  position: relative;
+  background: transparent;
+  color: var(--campex-blue);
+}
+
+.campex-dashboard.cx-home-mode .cx-nav a.active::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 3px;
+  border-radius: 99px;
+  background: var(--campex-blue);
+}
+
+@media (max-width: 980px) {
+  .campex-dashboard.cx-home-mode .cx-content {
+    padding: 24px;
+  }
+
+  .campex-dashboard.cx-home-mode .cx-home-header,
+  .campex-dashboard.cx-home-mode .cx-home-balanced-grid,
+  .campex-dashboard.cx-home-mode .cx-home-quality {
+    grid-template-columns: 1fr;
+  }
+
+  .campex-dashboard.cx-home-mode .cx-home-balanced-grid > .cx-home-section + .cx-home-section,
+  .campex-dashboard.cx-home-mode .cx-home-period,
+  .campex-dashboard.cx-home-mode .cx-home-metrics article,
+  .campex-dashboard.cx-home-mode .cx-home-impact article,
+  .campex-dashboard.cx-home-mode .cx-home-quality p {
+    border-left: 0;
+    border-right: 0;
+    padding-left: 0;
+  }
+
+  .campex-dashboard.cx-home-mode .cx-home-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Reference-directed Home V1: dark sidebar, clean topbar, operational module grid. */
+.campex-dashboard.cx-home-mode {
+  --home-line: #dfe4ec;
+  --home-soft-line: #edf0f5;
+  --home-copy: #596273;
+  --home-card: #ffffff;
+  --home-navy: #071424;
+}
+
+.campex-dashboard.cx-home-mode .cx-sidebar {
+  background:
+    linear-gradient(180deg, rgba(36, 84, 244, 0.08), transparent 24%),
+    var(--home-navy);
+  border-right: 0;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.campex-dashboard.cx-home-mode .cx-brand {
+  background: transparent;
+  box-shadow: none;
+}
+
+.campex-dashboard.cx-home-mode .cx-brand img {
+  width: 112px;
+  height: auto;
+}
+
+.campex-dashboard.cx-home-mode .cx-workspace-switcher {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.campex-dashboard.cx-home-mode .cx-workspace-copy strong {
+  color: #ffffff;
+}
+
+.campex-dashboard.cx-home-mode .cx-workspace-copy small,
+.campex-dashboard.cx-home-mode .cx-workspace-arrow,
+.campex-dashboard.cx-home-mode .cx-group-label {
+  color: rgba(255, 255, 255, 0.52);
+}
+
+.campex-dashboard.cx-home-mode .cx-nav {
+  gap: 8px;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav a,
+.campex-dashboard.cx-home-mode .cx-footer-link {
+  color: rgba(255, 255, 255, 0.78);
+  border-radius: 9px;
+  padding-left: 16px;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav a:hover,
+.campex-dashboard.cx-home-mode .cx-footer-link:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #ffffff;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav a.active {
+  background: linear-gradient(135deg, #2454f4, #1742c9);
+  color: #ffffff;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav a.active::before {
+  display: none;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav-icon,
+.campex-dashboard.cx-home-mode .cx-footer-link .cx-nav-icon {
+  color: currentColor;
+}
+
+.campex-dashboard.cx-home-mode .cx-footer {
+  border-top-color: rgba(255, 255, 255, 0.13);
+}
+
+.campex-dashboard.cx-home-mode .cx-profile-name,
+.campex-dashboard.cx-home-mode .cx-profile-role {
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.campex-dashboard.cx-home-mode .cx-main {
+  background: #f7f8fb;
+}
+
+.campex-dashboard.cx-home-mode .cx-header {
+  display: none;
+}
+
+.campex-dashboard.cx-home-mode .cx-content {
+  max-width: 1500px;
+  padding: 20px 32px 32px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-page {
+  gap: 20px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-topbar {
+  display: grid;
+  grid-template-columns: minmax(320px, 640px) minmax(0, 1fr);
+  align-items: center;
+  gap: 20px;
+  min-height: 52px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-search,
+.campex-dashboard.cx-home-mode .cx-home-topbar-actions span {
+  min-height: 42px;
+  border: 1px solid var(--home-line);
+  border-radius: 16px;
+  background: #fff;
+  color: var(--home-copy);
+  display: flex;
+  align-items: center;
+  box-shadow: 0 1px 2px rgba(13, 20, 36, 0.03);
+}
+
+.campex-dashboard.cx-home-mode .cx-home-search {
+  padding: 0 18px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-search::before {
+  content: "⌕";
+  margin-right: 10px;
+  color: #111827;
+  font-size: 19px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-topbar-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 14px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-topbar-actions span {
+  padding: 0 18px;
+  color: #111827;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-topbar-actions span:last-child::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  margin-right: 9px;
+  border-radius: 99px;
+  background: #22c55e;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header {
+  border-bottom: 0;
+  padding: 0;
+  margin-top: 4px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header h2 {
+  max-width: 760px;
+  font-size: 27px;
+  font-weight: 640;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header p {
+  max-width: 820px;
+  margin-top: 6px;
+  font-size: 14.5px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-period {
+  min-width: 230px;
+  border: 1px solid var(--home-line);
+  border-radius: 14px;
+  background: #fff;
+  padding: 12px 16px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-now,
+.campex-dashboard.cx-home-mode .cx-home-attention,
+.campex-dashboard.cx-home-mode .cx-home-activity,
+.campex-dashboard.cx-home-mode .cx-home-quality-section,
+.campex-dashboard.cx-home-mode .cx-home-section {
+  border: 1px solid var(--home-line);
+  border-radius: 12px;
+  background: var(--home-card);
+  box-shadow: 0 1px 2px rgba(13, 20, 36, 0.035);
+  padding: 18px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-section-head {
+  margin-bottom: 14px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics {
+  border-top: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics article {
+  min-height: 88px;
+  border-right: 1px solid var(--home-soft-line);
+  padding: 0 20px 0 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics article + article {
+  padding-left: 20px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics strong {
+  font-size: 30px;
+  line-height: 1;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-primary-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.7fr) minmax(0, 1fr);
+  gap: 20px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention {
+  min-height: 210px;
+  border-left: 3px solid #dc2626;
+  padding-left: 20px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention::before {
+  display: none;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card strong {
+  font-size: 23px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity {
+  min-height: 210px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-legend {
+  display: flex;
+  justify-content: flex-start;
+  gap: 18px;
+  margin: 0 0 24px;
+  color: var(--home-copy);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-legend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  background: #9aa3b2;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-legend .running {
+  background: #2454f4;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-legend .stopped {
+  background: #dc2626;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-legend .low {
+  background: #f59e0b;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-strip {
+  min-height: 112px;
+  border-top: 1px solid var(--home-soft-line);
+  padding-top: 22px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-strip span {
+  min-width: 8px;
+  max-width: 10px;
+  height: 70px;
+  overflow: hidden;
+  border-right: 0;
+  border-radius: 4px;
+  background: #2454f4;
+  padding: 0;
+  color: transparent;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-strip span i,
+.campex-dashboard.cx-home-mode .cx-home-activity-strip span small {
+  display: none;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-strip .stopped,
+.campex-dashboard.cx-home-mode .cx-home-activity-strip .absent,
+.campex-dashboard.cx-home-mode .cx-home-activity-strip .no_activity,
+.campex-dashboard.cx-home-mode .cx-home-activity-strip .offline {
+  background: #dc2626;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-strip .low_activity {
+  background: #f59e0b;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-strip .unknown,
+.campex-dashboard.cx-home-mode .cx-home-activity-strip .waiting,
+.campex-dashboard.cx-home-mode .cx-home-activity-strip .unknown_activity {
+  background: #9aa3b2;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-balanced-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  border-bottom: 0;
+  padding: 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-balanced-grid > .cx-home-section + .cx-home-section {
+  border-left: 1px solid var(--home-line);
+  padding-left: 18px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-asset,
+.campex-dashboard.cx-home-mode .cx-home-incident {
+  border-bottom-color: var(--home-soft-line);
+  padding: 12px 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-impact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.campex-dashboard.cx-home-mode .cx-home-impact article {
+  border-top: 1px solid var(--home-soft-line);
+  border-right-color: var(--home-soft-line);
+}
+
+.campex-dashboard.cx-home-mode .cx-home-final-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-quality {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top-color: var(--home-soft-line);
+}
+
+@media (max-width: 1120px) {
+  .campex-dashboard.cx-home-mode .cx-home-topbar,
+  .campex-dashboard.cx-home-mode .cx-home-primary-grid,
+  .campex-dashboard.cx-home-mode .cx-home-balanced-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .campex-dashboard.cx-home-mode .cx-home-balanced-grid > .cx-home-section + .cx-home-section {
+    border-left: 1px solid var(--home-line);
+    padding-left: 18px;
+  }
+}
+
+/* Home V1 polish: calmer typography and softer enterprise finish. */
+.campex-dashboard.cx-home-mode {
+  --home-line: #e2e6ee;
+  --home-soft-line: #eef1f5;
+  --home-copy: #626b7a;
+}
+
+.campex-dashboard.cx-home-mode .cx-content {
+  padding: 18px 34px 34px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-page {
+  gap: 18px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-topbar {
+  min-height: 48px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-search,
+.campex-dashboard.cx-home-mode .cx-home-topbar-actions span {
+  min-height: 39px;
+  border-color: rgba(16, 24, 40, 0.11);
+  border-radius: 13px;
+  font-size: 13.5px;
+  box-shadow: 0 1px 1px rgba(13, 20, 36, 0.025);
+}
+
+.campex-dashboard.cx-home-mode .cx-home-search {
+  padding: 0 16px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-topbar-actions span {
+  padding: 0 16px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header {
+  margin-top: 2px;
+  align-items: start;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header span,
+.campex-dashboard.cx-home-mode .cx-home-section-head span,
+.campex-dashboard.cx-home-mode .cx-home-metrics span,
+.campex-dashboard.cx-home-mode .cx-home-impact span {
+  color: #4f5968;
+  font-size: 11.5px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header h2 {
+  max-width: 700px;
+  margin-top: 4px;
+  font-size: 25px;
+  font-weight: 620;
+  line-height: 1.18;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-header p {
+  max-width: 760px;
+  margin-top: 6px;
+  color: #687181;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-period {
+  min-width: 218px;
+  border-color: rgba(16, 24, 40, 0.11);
+  border-radius: 12px;
+  padding: 11px 15px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-period small,
+.campex-dashboard.cx-home-mode .cx-home-section-head small {
+  color: #7b8492;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-period strong {
+  margin-top: 3px;
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-now,
+.campex-dashboard.cx-home-mode .cx-home-attention,
+.campex-dashboard.cx-home-mode .cx-home-activity,
+.campex-dashboard.cx-home-mode .cx-home-quality-section,
+.campex-dashboard.cx-home-mode .cx-home-section {
+  border-color: rgba(16, 24, 40, 0.105);
+  border-radius: 10px;
+  box-shadow: 0 1px 1px rgba(13, 20, 36, 0.025);
+  padding: 17px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-section-head {
+  margin-bottom: 13px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics article {
+  min-height: 78px;
+  border-right-color: var(--home-soft-line);
+  padding: 0 18px 0 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics article + article {
+  padding-left: 18px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics strong {
+  margin-top: 6px;
+  font-size: clamp(22px, 1.75vw, 26px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-metrics small,
+.campex-dashboard.cx-home-mode .cx-home-impact small,
+.campex-dashboard.cx-home-mode .cx-home-asset small,
+.campex-dashboard.cx-home-mode .cx-home-incident small,
+.campex-dashboard.cx-home-mode .cx-home-empty p,
+.campex-dashboard.cx-home-mode .cx-home-attention-card p,
+.campex-dashboard.cx-home-mode .cx-home-briefing p,
+.campex-dashboard.cx-home-mode .cx-home-quality p {
+  color: #687181;
+  font-size: 12.8px;
+  line-height: 1.45;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-primary-grid,
+.campex-dashboard.cx-home-mode .cx-home-balanced-grid {
+  gap: 18px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention {
+  min-height: 195px;
+  border-left-width: 2px;
+  padding-left: 19px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card span {
+  color: #697384;
+  font-size: 11.5px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-attention-card strong {
+  font-size: 20px;
+  font-weight: 620;
+  line-height: 1.2;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity {
+  min-height: 195px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-activity-legend {
+  gap: 15px;
+  margin-bottom: 22px;
+  font-size: 11.8px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-empty strong,
+.campex-dashboard.cx-home-mode .cx-home-asset strong,
+.campex-dashboard.cx-home-mode .cx-home-incident strong,
+.campex-dashboard.cx-home-mode .cx-home-briefing strong {
+  font-size: 14.5px;
+  font-weight: 610;
+  line-height: 1.35;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-empty {
+  gap: 7px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-asset,
+.campex-dashboard.cx-home-mode .cx-home-incident {
+  padding: 11px 0;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-asset span {
+  margin-top: 1px;
+  color: #717b8a;
+  font-size: 12.5px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-incident .cx-linklike {
+  color: var(--campex-blue);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.campex-dashboard.cx-home-mode .cx-badge {
+  min-height: 24px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-impact article {
+  min-height: 78px;
+  padding-top: 14px;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-impact strong {
+  font-size: clamp(19px, 1.55vw, 23px);
+  font-weight: 600;
+}
+
+.campex-dashboard.cx-home-mode .cx-home-quality {
+  gap: 16px;
+}
+
+.campex-dashboard.cx-home-mode .cx-sidebar {
+  padding: 14px 12px;
+}
+
+.campex-dashboard.cx-home-mode .cx-brand {
+  margin-bottom: 16px;
+}
+
+.campex-dashboard.cx-home-mode .cx-workspace-switcher {
+  padding: 8px 2px 13px !important;
+}
+
+.campex-dashboard.cx-home-mode .cx-workspace-copy strong {
+  font-size: 13.5px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-home-mode .cx-workspace-copy small {
+  font-size: 12px;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav {
+  gap: 6px;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav a,
+.campex-dashboard.cx-home-mode .cx-footer-link {
+  min-height: 39px;
+  padding-left: 15px;
+  font-size: 14px;
+  font-weight: 560;
+}
+
+.campex-dashboard.cx-home-mode .cx-nav a.active {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.campex-dashboard.cx-home-mode .cx-footer {
+  gap: 8px;
+}
+
+.campex-dashboard.cx-home-mode .cx-profile {
+  margin-top: 8px;
+}
+
+/* Operations V1 uses the same visual system as Home, with an asset-first operational list. */
+.campex-dashboard.cx-operations-mode {
+  --home-line: #e2e6ee;
+  --home-soft-line: #eef1f5;
+  --home-copy: #626b7a;
+}
+
+.campex-dashboard.cx-operations-mode .cx-header > div:first-child,
+.campex-dashboard.cx-operations-mode .cx-page-title,
+.campex-dashboard.cx-operations-mode .cx-header-tools > .cx-primary-action,
+.campex-dashboard.cx-operations-mode .cx-workspace-filters,
+.campex-dashboard.cx-operations-mode .cx-panel.cx-ops-hide-panel {
+  display: none !important;
+}
+
+.campex-dashboard.cx-operations-mode .cx-main {
+  background: #f6f8fb;
+}
+
+.campex-dashboard.cx-operations-mode .cx-content {
+  padding: 18px 34px 34px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-work-cards {
+  display: block;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-v1-page {
+  display: grid;
+  gap: 18px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-search,
+.campex-dashboard.cx-operations-mode .cx-home-topbar-actions span {
+  display: inline-flex;
+  min-height: 39px;
+  align-items: center;
+  border: 1px solid rgba(16, 24, 40, 0.11);
+  border-radius: 13px;
+  background: #fff;
+  color: #566173;
+  font-size: 13.5px;
+  box-shadow: 0 1px 1px rgba(13, 20, 36, 0.025);
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-search {
+  min-width: min(560px, 42vw);
+  padding: 0 16px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-topbar-actions {
+  display: inline-flex;
+  gap: 12px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-topbar-actions span {
+  padding: 0 16px;
+  white-space: nowrap;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 2px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-header span,
+.campex-dashboard.cx-operations-mode .cx-home-section-head span,
+.campex-dashboard.cx-operations-mode .cx-home-metrics span {
+  color: #4f5968;
+  font-size: 11.5px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-header h2 {
+  max-width: 740px;
+  margin: 4px 0 0;
+  color: #111318;
+  font-size: 25px;
+  font-weight: 620;
+  letter-spacing: 0;
+  line-height: 1.18;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-header p {
+  max-width: 760px;
+  margin: 6px 0 0;
+  color: #687181;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-period {
+  min-width: 218px;
+  border: 1px solid rgba(16, 24, 40, 0.11);
+  border-radius: 12px;
+  background: #fff;
+  padding: 11px 15px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-period small,
+.campex-dashboard.cx-operations-mode .cx-home-section-head small {
+  color: #7b8492;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-period strong {
+  display: block;
+  margin-top: 3px;
+  color: #111318;
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-now,
+.campex-dashboard.cx-operations-mode .cx-home-section {
+  border: 1px solid rgba(16, 24, 40, 0.105);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 1px 1px rgba(13, 20, 36, 0.025);
+  padding: 17px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 13px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-metrics article {
+  min-height: 78px;
+  border-right: 1px solid var(--home-soft-line);
+  padding: 0 18px 0 0;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-metrics article + article {
+  padding-left: 18px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-metrics article:last-child {
+  border-right: 0;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-metrics strong {
+  display: block;
+  margin-top: 6px;
+  color: #111318;
+  font-size: clamp(22px, 1.75vw, 26px);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-metrics small,
+.campex-dashboard.cx-operations-mode .cx-home-empty p,
+.campex-dashboard.cx-operations-mode .cx-home-quality p {
+  color: #687181;
+  font-size: 12.8px;
+  line-height: 1.45;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-quality-note {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid #f1d48b;
+  border-radius: 10px;
+  background: #fff9e8;
+  color: #6b4b08;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-v1-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-v1-filters label {
+  display: grid;
+  gap: 5px;
+  color: #697384;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-v1-filters select {
+  min-height: 36px;
+  min-width: 150px;
+  border: 1px solid rgba(16, 24, 40, 0.12);
+  border-radius: 9px;
+  background: #fff;
+  color: #202736;
+  font: inherit;
+  font-size: 13px;
+  padding: 0 34px 0 10px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-asset-list {
+  overflow: hidden;
+  border: 1px solid #e6e9ef;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-asset-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.3fr) minmax(140px, 1fr) minmax(150px, 0.9fr) minmax(130px, 0.9fr) minmax(130px, 1fr) minmax(140px, 1fr) minmax(120px, 0.8fr);
+  width: 100%;
+  align-items: center;
+  gap: 16px;
+  border: 0;
+  border-bottom: 1px solid #edf0f4;
+  background: transparent;
+  color: #202736;
+  padding: 13px 16px;
+  text-align: left;
+}
+
+.campex-dashboard.cx-operations-mode button.cx-ops-asset-row:not(:disabled) {
+  cursor: pointer;
+}
+
+.campex-dashboard.cx-operations-mode button.cx-ops-asset-row:not(:disabled):hover,
+.campex-dashboard.cx-operations-mode button.cx-ops-asset-row:not(:disabled):focus-visible {
+  background: #f8faff;
+  outline: none;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-asset-row:last-child {
+  border-bottom: 0;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-asset-head {
+  background: #f8fafc;
+  color: #717b8a;
+  font-size: 11.5px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-asset-row strong {
+  display: block;
+  color: #111318;
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-asset-row span {
+  min-width: 0;
+  color: #5e6878;
+  font-size: 13px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-asset-row small {
+  display: block;
+  margin-top: 3px;
+  color: #7a8492;
+  font-size: 11.8px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #5e6878;
+  font-weight: 610;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-state i {
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  background: #98a2b3;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-state.running i {
+  background: #16a34a;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-state.running {
+  color: #177245;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-state.stopped i {
+  background: #dc2626;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-state.stopped {
+  color: #a4161a;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-state.attention i {
+  background: #f59e0b;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-state.attention {
+  color: #8a5a00;
+}
+
+.campex-dashboard.cx-operations-mode .cx-home-balanced-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr);
+  gap: 18px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-recent-activity {
+  display: grid;
+  gap: 0;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-recent-activity > div {
+  display: grid;
+  grid-template-columns: 64px minmax(140px, 0.8fr) minmax(0, 1fr);
+  gap: 14px;
+  border-bottom: 1px solid #edf0f4;
+  padding: 11px 0;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-recent-activity > div:last-child {
+  border-bottom: 0;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-recent-activity time {
+  color: #7a8492;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-recent-activity strong {
+  color: #111318;
+  font-size: 13.5px;
+  font-weight: 610;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-recent-activity span {
+  color: #687181;
+  font-size: 13px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-sidebar {
+  background: #071526;
+  padding: 14px 12px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-brand {
+  margin-bottom: 16px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-nav {
+  gap: 6px;
+}
+
+.campex-dashboard.cx-operations-mode .cx-nav a,
+.campex-dashboard.cx-operations-mode .cx-footer-link {
+  min-height: 39px;
+  padding-left: 15px;
+  color: #d7dfec;
+  font-size: 14px;
+  font-weight: 560;
+}
+
+.campex-dashboard.cx-operations-mode .cx-nav a:hover,
+.campex-dashboard.cx-operations-mode .cx-footer-link:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.campex-dashboard.cx-operations-mode .cx-nav a.active {
+  background: linear-gradient(135deg, #2454f4, #143db9);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.campex-dashboard.cx-operations-mode .cx-footer {
+  gap: 8px;
+}
+
+@media (max-width: 1100px) {
+  .campex-dashboard.cx-operations-mode .cx-home-topbar,
+  .campex-dashboard.cx-operations-mode .cx-home-header,
+  .campex-dashboard.cx-operations-mode .cx-home-balanced-grid {
+    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .campex-dashboard.cx-operations-mode .cx-ops-asset-list {
+    overflow-x: auto;
+  }
+
+  .campex-dashboard.cx-operations-mode .cx-ops-asset-row {
+    min-width: 980px;
+  }
+
+  .campex-dashboard.cx-operations-mode .cx-home-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Events V1: operational memory, same shell language as Home and Operations. */
+.campex-dashboard.cx-events-mode {
+  --home-line: #e2e6ee;
+  --home-soft-line: #eef1f5;
+  --home-copy: #626b7a;
+}
+
+.campex-dashboard.cx-events-mode .cx-header > div:first-child,
+.campex-dashboard.cx-events-mode .cx-page-title,
+.campex-dashboard.cx-events-mode .cx-header-tools > .cx-primary-action,
+.campex-dashboard.cx-events-mode .cx-workspace-filters,
+.campex-dashboard.cx-events-mode .cx-panel.cx-ops-hide-panel {
+  display: none !important;
+}
+
+.campex-dashboard.cx-events-mode .cx-main {
+  background: #f6f8fb;
+}
+
+.campex-dashboard.cx-events-mode .cx-content {
+  padding: 18px 34px 34px;
+}
+
+.campex-dashboard.cx-events-mode .cx-work-cards {
+  display: block;
+  margin: 0;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-v1-page {
+  display: grid;
+  gap: 18px;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-topbar,
+.campex-dashboard.cx-events-mode .cx-home-header,
+.campex-dashboard.cx-events-mode .cx-home-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-header {
+  align-items: start;
+  margin-top: 2px;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-search,
+.campex-dashboard.cx-events-mode .cx-home-topbar-actions span {
+  display: inline-flex;
+  min-height: 39px;
+  align-items: center;
+  border: 1px solid rgba(16, 24, 40, 0.11);
+  border-radius: 13px;
+  background: #fff;
+  color: #566173;
+  font-size: 13.5px;
+  box-shadow: 0 1px 1px rgba(13, 20, 36, 0.025);
+}
+
+.campex-dashboard.cx-events-mode .cx-home-search {
+  min-width: min(560px, 42vw);
+  padding: 0 16px;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-topbar-actions {
+  display: inline-flex;
+  gap: 12px;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-topbar-actions span {
+  padding: 0 16px;
+  white-space: nowrap;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-header span,
+.campex-dashboard.cx-events-mode .cx-home-section-head span,
+.campex-dashboard.cx-events-mode .cx-home-metrics span {
+  color: #4f5968;
+  font-size: 11.5px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-header h2 {
+  max-width: 760px;
+  margin: 4px 0 0;
+  color: #111318;
+  font-size: 25px;
+  font-weight: 620;
+  letter-spacing: 0;
+  line-height: 1.18;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-header p {
+  max-width: 780px;
+  margin: 6px 0 0;
+  color: #687181;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-now,
+.campex-dashboard.cx-events-mode .cx-home-section {
+  border: 1px solid rgba(16, 24, 40, 0.105);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 1px 1px rgba(13, 20, 36, 0.025);
+  padding: 17px;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-section-head {
+  margin-bottom: 13px;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-section-head small {
+  color: #7b8492;
+  font-size: 12px;
+  font-weight: 560;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.campex-dashboard.cx-events-mode .cx-home-metrics article {
+  min-height: 78px;
+  border-right: 1px solid var(--home-soft-line);
+  padding: 0 18px 0 0;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-metrics article + article {
+  padding-left: 18px;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-metrics article:last-child {
+  border-right: 0;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-metrics strong {
+  display: block;
+  margin-top: 6px;
+  color: #111318;
+  font-size: clamp(22px, 1.75vw, 26px);
+  font-weight: 600;
+}
+
+.campex-dashboard.cx-events-mode .cx-home-metrics small {
+  color: #687181;
+  font-size: 12.8px;
+  line-height: 1.45;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-filters label {
+  display: grid;
+  gap: 5px;
+  color: #697384;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-filters select,
+.campex-dashboard.cx-events-mode .cx-events-filters input {
+  min-height: 36px;
+  min-width: 145px;
+  border: 1px solid rgba(16, 24, 40, 0.12);
+  border-radius: 9px;
+  background: #fff;
+  color: #202736;
+  font: inherit;
+  font-size: 13px;
+  padding: 0 10px;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-filters input {
+  min-width: 190px;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-list {
+  overflow: hidden;
+  border: 1px solid #e6e9ef;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.25fr) minmax(180px, 1.15fr) minmax(110px, 0.7fr) minmax(135px, 0.75fr) minmax(120px, 0.7fr) minmax(105px, 0.65fr) minmax(125px, 0.75fr);
+  width: 100%;
+  align-items: center;
+  gap: 16px;
+  border: 0;
+  border-bottom: 1px solid #edf0f4;
+  background: transparent;
+  color: #202736;
+  padding: 13px 16px;
+  text-align: left;
+}
+
+.campex-dashboard.cx-events-mode button.cx-events-row {
+  cursor: pointer;
+}
+
+.campex-dashboard.cx-events-mode button.cx-events-row:hover,
+.campex-dashboard.cx-events-mode button.cx-events-row:focus-visible {
+  background: #f8faff;
+  outline: none;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-row:last-child {
+  border-bottom: 0;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-head {
+  background: #f8fafc;
+  color: #717b8a;
+  font-size: 11.5px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-row strong {
+  display: block;
+  color: #111318;
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-row span {
+  min-width: 0;
+  color: #5e6878;
+  font-size: 13px;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-row small {
+  display: block;
+  margin-top: 3px;
+  color: #7a8492;
+  font-size: 11.8px;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-severity {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #5e6878;
+  font-weight: 610;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-severity i {
+  width: 8px;
+  height: 8px;
+  border-radius: 99px;
+  background: #98a2b3;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-severity.critical i,
+.campex-dashboard.cx-events-mode .cx-event-severity.high i {
+  background: #dc2626;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-severity.critical,
+.campex-dashboard.cx-events-mode .cx-event-severity.high {
+  color: #a4161a;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-severity.medium i {
+  background: #f59e0b;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-severity.medium {
+  color: #8a5a00;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-severity.low i {
+  background: #2454f4;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-severity.low {
+  color: #2454f4;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-empty {
+  border: 1px solid #e6e9ef;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 22px;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-empty strong {
+  color: #111318;
+  font-size: 15px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-events-mode .cx-events-empty p {
+  margin: 7px 0 0;
+  color: #687181;
+  font-size: 13px;
+}
+
+.campex-dashboard.cx-events-mode .cx-detail-drawer {
+  width: min(620px, calc(100vw - 32px));
+  border-left: 1px solid #dfe4ec;
+  background: #fff;
+  box-shadow: -18px 0 42px rgba(13, 20, 36, 0.1);
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 {
+  display: grid;
+  gap: 18px;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 header span {
+  color: #4f5968;
+  font-size: 11.5px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 h2 {
+  margin: 4px 0 0;
+  color: #111318;
+  font-size: 24px;
+  font-weight: 620;
+  line-height: 1.18;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 h3 {
+  margin: 0 0 10px;
+  color: #111318;
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 section {
+  border-top: 1px solid #edf0f4;
+  padding-top: 16px;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 dl {
+  display: grid;
+  gap: 9px;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 dl div {
+  display: grid;
+  gap: 3px;
+  border: 0;
+  padding: 0;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 dt {
+  color: #7a8492;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 dd {
+  color: #202736;
+  font-size: 13.2px;
+  font-weight: 560;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-evidence-frame {
+  min-height: 260px;
+  border: 1px solid #e5e9f0;
+  border-radius: 10px;
+  background: #f7f8fb;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-evidence-frame img {
+  width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+}
+
+.campex-dashboard.cx-events-mode .cx-sidebar {
+  background: #071526;
+  padding: 14px 12px;
+}
+
+.campex-dashboard.cx-events-mode .cx-brand {
+  margin-bottom: 16px;
+}
+
+.campex-dashboard.cx-events-mode .cx-nav {
+  gap: 6px;
+}
+
+.campex-dashboard.cx-events-mode .cx-nav a,
+.campex-dashboard.cx-events-mode .cx-footer-link {
+  min-height: 39px;
+  padding-left: 15px;
+  color: #d7dfec;
+  font-size: 14px;
+  font-weight: 560;
+}
+
+.campex-dashboard.cx-events-mode .cx-nav a:hover,
+.campex-dashboard.cx-events-mode .cx-footer-link:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.campex-dashboard.cx-events-mode .cx-nav a.active {
+  background: linear-gradient(135deg, #2454f4, #143db9);
+  color: #fff;
+}
+
+@media (max-width: 1180px) {
+  .campex-dashboard.cx-events-mode .cx-events-list {
+    overflow-x: auto;
+  }
+
+  .campex-dashboard.cx-events-mode .cx-events-row {
+    min-width: 1040px;
+  }
+
+  .campex-dashboard.cx-events-mode .cx-home-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

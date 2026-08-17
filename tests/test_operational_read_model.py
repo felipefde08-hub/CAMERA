@@ -12,7 +12,7 @@ from app.auth import create_user
 from app.database import connect, init_db
 from app.models import criar_camera, criar_cliente, criar_unidade, obter_evento, registrar_evento, registrar_operational_sample
 from app.operational_context import criar_operational_area, criar_operational_asset, criar_operational_process
-from app.operational_read_model import ReadModelFilters, comparison, current_operation, daily_report, intelligence, losses, operational_data, parse_datetime, period_summary
+from app.operational_read_model import ReadModelFilters, comparison, current_operation, daily_report, intelligence, losses, operational_data, operational_timeline, parse_datetime, period_summary
 
 
 NOW = datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc)
@@ -389,6 +389,144 @@ def test_vision_v1_operational_data_daily_report_and_intelligence_are_traceable(
     assert "evt-a6-stop" in report["traceability"]["event_uuids"]
     assert report["summary"]["machines"]["traceability"]["observation_types"] == ["machine_activity"]
     assert all("causou" not in str(item).lower() for item in report["intelligence"]["attention"])
+
+
+def test_operational_timeline_emits_state_transitions_without_frame_duplicates() -> None:
+    temp_dir, _db_path, connection, cliente_id, site_id, _area_id, _process_id, asset_id, camera_id = make_context()
+    start = parse_datetime("2026-08-07T08:00:00+00:00")
+    end = parse_datetime("2026-08-07T08:30:00+00:00")
+    with temp_dir, connection:
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T08:00:00+00:00", "ACTIVE", True)
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T08:05:00+00:00", "ACTIVE", True)
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T08:10:00+00:00", "STOPPED", True)
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T08:20:00+00:00", "STOPPED", False)
+        payload = operational_timeline(connection, ReadModelFilters(cliente_id=cliente_id, start=start, end=end), now=end)
+
+    machine_items = [item for item in payload["items"] if item["type"] == "machine_activity"]
+    presence_items = [item for item in payload["items"] if item["type"] == "person_presence"]
+    assert [item["new_state"] for item in machine_items] == ["ACTIVE", "STOPPED"]
+    assert machine_items[0]["duration_seconds"] == 600
+    assert machine_items[1]["duration_seconds"] == 1200
+    assert [item["new_state"] for item in presence_items] == ["PRESENT", "ABSENT"]
+    assert payload["items"] == sorted(payload["items"], key=lambda item: (item["timestamp"], item["type"], item.get("event_uuid") or ""))
+
+
+def test_operational_timeline_preserves_unknown_zone_camera_and_event_evidence_traceability() -> None:
+    temp_dir, _db_path, connection, cliente_id, site_id, _area_id, _process_id, asset_id, camera_id = make_context()
+    start = parse_datetime("2026-08-07T08:00:00+00:00")
+    end = parse_datetime("2026-08-07T08:20:00+00:00")
+    zone_id = "zone-a6"
+    with temp_dir, connection:
+        add_sample(
+            connection,
+            cliente_id,
+            site_id,
+            camera_id,
+            asset_id,
+            "2026-08-07T08:00:00+00:00",
+            "UNKNOWN",
+            None,
+            camera_online=False,
+            inference_fps=0.0,
+            metadata={
+                "canonical_observations": [
+                    {
+                        "observation_type": "zone_occupancy",
+                        "value": "UNKNOWN",
+                        "zone_id": zone_id,
+                        "confidence": 0.0,
+                        "data_quality": "unknown",
+                    }
+                ]
+            },
+        )
+        add_sample(
+            connection,
+            cliente_id,
+            site_id,
+            camera_id,
+            asset_id,
+            "2026-08-07T08:05:00+00:00",
+            "ACTIVE",
+            True,
+            metadata={
+                "canonical_observations": [
+                    {
+                        "observation_type": "zone_occupancy",
+                        "value": "OCCUPIED",
+                        "zone_id": zone_id,
+                        "confidence": 0.85,
+                        "data_quality": "observed",
+                    }
+                ]
+            },
+        )
+        event_id = add_event(
+            connection,
+            cliente_id,
+            site_id,
+            camera_id,
+            "machine_stoppage",
+            start="2026-08-07T08:10:00+00:00",
+            end="2026-08-07T08:15:00+00:00",
+            duration=300,
+            event_uuid="evt-timeline-evidence",
+        )
+        connection.execute("UPDATE eventos SET midia_path = ? WHERE id = ?", ("data/evidence/evt-timeline.jpg", event_id))
+        connection.commit()
+        payload = operational_timeline(connection, ReadModelFilters(cliente_id=cliente_id, start=start, end=end), now=end)
+
+    zone_items = [item for item in payload["items"] if item["type"] == "zone_occupancy"]
+    camera_items = [item for item in payload["items"] if item["type"] == "camera_status"]
+    event_items = [item for item in payload["items"] if item["event_uuid"] == "evt-timeline-evidence"]
+    assert [item["new_state"] for item in zone_items] == ["UNKNOWN", "OCCUPIED"]
+    assert [item["new_state"] for item in camera_items] == ["OFFLINE", "ONLINE"]
+    assert {item["type"] for item in event_items} == {"event_started", "event_closed"}
+    assert all(item["evidence_refs"] == [{"type": "image", "path": "data/evidence/evt-timeline.jpg"}] for item in event_items)
+
+
+def test_operations_timeline_endpoint_is_tenant_isolated() -> None:
+    temp_dir, db_path, connection, cliente_id, site_id, _area_id, _process_id, asset_id, camera_id = make_context()
+    with temp_dir:
+        other_cliente = criar_cliente(connection, "Outro cliente")
+        other_site = criar_unidade(connection, other_cliente, "Outra fabrica")
+        other_camera = criar_camera(connection, other_site, "Camera externa", cliente_id=other_cliente)
+        add_sample(connection, cliente_id, site_id, camera_id, asset_id, "2026-08-07T08:00:00+00:00", "ACTIVE", True)
+        add_sample(connection, other_cliente, other_site, other_camera, "asset-outro", "2026-08-07T08:00:00+00:00", "STOPPED", False)
+        add_event(connection, cliente_id, site_id, camera_id, "machine_stoppage", start="2026-08-07T08:05:00+00:00", end="2026-08-07T08:10:00+00:00", duration=300, event_uuid="evt-own")
+        add_event(connection, other_cliente, other_site, other_camera, "machine_stoppage", start="2026-08-07T08:05:00+00:00", end="2026-08-07T08:10:00+00:00", duration=300, event_uuid="evt-other")
+        create_user(connection, "timeline@example.com", "senha", "admin_cliente", cliente_id)
+        connection.close()
+
+        def test_connect(_path=None):
+            return connect(db_path)
+
+        with patch("app.api.connect", test_connect):
+            client = TestClient(api)
+            client.post("/auth/login", json={"email": "timeline@example.com", "senha": "senha"})
+            response = client.get(
+                "/operations/timeline",
+                params={"start": "2026-08-07T08:00:00+00:00", "end": "2026-08-07T09:00:00+00:00"},
+            )
+
+    assert response.status_code == 200
+    payload = response.json()
+    event_uuids = {item["event_uuid"] for item in payload["items"] if item.get("event_uuid")}
+    assert event_uuids == {"evt-own"}
+    assert all(item["context"].get("camera_id") != other_camera for item in payload["items"])
+
+
+def test_operational_timeline_reports_empty_period_without_inventing_states() -> None:
+    temp_dir, _db_path, connection, cliente_id, _site_id, _area_id, _process_id, _asset_id, _camera_id = make_context()
+    start = parse_datetime("2026-08-07T08:00:00+00:00")
+    end = parse_datetime("2026-08-07T09:00:00+00:00")
+    with temp_dir, connection:
+        payload = operational_timeline(connection, ReadModelFilters(cliente_id=cliente_id, start=start, end=end), now=end)
+
+    assert payload["items"] == []
+    assert payload["count"] == 0
+    assert payload["coverage"]["status"] == "unknown"
+    assert payload["sources"] == ["operational_samples", "eventos"]
 
 
 def test_operational_data_without_samples_has_insufficient_coverage_and_no_strong_conclusion() -> None:

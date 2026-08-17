@@ -19,8 +19,28 @@ let rowsCache = [];
 let currentTab = "all";
 let viewMode = "grid";
 let operationsSelectedPeriod = "day";
+let operationsSelectedState = "all";
+let operationsSelectedAsset = "";
+let eventsSelectedPeriod = "all";
+let eventsSelectedStatus = "all";
+let eventsSelectedSeverity = "all";
+let eventsSelectedFamily = "official";
+let eventsContextQuery = "";
 
 const routes = {
+  "/home-view": {
+    title: "Início",
+    section: "home",
+    breadcrumb: "Início",
+    permissions: [],
+    heading: "Início",
+    subtitle: "Visão atual da sua operação.",
+    action: "Atualizar",
+    tabs: [],
+    filters: [],
+    columns: ["Origem", "Status"],
+    customRender: renderHomePage,
+  },
   "/dashboard": {
     title: "Home",
     section: "operation",
@@ -77,7 +97,7 @@ const routes = {
     breadcrumb: "Operations / Events",
     permissions: [],
     heading: "Events",
-    subtitle: "Memória operacional verificável: o que aconteceu, quando, onde e como foi tratado.",
+    subtitle: "Ocorrências e incidentes registrados pela operação.",
     endpoint: "/eventos",
     action: "Atualizar",
     emptyTitle: "Nenhum evento operacional registrado neste período.",
@@ -88,6 +108,7 @@ const routes = {
     row: eventRow,
     card: eventCard,
     detail: eventDetail,
+    customRender: renderEventsPage,
   },
   "/alerts": {
     title: "Alertas",
@@ -349,6 +370,21 @@ const routes = {
     row: (item) => [item.name, item.note, badge(item.status || "Disponível"), item.href ? `<a class="cx-link" href="${item.href}">Abrir</a>` : "—"],
   },
 };
+
+function isHomeView() {
+  return window.location.pathname === "/operations-view" && new URLSearchParams(window.location.search).get("view") === "home";
+}
+
+function currentRouteKey() {
+  return isHomeView() ? "/home-view" : window.location.pathname;
+}
+
+function navigationKeyFromUrl(url) {
+  if (url.pathname === "/operations-view" && url.searchParams.get("view") === "home") return "/home-view";
+  if (url.pathname === "/settings" || url.pathname.startsWith("/settings/")) return "/settings/cameras";
+  if (url.pathname === "/" || url.pathname === "/dashboard") return "/operations-view";
+  return url.pathname;
+}
 
 async function requestJson(url, options) {
   const response = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options });
@@ -647,105 +683,739 @@ function renderTraceDrawer(uuids) {
   drawer.focus({ preventScroll: true });
 }
 
+function humanStatus(value) {
+  const labels = {
+    NORMAL: "Operação normal",
+    ATTENTION: "Atenção",
+    CRITICAL: "Crítico",
+    UNKNOWN: "Sem dados suficientes",
+    ACTIVE: "Em operação",
+    STOPPED: "Parada",
+    PRESENT: "Presença confirmada",
+    ABSENT: "Ausência confirmada",
+    LOW_ACTIVITY: "Baixa atividade",
+    NO_ACTIVITY: "Sem atividade",
+    ONLINE: "Online",
+    OFFLINE: "Offline",
+    ALERT: "Alerta",
+  };
+  return labels[value] || value || "Indisponível";
+}
+
+function homeContextName(value, fallback = "Ativo sem nome") {
+  const text = String(value || "").trim();
+  if (!text) return fallback;
+  if (/^(evt|cam|opasset|area|proc|mach|compat|live)_/i.test(text) || /^[a-f0-9-]{16,}$/i.test(text)) return fallback;
+  return text;
+}
+
+function homeDataValue(value, formatter = (item) => item) {
+  if (value === null || value === undefined) return "Indisponível";
+  return formatter(value);
+}
+
+function homeBusinessLabel(value, fallback = "Não informado") {
+  const text = String(value ?? "").trim();
+  if (!text) return fallback;
+  const key = text.toLowerCase();
+  const labels = {
+    machine: "Máquina",
+    workstation: "Posto operacional",
+    asset: "Ativo",
+    open: "Aberto",
+    closed: "Encerrado",
+    new: "Novo",
+    acknowledged: "Reconhecido",
+    resolved: "Resolvido",
+    unknown: "Dados insuficientes",
+    not_available: "Não disponível",
+    available: "Disponível",
+    partial: "Parcial",
+    observed: "Observada",
+  };
+  if (labels[key]) return labels[key];
+  if (/^(evt|cam|opasset|area|proc|mach|compat|live)_/i.test(text) || /^[a-f0-9-]{16,}$/i.test(text)) return fallback;
+  return text;
+}
+
+function homeDefaultPeriod() {
+  const now = new Date();
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  return { start: start.toISOString(), end: now.toISOString() };
+}
+
+function homeDefaultSummary() {
+  return {
+    period: homeDefaultPeriod(),
+    coverage: { status: "unknown", reason: "Cobertura ainda não informada pelo backend.", gaps: [] },
+    events_by_family: [],
+    events_by_area: [],
+    events_by_asset: [],
+    total_events: 0,
+  };
+}
+
+function homeDefaultCurrent() {
+  return { open_events: [] };
+}
+
+function homeDefaultTimeline() {
+  return { items: [] };
+}
+
+function homeDefaultSetup() {
+  return { assets: [], areas: [], processes: [] };
+}
+
+function homeDefaultEvents() {
+  return { events: [] };
+}
+
+function homeDefaultInsights() {
+  return { briefing: [], insights: [], patterns: [], kpis: [], coverage: { status: "unknown" } };
+}
+
+function homeDefaultOperationalData() {
+  return {
+    machine_metrics: [],
+    human_operation: {},
+    safety_zones: {},
+    reports: {},
+    coverage: { status: "unknown" },
+  };
+}
+
+async function homeResource(url, fallback) {
+  try {
+    return { ok: true, data: await requestJson(url), error: null, url };
+  } catch (error) {
+    return { ok: false, data: fallback, error: error.message || "Falha ao carregar seção.", url };
+  }
+}
+
+function homeSectionStatus(result, availableLabel = "Dados reais") {
+  if (result?.ok) return `<small>${availableLabel}</small>`;
+  return `<small>Indisponível: ${sanitize(result?.error || "falha de carregamento")}</small>`;
+}
+
+function homeMetric(label, value, detail) {
+  return `
+    <article>
+      <span>${label}</span>
+      <strong>${value}</strong>
+      <small>${detail}</small>
+    </article>
+  `;
+}
+
+function homeTopbarStatus(summary) {
+  const coverage = homeCoverageState(summary.coverage);
+  if (coverage.tone === "good") return "Sistemas normais";
+  if (coverage.tone === "attention") return "Cobertura parcial";
+  return "Dados insuficientes";
+}
+
+function homeCoverageState(coverage) {
+  if (!coverage || !coverage.status) return { label: "Cobertura desconhecida", tone: "unknown" };
+  if (coverage.status === "observed") return { label: "Cobertura observada", tone: "good" };
+  if (coverage.status === "partial") return { label: "Cobertura parcial", tone: "attention" };
+  return { label: "Cobertura insuficiente", tone: "unknown" };
+}
+
+function homeAttention(alertPayload, summary) {
+  const alerts = (alertPayload.decisions || []).filter((decision) => decision.decision === "ALERT");
+  const sorted = alerts.sort((a, b) => ({"critical": 4, "high": 3, "medium": 2, "low": 1}[b.severity] || 0) - ({"critical": 4, "high": 3, "medium": 2, "low": 1}[a.severity] || 0));
+  if (sorted.length) {
+    const item = sorted[0];
+    return {
+      hasAlert: true,
+      html: `
+        <article class="cx-home-attention-card critical">
+          <span>${homeBusinessLabel(item.severity || "high", "Prioridade")}</span>
+          <strong>${item.title || "Incidente operacional requer atenção"}</strong>
+          <p>${item.summary || "A Campex encontrou uma condição operacional sustentada por dados reais."}</p>
+          <div class="cx-home-meta">
+            <span>${homeContextName(item.asset_label || item.asset_id || item.camera_name || item.camera_id, "Contexto operacional")}</span>
+            <span>${(item.reason_codes || []).slice(0, 2).join(" · ") || "Motivo factual registrado"}</span>
+          </div>
+          ${traceButton("Ver incidente", item.event_refs || [])}
+        </article>
+      `,
+    };
+  }
+  const coverage = homeCoverageState(summary.coverage);
+  if (coverage.tone !== "good") {
+    return {
+      hasAlert: false,
+      html: `
+        <article class="cx-home-attention-card unknown">
+          <span>${coverage.label}</span>
+          <strong>Cobertura insuficiente para afirmar normalidade.</strong>
+          <p>A Campex ainda não possui observação confiável o bastante neste período.</p>
+        </article>
+      `,
+    };
+  }
+  return {
+    hasAlert: false,
+    html: `
+      <article class="cx-home-attention-card normal">
+        <span>Sem criticidade ativa</span>
+        <strong>Nenhuma situação crítica exige atenção agora.</strong>
+        <p>Não há decisões críticas de alerta no período consultado.</p>
+      </article>
+    `,
+  };
+}
+
+function renderHomeMetrics(currentPayload, summary, briefing, impact) {
+  const coverage = homeCoverageState(summary.coverage);
+  const openEvents = classifiedOpenEvents(currentPayload).length;
+  const downtime = impact.operational_impact?.downtime_seconds ?? impact.machine_metrics?.downtime_seconds;
+  const incidents = impact.operational_impact?.incident_count ?? summary.total_events;
+  const monitoredAssets = impact.machine_metrics?.length ?? 0;
+  const metrics = [
+    homeMetric("Incidentes ativos", openEvents, "Eventos físicos abertos"),
+    homeMetric("Downtime observado", homeDataValue(downtime, secondsLabel), incidents ? `${incidents} incidente(s) no período` : "Sem incidentes de downtime"),
+    homeMetric("Ativos", monitoredAssets || "Indisponível", monitoredAssets ? "Com dados operacionais" : "Aguardando dados de ativos"),
+    homeMetric("Cobertura", coverage.label, summary.coverage?.sample_count ? `${summary.coverage.sample_count} amostras` : "Amostras insuficientes ou indisponíveis"),
+  ];
+  return `
+    <section class="cx-home-metrics" aria-label="Operação agora">
+      ${metrics.join("")}
+    </section>
+  `;
+}
+
+function renderHomeProtectedMetrics() {
+  return `
+    <section class="cx-home-metrics" aria-label="Operação agora">
+      ${[
+        homeMetric("Ativos monitorados", "Não disponível", "Entre para carregar ativos reais"),
+        homeMetric("Downtime observado", "Não disponível", "Entre para carregar o período"),
+        homeMetric("Incidentes ativos", "Não disponível", "Entre para carregar eventos"),
+        homeMetric("Cobertura dos dados", "Não disponível", "Entre para carregar amostras"),
+      ].join("")}
+    </section>
+  `;
+}
+
+function renderHomeActivity(timelinePayload) {
+  const items = (timelinePayload.items || []).filter((item) => ["machine_activity", "person_presence", "zone_occupancy", "operational_activity", "event_started", "event_closed"].includes(item.type)).slice(-8);
+  if (!items.length) {
+    return `<div class="cx-home-empty"><strong>Aguardando dados da operação.</strong><p>A atividade recente aparecerá quando houver amostras ou eventos reais.</p></div>`;
+  }
+  return `
+    <div class="cx-home-activity-strip">
+      ${items.map((item) => `<span class="${String(item.new_state || "").toLowerCase()}"><i></i>${humanStatus(item.new_state)}<small>${new Date(item.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</small></span>`).join("")}
+    </div>
+  `;
+}
+
+function renderHomeActivityLegend() {
+  return `
+    <div class="cx-home-activity-legend">
+      <span><i class="running"></i>Operação</span>
+      <span><i class="stopped"></i>Parada</span>
+      <span><i class="low"></i>Baixa atividade</span>
+      <span><i class="unknown"></i>Sem dados</span>
+    </div>
+  `;
+}
+
+function renderHomeAssets(setupPayload, currentPayload) {
+  const assets = setupPayload.assets || [];
+  if (!assets.length) return `<div class="cx-home-empty"><strong>Nenhum ativo configurado.</strong><p>Configure a hierarquia operacional no Setup para a Campex contextualizar a operação.</p><a class="cx-secondary-action" href="/settings/cameras">Abrir Setup</a></div>`;
+  const openEvents = classifiedOpenEvents(currentPayload);
+  return assets.slice(0, 6).map((asset) => {
+    const activeEvent = openEvents.find((event) => event.asset_id === asset.id);
+    return `
+      <article class="cx-home-asset">
+        <div>
+          <strong>${homeContextName(asset.nome)}</strong>
+          <span>${homeBusinessLabel(asset.tipo, "Ativo operacional")}</span>
+        </div>
+        <div>
+          ${activeEvent ? badge("Evento aberto") : badge(asset.ativo ? "Monitorável" : "Inativo")}
+          <small>${activeEvent ? `${familyLabel(activeEvent.event_family)} · ${secondsLabel(activeEvent.current_duration_seconds)}` : "Sem evento aberto informado"}</small>
+        </div>
+      </article>
+    `;
+  }).join("");
+}
+
+function renderHomeIncidents(eventsPayload, alertPayload) {
+  const alertRefs = new Set((alertPayload.decisions || []).flatMap((item) => item.event_refs || []));
+  const sourceEvents = Array.isArray(eventsPayload) ? eventsPayload : (eventsPayload.events || []);
+  const events = sourceEvents.filter((event) => isOfficialFamily(event.event_family)).slice(0, 5);
+  if (!events.length) return `<div class="cx-home-empty"><strong>Nenhum incidente relevante no período.</strong><p>Eventos reais aparecerão aqui quando a Campex registrar ocorrências operacionais.</p></div>`;
+  return events.map((event) => {
+    const context = eventContextLabel(event);
+    const uuid = event.event_uuid;
+    return `
+    <article class="cx-home-incident">
+      <strong>${familyLabel(event.event_family)}</strong>
+      <span>${event.fim ? secondsLabel(event.duracao || event.read_duration_seconds) : "Em andamento"}</span>
+      <small>${alertRefs.has(uuid) ? "Alerta · " : "Registrado · "}${homeContextName(context.primary, "Contexto operacional")}</small>
+      ${traceButton("Ver incidente", [uuid])}
+    </article>
+  `;
+  }).join("");
+}
+
+function renderHomeImpact(impact) {
+  const financial = impact.financial_impact || {};
+  const operational = impact.operational_impact || {};
+  const machineMetrics = impact.machine_metrics || [];
+  const downtime = operational.downtime_seconds ?? machineMetrics.reduce((sum, item) => sum + Number(item.stopped_seconds || item.downtime_seconds || 0), 0);
+  const financialLine = financial.status === "AVAILABLE" || financial.status === "PARTIAL"
+    ? `${financial.currency || ""} ${Number(financial.estimated_amount || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : "Impacto financeiro não configurado";
+  return `
+    <section class="cx-home-impact">
+      <article>
+        <span>Impacto operacional</span>
+        <strong>${homeDataValue(downtime, secondsLabel)}</strong>
+        <small>Downtime observado pelo backend</small>
+      </article>
+      <article>
+        <span>Impacto financeiro</span>
+        <strong>${financialLine}</strong>
+        <small>${homeBusinessLabel(financial.status || "not_available")}</small>
+      </article>
+    </section>
+  `;
+}
+
+function operationsStateLabel(value) {
+  const key = String(value || "").toUpperCase();
+  const labels = {
+    RUNNING: "Em operação",
+    ACTIVE: "Em operação",
+    NORMAL_ACTIVITY: "Em operação",
+    STOPPED: "Parado",
+    LOW_ACTIVITY: "Baixa atividade",
+    NO_ACTIVITY: "Sem atividade",
+    UNKNOWN: "Dados insuficientes",
+    OFFLINE: "Offline",
+    EVENT_OPEN: "Incidente ativo",
+  };
+  return labels[key] || homeBusinessLabel(value, "Dados insuficientes");
+}
+
+function operationsStateTone(value) {
+  const key = String(value || "").toUpperCase();
+  if (["RUNNING", "ACTIVE", "NORMAL_ACTIVITY", "PRESENT", "ONLINE"].includes(key)) return "running";
+  if (["STOPPED", "NO_ACTIVITY", "OFFLINE"].includes(key)) return "stopped";
+  if (["LOW_ACTIVITY", "EVENT_OPEN"].includes(key)) return "attention";
+  return "unknown";
+}
+
+function operationsStateDot(value) {
+  const label = operationsStateLabel(value);
+  return `<span class="cx-ops-state ${operationsStateTone(value)}"><i></i>${label}</span>`;
+}
+
+function operationsLatestByAsset(timelinePayload) {
+  const latest = new Map();
+  (timelinePayload.items || []).forEach((item) => {
+    const assetId = item.asset_id || item.context?.asset_id;
+    if (!assetId) return;
+    const previous = latest.get(assetId);
+    if (!previous || new Date(item.timestamp).getTime() > new Date(previous.timestamp).getTime()) latest.set(assetId, item);
+  });
+  return latest;
+}
+
+function operationsEventAssetId(event) {
+  return event.asset_id || event.machine_id || event.machine_monitor_id || event.context?.asset_id;
+}
+
+function operationsAssetRows(setupPayload, currentPayload, timelinePayload, eventsPayload) {
+  const latest = operationsLatestByAsset(timelinePayload);
+  const sourceEvents = Array.isArray(eventsPayload) ? eventsPayload : (eventsPayload.events || []);
+  const openEvents = classifiedOpenEvents(currentPayload);
+  const assets = setupPayload.assets || [];
+  const rows = assets.map((asset) => {
+    const activeEvent = openEvents.find((event) => operationsEventAssetId(event) === asset.id);
+    const latestItem = latest.get(asset.id);
+    const relatedEvent = sourceEvents.find((event) => operationsEventAssetId(event) === asset.id);
+    const state = activeEvent
+      ? (activeEvent.event_family === "interruption" ? "STOPPED" : "EVENT_OPEN")
+      : (latestItem?.new_state || latestItem?.state || "UNKNOWN");
+    return {
+      id: asset.id,
+      name: homeContextName(asset.nome || asset.name, "Ativo operacional"),
+      area: homeContextName(asset.area_name || asset.area || asset.area_id || asset.area_context_id, "Área não informada"),
+      state,
+      stateLabel: operationsStateLabel(state),
+      tone: operationsStateTone(state),
+      durationSeconds: activeEvent?.current_duration_seconds ?? latestItem?.duration_seconds ?? null,
+      activity: latestItem ? humanStatus(latestItem.new_state || latestItem.state) : "Dados insuficientes",
+      incident: activeEvent ? familyLabel(activeEvent.event_family) : "Sem incidente ativo",
+      eventUuid: activeEvent?.event_uuid || relatedEvent?.event_uuid,
+      updatedAt: latestItem?.timestamp || activeEvent?.inicio || relatedEvent?.inicio || null,
+    };
+  });
+  if (rows.length) return rows;
+  return (openEvents || []).map((event) => {
+    const context = eventContextLabel(event);
+    const state = event.event_family === "interruption" ? "STOPPED" : "EVENT_OPEN";
+    return {
+      id: operationsEventAssetId(event) || event.event_uuid,
+      name: homeContextName(context.primary, "Ativo operacional"),
+      area: homeContextName(context.path, "Área não informada"),
+      state,
+      stateLabel: operationsStateLabel(state),
+      tone: operationsStateTone(state),
+      durationSeconds: event.current_duration_seconds ?? event.read_duration_seconds ?? null,
+      activity: familyLabel(event.event_family),
+      incident: familyLabel(event.event_family),
+      eventUuid: event.event_uuid,
+      updatedAt: event.inicio || null,
+    };
+  });
+}
+
+function operationsFilterRows(rows) {
+  const state = operationsSelectedState || "all";
+  const asset = operationsSelectedAsset || "";
+  return rows.filter((row) => {
+    const matchesState = state === "all" || row.tone === state || String(row.state).toLowerCase() === state;
+    const matchesAsset = !asset || String(row.id || row.name) === asset;
+    return matchesState && matchesAsset;
+  });
+}
+
+function operationsMetricValue(value) {
+  return value === null || value === undefined ? "Indisponível" : value;
+}
+
+function renderOperationsMetrics(rows, summary) {
+  const knownRows = rows.filter((row) => row.tone !== "unknown");
+  const running = knownRows.filter((row) => row.tone === "running").length;
+  const stopped = knownRows.filter((row) => row.tone === "stopped").length;
+  const coverage = homeCoverageState(summary.coverage);
+  const metrics = [
+    homeMetric("Ativos monitorados", operationsMetricValue(rows.length || null), rows.length ? "Ativos/áreas com contexto operacional" : "Aguardando Setup"),
+    homeMetric("Em operação", operationsMetricValue(knownRows.length ? running : null), "Estados confirmados pelos dados atuais"),
+    homeMetric("Parados", operationsMetricValue(knownRows.length ? stopped : null), "Paradas ou ausência de atividade"),
+    homeMetric("Cobertura dos dados", coverage.label, summary.coverage?.sample_count ? `${summary.coverage.sample_count} amostras` : "Amostras insuficientes ou indisponíveis"),
+  ];
+  return `<section class="cx-home-metrics cx-ops-v1-metrics" aria-label="Resumo operacional">${metrics.join("")}</section>`;
+}
+
+function renderOperationsFilters(rows) {
+  const assetOptions = rows.map((row) => `<option value="${sanitize(row.id || row.name)}" ${operationsSelectedAsset === String(row.id || row.name) ? "selected" : ""}>${sanitize(row.name)}</option>`).join("");
+  return `
+    <div class="cx-ops-v1-filters">
+      <label>Período
+        <select id="operationsPeriod">
+          <option value="day" ${operationPeriod() === "day" ? "selected" : ""}>Hoje</option>
+          <option value="turno" ${operationPeriod() === "turno" ? "selected" : ""}>Turno</option>
+          <option value="week" ${operationPeriod() === "week" ? "selected" : ""}>Semana</option>
+          <option value="month" ${operationPeriod() === "month" ? "selected" : ""}>Mês</option>
+        </select>
+      </label>
+      <label>Estado
+        <select id="operationsStateFilter">
+          <option value="all" ${operationsSelectedState === "all" ? "selected" : ""}>Todos</option>
+          <option value="running" ${operationsSelectedState === "running" ? "selected" : ""}>Em operação</option>
+          <option value="stopped" ${operationsSelectedState === "stopped" ? "selected" : ""}>Parados</option>
+          <option value="attention" ${operationsSelectedState === "attention" ? "selected" : ""}>Atenção</option>
+          <option value="unknown" ${operationsSelectedState === "unknown" ? "selected" : ""}>Dados insuficientes</option>
+        </select>
+      </label>
+      ${assetOptions ? `<label>Ativo<select id="operationsAssetFilter"><option value="">Todos</option>${assetOptions}</select></label>` : ""}
+    </div>
+  `;
+}
+
+function renderOperationsAssetList(rows) {
+  const filtered = operationsFilterRows(rows);
+  if (!filtered.length) {
+    return `<div class="cx-home-empty"><strong>Nenhum ativo encontrado para esta seleção.</strong><p>Ajuste o filtro ou configure ativos e áreas no Setup.</p></div>`;
+  }
+  return `
+    <div class="cx-ops-asset-list" role="table" aria-label="Ativos monitorados">
+      <div class="cx-ops-asset-row cx-ops-asset-head" role="row">
+        <span>Ativo</span>
+        <span>Área</span>
+        <span>Estado atual</span>
+        <span>Tempo no estado</span>
+        <span>Atividade</span>
+        <span>Incidente ativo</span>
+        <span>Última atualização</span>
+      </div>
+      ${filtered.map((row) => `
+        <button class="cx-ops-asset-row" type="button" data-event-uuids="${row.eventUuid || ""}" ${row.eventUuid ? "" : "disabled"} role="row">
+          <span><strong>${row.name}</strong><small>${row.eventUuid ? "Ver detalhes →" : "Sem detalhe vinculado"}</small></span>
+          <span>${row.area}</span>
+          <span>${operationsStateDot(row.state)}</span>
+          <span>${row.durationSeconds === null || row.durationSeconds === undefined ? "Indisponível" : `${secondsLabel(row.durationSeconds)} no estado`}</span>
+          <span>${row.activity}</span>
+          <span>${row.incident}</span>
+          <span>${row.updatedAt ? new Date(row.updatedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "Indisponível"}</span>
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderOperationsRecentActivity(timelinePayload) {
+  const items = (timelinePayload.items || []).filter((item) => ["machine_activity", "person_presence", "zone_occupancy", "operational_activity", "event_started", "event_closed"].includes(item.type)).slice(-6).reverse();
+  if (!items.length) {
+    return `<div class="cx-home-empty"><strong>Nenhuma mudança recente disponível.</strong><p>A Campex mostrará mudanças relevantes quando houver timeline real no período.</p></div>`;
+  }
+  return `<div class="cx-ops-recent-activity">${items.map((item) => {
+    const context = homeContextName(item.asset_name || item.asset_id || item.camera_name || item.camera_id, "Contexto operacional");
+    const time = item.timestamp ? new Date(item.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "Horário indisponível";
+    return `<div><time>${time}</time><strong>${context}</strong><span>passou para ${humanStatus(item.new_state || item.state)}</span></div>`;
+  }).join("")}</div>`;
+}
+
+async function renderHomePage(config) {
+  const params = readModelQuery();
+  const [currentResult, summaryResult, timelineResult, insightsResult, operationalDataResult, setupResult, eventsResult] = await Promise.all([
+    homeResource(`/operations/read-model/current?${params}`, homeDefaultCurrent()),
+    homeResource(`/operations/read-model/summary?${params}`, homeDefaultSummary()),
+    homeResource(`/operations/timeline?${params}`, homeDefaultTimeline()),
+    homeResource(`/operations/read-model/insights?${params}`, homeDefaultInsights()),
+    homeResource(`/operations/read-model/operational-data?${params}`, homeDefaultOperationalData()),
+    homeResource("/setup/operation", homeDefaultSetup()),
+    homeResource("/eventos", homeDefaultEvents()),
+  ]);
+  const currentPayload = currentResult.data;
+  const summary = currentResult.ok || summaryResult.ok ? summaryResult.data : homeDefaultSummary();
+  const timelinePayload = timelineResult.data;
+  const insightsPayload = insightsResult.data;
+  const operationalData = operationalDataResult.data;
+  const setupPayload = setupResult.data;
+  const eventsPayload = eventsResult.data;
+  const alertPayload = { decisions: [] };
+  const attention = homeAttention(alertPayload, summary);
+  const classifiedCount = officialEventCount(summary);
+  const briefingLine = insightsPayload.briefing?.[0] || insightsPayload.headline || "A Campex está aguardando dados suficientes para montar uma leitura operacional.";
+  const failedSections = [currentResult, summaryResult, timelineResult, insightsResult, operationalDataResult, setupResult, eventsResult].filter((item) => !item.ok);
+
+  title.textContent = "Início";
+  heading.textContent = "Visão atual da sua operação.";
+  subtitle.textContent = "Dados reais da instalação Campex, sem preenchimento demonstrativo.";
+  tableTitle.textContent = "";
+  tableHint.textContent = "";
+  primaryAction.textContent = "Atualizar";
+  primaryAction.onclick = () => loadPage();
+  renderTabs({ tabs: [] });
+  renderFilters({ filters: [] });
+  rowsCache = [];
+  grid.style.display = "none";
+  head.innerHTML = "";
+  body.innerHTML = "";
+  body.closest("table")?.setAttribute("aria-hidden", "true");
+  document.querySelector(".cx-panel")?.classList.add("cx-ops-hide-panel");
+
+  cards.innerHTML = `
+    <section class="cx-home-page">
+      <div class="cx-home-topbar">
+        <div class="cx-home-search">Buscar ativos, incidentes, câmeras...</div>
+        <div class="cx-home-topbar-actions">
+          <span>${homeContextName(summary.filters?.site_id || "Unidade principal", "Unidade principal")}</span>
+          <span>${homeTopbarStatus(summary)}</span>
+        </div>
+      </div>
+      <header class="cx-home-header">
+        <div>
+          <span>Início</span>
+          <h2>Visão em tempo real da operação, incidentes e atividade.</h2>
+          <p>${briefingLine}</p>
+        </div>
+        <div class="cx-home-period">
+          <small>Período</small>
+          <strong>${formatOperationsPeriod(summary.period)}</strong>
+        </div>
+      </header>
+
+      <section class="cx-home-now">
+        <div class="cx-home-section-head">
+          <span>Operação agora</span>
+          ${homeSectionStatus(currentResult, homeCoverageState(summary.coverage).label)}
+        </div>
+        ${renderHomeMetrics(currentPayload, summary, insightsPayload, operationalData)}
+      </section>
+
+      <section class="cx-home-primary-grid">
+        <section class="cx-home-attention">
+          <div class="cx-home-section-head">
+            <span>O que merece atenção</span>
+            <small>${attention.hasAlert ? "Decisão crítica real" : "Sem alerta crítico ativo"}</small>
+          </div>
+          ${attention.html}
+        </section>
+
+        <section class="cx-home-activity">
+          <div class="cx-home-section-head">
+            <span>Atividade operacional</span>
+            ${homeSectionStatus(timelineResult, `${(timelinePayload.items || []).length} mudança(s) no período`)}
+          </div>
+          ${renderHomeActivityLegend()}
+          ${renderHomeActivity(timelinePayload)}
+        </section>
+      </section>
+
+      <section class="cx-home-balanced-grid">
+        <section class="cx-home-section">
+          <div class="cx-home-section-head">
+            <span>Ativos / áreas</span>
+            <small>${(setupPayload.assets || []).length || "Nenhum ativo"}</small>
+          </div>
+          <div class="cx-home-list">${renderHomeAssets(setupPayload, currentPayload)}</div>
+        </section>
+
+        <section class="cx-home-section">
+          <div class="cx-home-section-head">
+            <span>Incidentes recentes</span>
+            <small>${summary.total_events || 0} evento(s)</small>
+          </div>
+          <div class="cx-home-list">${renderHomeIncidents(eventsPayload, alertPayload)}</div>
+        </section>
+      </section>
+
+      <section class="cx-home-balanced-grid">
+        <section class="cx-home-section">
+          <div class="cx-home-section-head">
+            <span>Resumo do período</span>
+            ${homeSectionStatus(insightsResult, humanStatus(insightsPayload.overall_status || "UNKNOWN"))}
+          </div>
+          <article class="cx-home-briefing">
+            <strong>${classifiedCount ? briefingLine : "Sem dados operacionais suficientes neste período."}</strong>
+            <p>${(insightsPayload.insights || []).slice(0, 2).map((item) => item.statement || item.text).join(" ") || "Aguardando eventos e amostras reais para formar destaques."}</p>
+          </article>
+        </section>
+
+        <section class="cx-home-section">
+          <div class="cx-home-section-head">
+            <span>Impacto operacional</span>
+            ${homeSectionStatus(operationalDataResult, "Dados do período")}
+          </div>
+          ${renderHomeImpact(operationalData)}
+        </section>
+      </section>
+
+      <section class="cx-home-final-grid">
+        <section class="cx-home-quality-section">
+          <div class="cx-home-section-head">
+            <span>Qualidade dos dados</span>
+            <small>${homeCoverageState(summary.coverage).label}</small>
+          </div>
+          <div class="cx-home-quality">
+            <p>${summary.coverage?.reason || "Cobertura informada pelo backend."}</p>
+            <p>Dados insuficientes: ${operationalData.quality?.reasons?.includes("unknown_period_present") ? "presente" : "não informado"}</p>
+            <p>Gaps: ${(summary.coverage?.gaps || []).length}</p>
+            ${failedSections.length ? `<p>Seções indisponíveis: ${failedSections.map((item) => sanitize(item.url.split("?")[0])).join(", ")}</p>` : ""}
+          </div>
+        </section>
+      </section>
+    </section>
+  `;
+  openEventFromQuery(config, sourceEvents);
+}
+
 async function renderOperationsReadModelPage(config) {
   const params = readModelQuery();
-  const [currentPayload, summary, lossesPayload, comparisonPayload] = await Promise.all([
-    requestJson(`/operations/read-model/current?${params}`),
-    requestJson(`/operations/read-model/summary?${params}`),
-    requestJson(`/operations/read-model/losses?${params}`),
-    requestJson(`/operations/read-model/comparison?${params}`),
+  const [currentResult, summaryResult, timelineResult, setupResult, eventsResult] = await Promise.all([
+    homeResource(`/operations/read-model/current?${params}`, homeDefaultCurrent()),
+    homeResource(`/operations/read-model/summary?${params}`, homeDefaultSummary()),
+    homeResource(`/operations/timeline?${params}`, homeDefaultTimeline()),
+    homeResource("/setup/operation", homeDefaultSetup()),
+    homeResource("/eventos", homeDefaultEvents()),
   ]);
-  rowsCache = [
-    ...officialFamilyRows(summary).map((item) => ({ ...item, kind: "family" })),
-    ...(lossesPayload.by_asset || []).map((item) => ({ ...item, kind: "asset" })),
-  ];
-  const totalLossDuration = (lossesPayload.by_family || []).reduce((sum, item) => sum + Number(item.total_duration_seconds || 0), 0);
-  const callouts = operationsAttention(summary, lossesPayload, comparisonPayload, currentPayload);
-  const hasOperationalData = officialEventCount(summary) > 0 || classifiedOpenEvents(currentPayload).length > 0;
-  title.textContent = "";
-  heading.textContent = "Como está sua operação?";
-  subtitle.textContent = "";
-  tableTitle.textContent = "Rastreabilidade operacional";
-  tableHint.textContent = "Cada número pode ser explicado pelos eventos que o formaram.";
+  const currentPayload = currentResult.data;
+  const summary = summaryResult.data;
+  const timelinePayload = timelineResult.data;
+  const setupPayload = setupResult.data;
+  const eventsPayload = eventsResult.data;
+  const assetRows = operationsAssetRows(setupPayload, currentPayload, timelinePayload, eventsPayload);
+  const coverage = homeCoverageState(summary.coverage);
+  const failedSections = [currentResult, summaryResult, timelineResult, setupResult, eventsResult].filter((item) => !item.ok);
+  rowsCache = operationsFilterRows(assetRows);
+  title.textContent = "Operations";
+  heading.textContent = "Acompanhe o estado operacional dos ativos e áreas monitoradas.";
+  subtitle.textContent = "Estados, incidentes e qualidade de dados vindos do runtime e dos eventos reais da Campex.";
+  tableTitle.textContent = "";
+  tableHint.textContent = "";
   primaryAction.textContent = "Atualizar";
   primaryAction.onclick = () => loadPage(window.location.pathname);
-  filters.innerHTML = `
-    <label>Período
-      <select id="operationsPeriod">
-        <option value="day" ${operationPeriod() === "day" ? "selected" : ""}>Hoje</option>
-        <option value="turno" ${operationPeriod() === "turno" ? "selected" : ""}>Turno</option>
-        <option value="week" ${operationPeriod() === "week" ? "selected" : ""}>Semana</option>
-        <option value="month" ${operationPeriod() === "month" ? "selected" : ""}>Mês</option>
-      </select>
-    </label>
-  `;
-  const operationalHeader = `
-    <section class="cx-ops-header">
-      <div>
-        <small>Unidade</small>
-        <strong>${summary.filters?.site_id || "Todas as unidades"}</strong>
-      </div>
-      <div>
-        <small>Período</small>
-        <strong>${formatOperationsPeriod(summary.period)}</strong>
-      </div>
-      <div>
-        <small>Cobertura</small>
-        <strong>${summary.coverage?.status || "unknown"}</strong>
-      </div>
-      <div>
-        <small>Última atualização</small>
-        <strong>${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</strong>
-      </div>
-    </section>
-  `;
-  cards.innerHTML = `
-    <section class="cx-ops-page">
-      <div class="cx-ops-title">
-        <span>Operations</span>
-        <h2>Como está sua operação?</h2>
-      </div>
-      ${operationalHeader}
-      ${coverageWarning(summary.coverage)}
-      ${renderUnknownQualityNote(summary, currentPayload)}
-      <section class="cx-ops-briefing">
-        <small>Briefing operacional</small>
-        <strong>${hasOperationalData ? operationsBriefing(summary, lossesPayload) : "Sem dados operacionais suficientes neste período."}</strong>
-      </section>
-      <section class="cx-ops-grid">${renderOperationsCards(summary, currentPayload, comparisonPayload)}</section>
-      ${hasOperationalData ? `
-        <section class="cx-ops-layout">
-          <div class="cx-ops-column">
-            <section class="cx-ops-block"><h3>O que merece atenção</h3>${callouts.length ? callouts.map((item) => `<article class="cx-ops-callout"><strong>${item.title}</strong><p>${item.why}</p>${traceButton("Eventos relacionados", item.event_uuids)}</article>`).join("") : '<p class="muted">Sem destaque operacional sustentado pelos dados do período.</p>'}</section>
-            <section class="cx-ops-block"><h3>Principais perdas</h3>${renderOperationsRanking("Por ativo", lossesPayload.by_asset, totalLossDuration)}${renderOperationsRanking("Por processo", lossesPayload.by_process, totalLossDuration)}${renderOperationsRanking("Por área", lossesPayload.by_area, totalLossDuration)}</section>
-          </div>
-          <aside class="cx-ops-column">
-            <section class="cx-ops-block"><h3>Operação agora</h3>${renderOperationsCurrent(currentPayload)}</section>
-            <section class="cx-ops-block"><h3>Comparação</h3><p>Eventos: ${comparisonText(comparisonFor(comparisonPayload, "total_events"))}</p><p>Duração: ${comparisonText(comparisonFor(comparisonPayload, "total_duration_seconds"))}</p></section>
-          </aside>
-        </section>
-      ` : `
-        <section class="cx-ops-empty">
-          <strong>Sem eventos operacionais classificados suficientes neste período.</strong>
-          <p>A Campex ainda está aguardando eventos válidos de interrupção, espera, ausência ou fluxo para montar atenção, perdas e comparação.</p>
-        </section>
-      `}
-    </section>
-  `;
   renderTabs(config);
-  head.innerHTML = `<tr>${config.columns.map((column) => `<th>${column}</th>`).join("")}</tr>`;
-  const rows = rowsCache;
-  body.innerHTML = rows.length ? rows.map((item) => `
-    <tr>
-      <td>${item.key}</td>
-      <td>${item.kind === "family" ? familyLabel(item.key) : "Ativo"}</td>
-      <td>${secondsLabel(item.total_duration_seconds)}</td>
-      <td>${item.total_events}</td>
-      <td>${traceButton("Ver eventos", item.event_uuids)}</td>
-    </tr>
-  `).join("") : `<tr><td colspan="${config.columns.length}">${emptyState({ ...config, emptyTitle: "Sem eventos no período.", emptyDescription: "A Campex ainda não registrou eventos operacionais para esta seleção." })}</td></tr>`;
+  renderFilters({ filters: [] });
   grid.style.display = "none";
-  document.querySelector(".cx-panel")?.classList.toggle("cx-ops-hide-panel", !rows.length);
+  head.innerHTML = "";
+  body.innerHTML = "";
+  body.closest("table")?.setAttribute("aria-hidden", "true");
+  document.querySelector(".cx-panel")?.classList.add("cx-ops-hide-panel");
+  cards.innerHTML = `
+    <section class="cx-ops-v1-page">
+      <div class="cx-home-topbar">
+        <div class="cx-home-search">Buscar ativos, incidentes, câmeras...</div>
+        <div class="cx-home-topbar-actions">
+          <span>${homeContextName(summary.filters?.site_id || "Unidade principal", "Unidade principal")}</span>
+          <span>${coverage.label}</span>
+        </div>
+      </div>
+      <header class="cx-home-header">
+        <div>
+          <span>Operations</span>
+          <h2>Acompanhe o estado operacional dos ativos e áreas monitoradas.</h2>
+          <p>Veja rapidamente o que está em operação, parado, com baixa atividade ou sem dados suficientes.</p>
+        </div>
+        <div class="cx-home-period">
+          <small>Período</small>
+          <strong>${formatOperationsPeriod(summary.period)}</strong>
+        </div>
+      </header>
+
+      <section class="cx-home-now cx-ops-v1-summary">
+        <div class="cx-home-section-head">
+          <span>Resumo operacional</span>
+          <small>Última atualização ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</small>
+        </div>
+        ${renderOperationsMetrics(assetRows, summary)}
+      </section>
+
+      ${coverage.status === "partial" || coverage.status === "unknown" ? `<div class="cx-home-quality-note"><strong>${coverage.label}</strong><span>${summary.coverage?.reason || "A Campex ainda não recebeu amostras suficientes para afirmar normalidade operacional."}</span></div>` : ""}
+
+      <section class="cx-home-section cx-ops-v1-assets">
+        <div class="cx-home-section-head">
+          <span>Ativos monitorados</span>
+          <small>${assetRows.length ? `${assetRows.length} ativo(s)` : "Aguardando configuração"}</small>
+        </div>
+        ${renderOperationsFilters(assetRows)}
+        ${renderOperationsAssetList(assetRows)}
+      </section>
+
+      <section class="cx-home-balanced-grid">
+        <section class="cx-home-section">
+          <div class="cx-home-section-head">
+            <span>Atividade recente</span>
+            <small>${(timelinePayload.items || []).length} mudança(s)</small>
+          </div>
+          ${renderOperationsRecentActivity(timelinePayload)}
+        </section>
+        <section class="cx-home-section">
+          <div class="cx-home-section-head">
+            <span>Qualidade dos dados</span>
+            <small>${coverage.label}</small>
+          </div>
+          <div class="cx-home-quality">
+            <p>${summary.coverage?.reason || "Qualidade informada pelo Operational Read Model."}</p>
+            <p>Eventos abertos: ${classifiedOpenEvents(currentPayload).length}</p>
+            <p>Dados insuficientes: ${coverage.status === "unknown" ? "sim" : "não informado"}</p>
+            ${failedSections.length ? `<p>Seções indisponíveis: ${failedSections.map((item) => sanitize(item.url.split("?")[0])).join(", ")}</p>` : ""}
+          </div>
+        </section>
+      </section>
+    </section>
+  `;
 }
 
 function intelligenceBriefingText(payload) {
@@ -841,7 +1511,6 @@ async function renderIntelligencePage(config) {
       <section class="cx-intel-kpis">
         ${(payload.kpis || []).map((kpi) => `
           <article>
-            <button type="button" aria-label="Marcar ${kpi.label} como KPI da operação">☆</button>
             <span>${kpi.label}</span>
             <strong>${intelligenceKpiValue(kpi)}</strong>
             ${traceButton("Eventos", kpi.event_uuids)}
@@ -995,6 +1664,29 @@ function eventSeverity(event) {
   return "normal";
 }
 
+function eventSeverityLabel(value) {
+  const severity = String(value || "").toLowerCase();
+  if (["critical", "critica", "crítica"].includes(severity)) return "Crítica";
+  if (["high", "alta"].includes(severity)) return "Alta";
+  if (["medium", "media", "média"].includes(severity)) return "Média";
+  if (["low", "baixa"].includes(severity)) return "Baixa";
+  return "Normal";
+}
+
+function eventSeverityTone(value) {
+  const severity = String(value || "").toLowerCase();
+  if (["critical", "critica", "crítica"].includes(severity)) return "critical";
+  if (["high", "alta"].includes(severity)) return "high";
+  if (["medium", "media", "média"].includes(severity)) return "medium";
+  if (["low", "baixa"].includes(severity)) return "low";
+  return "neutral";
+}
+
+function eventSeverityPill(event) {
+  const severity = eventSeverity(event);
+  return `<span class="cx-event-severity ${eventSeverityTone(severity)}"><i></i>${eventSeverityLabel(severity)}</span>`;
+}
+
 function eventFamily(event) {
   return event.event_family || event.business_taxonomy?.event_family || "unknown";
 }
@@ -1003,12 +1695,18 @@ function eventSubtype(event) {
   return event.event_subtype || event.business_taxonomy?.event_subtype || event.tipo || event.technical_type || "evento";
 }
 
+function eventTechnicalType(event) {
+  return event.technical_type || event.tipo || event.event_type || eventSubtype(event);
+}
+
 function eventFamilyTitle(event) {
   const subtype = eventSubtype(event);
   if (subtype === "machine_stoppage") return "Parada operacional";
+  if (subtype === "exceptionally_long_stoppage") return "Parada acima do padrão";
   if (subtype === "machine_running_without_operator") return "Máquina ativa sem operador";
   if (subtype === "machine_stopped_with_operator") return "Máquina parada com operador";
   if (subtype === "workstation_unattended") return "Posto sem operador";
+  if (subtype === "camera_offline") return "Câmera offline";
   if (eventFamily(event) === "interruption") return "Interrupção operacional";
   if (eventFamily(event) === "wait") return "Espera operacional";
   if (eventFamily(event) === "absence") return "Ausência operacional";
@@ -1024,6 +1722,10 @@ function eventPhysicalStatus(event) {
   return event.physical_status || event.status || "open";
 }
 
+function eventPhysicalStatusLabel(event) {
+  return eventPhysicalStatus(event) === "closed" ? "Encerrado" : "Em andamento";
+}
+
 function eventStart(event) {
   return event.inicio || event.started_at || event.criado_em || "—";
 }
@@ -1035,6 +1737,27 @@ function eventEnd(event) {
 function eventDuration(event) {
   const value = event.duracao ?? event.duration_seconds ?? event.read_duration_seconds;
   return value === null || value === undefined || value === "" ? "—" : secondsLabel(value);
+}
+
+function eventDisplayDuration(event) {
+  if (eventPhysicalStatus(event) === "open") {
+    const started = Date.parse(eventStart(event));
+    if (!Number.isNaN(started)) return secondsLabel(Math.max(0, Math.floor((Date.now() - started) / 1000)));
+    return "Em andamento";
+  }
+  return eventDuration(event);
+}
+
+function eventDateLabel(value) {
+  if (!value || value === "—") return "Indisponível";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Indisponível";
+  const now = new Date();
+  const sameDay = date.toLocaleDateString("pt-BR") === now.toLocaleDateString("pt-BR");
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const prefix = sameDay ? "Hoje" : date.toLocaleDateString("pt-BR") === yesterday.toLocaleDateString("pt-BR") ? "Ontem" : date.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
+  return `${prefix} · ${date.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
 function eventTitle(event) {
@@ -1075,8 +1798,8 @@ function eventContext(event) {
 function eventTimeRange(event) {
   const start = eventStart(event);
   const end = eventEnd(event);
-  if (!end || end === "—") return `${start} → em andamento`;
-  return `${start} → ${end}`;
+  if (!end || end === "—") return `${eventDateLabel(start)} → em andamento`;
+  return `${eventDateLabel(start)} → ${eventDateLabel(end)}`;
 }
 
 function eventObservedSummary(event) {
@@ -1087,6 +1810,184 @@ function eventObservedSummary(event) {
   if (observed.duracao || event.duracao) parts.push(`Duração observada: ${eventDuration(event)}`);
   if (event.confianca || observed.confianca) parts.push(`Confiança: ${Number(event.confianca || observed.confianca).toFixed(2)}`);
   return parts.join(" · ") || "Fatos observados disponíveis no detalhe.";
+}
+
+function eventHasEvidence(event) {
+  return Boolean(event.midia_path || event.snapshot_path || event.evidence_id);
+}
+
+function eventContextSearchText(event) {
+  const context = eventContext(event);
+  return [context.primary, context.location, context.asset, context.area, context.process, context.camera].filter(Boolean).join(" ").toLowerCase();
+}
+
+function eventMatchesCompactFilters(event) {
+  if (eventsSelectedFamily === "official" && eventFamily(event) === "unknown") return false;
+  if (eventsSelectedFamily !== "all" && eventsSelectedFamily !== "official" && eventFamily(event) !== eventsSelectedFamily) return false;
+  if (eventsSelectedStatus !== "all" && eventPhysicalStatus(event) !== eventsSelectedStatus) return false;
+  if (eventsSelectedSeverity !== "all" && eventSeverityTone(eventSeverity(event)) !== eventsSelectedSeverity && eventSeverity(event) !== eventsSelectedSeverity) return false;
+  if (eventsContextQuery && !eventContextSearchText(event).includes(eventsContextQuery.toLowerCase())) return false;
+  return true;
+}
+
+function eventsSummaryMetrics(events) {
+  const filtered = events.filter((event) => eventsSelectedFamily === "all" || eventFamily(event) !== "unknown");
+  return [
+    homeMetric("Em andamento", filtered.filter((event) => eventPhysicalStatus(event) === "open").length, "Ocorrências físicas abertas"),
+    homeMetric("Alta prioridade", filtered.filter((event) => ["critical", "high"].includes(eventSeverityTone(eventSeverity(event)))).length, "Severidade alta ou crítica"),
+    homeMetric("Encerrados", filtered.filter((event) => eventPhysicalStatus(event) === "closed").length, "Ocorrências finalizadas"),
+    homeMetric("Com evidência", filtered.filter(eventHasEvidence).length, "Registros visuais disponíveis"),
+  ].join("");
+}
+
+function renderEventsFilters() {
+  return `
+    <div class="cx-events-filters">
+      <label>Período
+        <select id="eventsPeriodFilter">
+          <option value="all" ${eventsSelectedPeriod === "all" ? "selected" : ""}>Todo histórico</option>
+          <option value="today" ${eventsSelectedPeriod === "today" ? "selected" : ""}>Hoje</option>
+          <option value="week" ${eventsSelectedPeriod === "week" ? "selected" : ""}>Semana</option>
+          <option value="month" ${eventsSelectedPeriod === "month" ? "selected" : ""}>Mês</option>
+        </select>
+      </label>
+      <label>Status
+        <select id="eventsStatusFilter">
+          <option value="all" ${eventsSelectedStatus === "all" ? "selected" : ""}>Todos</option>
+          <option value="open" ${eventsSelectedStatus === "open" ? "selected" : ""}>Em andamento</option>
+          <option value="closed" ${eventsSelectedStatus === "closed" ? "selected" : ""}>Encerrado</option>
+        </select>
+      </label>
+      <label>Severidade
+        <select id="eventsSeverityFilter">
+          <option value="all" ${eventsSelectedSeverity === "all" ? "selected" : ""}>Todas</option>
+          <option value="critical" ${eventsSelectedSeverity === "critical" ? "selected" : ""}>Crítica</option>
+          <option value="high" ${eventsSelectedSeverity === "high" ? "selected" : ""}>Alta</option>
+          <option value="medium" ${eventsSelectedSeverity === "medium" ? "selected" : ""}>Média</option>
+          <option value="low" ${eventsSelectedSeverity === "low" ? "selected" : ""}>Baixa</option>
+        </select>
+      </label>
+      <label>Tipo
+        <select id="eventsFamilyFilter">
+          <option value="official" ${eventsSelectedFamily === "official" ? "selected" : ""}>Operacionais</option>
+          <option value="interruption" ${eventsSelectedFamily === "interruption" ? "selected" : ""}>Interrupção</option>
+          <option value="wait" ${eventsSelectedFamily === "wait" ? "selected" : ""}>Espera</option>
+          <option value="absence" ${eventsSelectedFamily === "absence" ? "selected" : ""}>Ausência</option>
+          <option value="flow" ${eventsSelectedFamily === "flow" ? "selected" : ""}>Fluxo</option>
+          <option value="unknown" ${eventsSelectedFamily === "unknown" ? "selected" : ""}>Não classificados</option>
+          <option value="all" ${eventsSelectedFamily === "all" ? "selected" : ""}>Todos</option>
+        </select>
+      </label>
+      <label>Ativo/área
+        <input id="eventsContextFilter" value="${sanitize(eventsContextQuery)}" placeholder="Buscar contexto" />
+      </label>
+    </div>
+  `;
+}
+
+function eventPeriodMatches(event) {
+  if (eventsSelectedPeriod === "all") return true;
+  const started = Date.parse(eventStart(event));
+  if (Number.isNaN(started)) return true;
+  const now = new Date();
+  const start = new Date(now);
+  if (eventsSelectedPeriod === "today") start.setHours(0, 0, 0, 0);
+  if (eventsSelectedPeriod === "week") start.setDate(now.getDate() - 7);
+  if (eventsSelectedPeriod === "month") start.setMonth(now.getMonth() - 1);
+  return started >= start.getTime();
+}
+
+function renderEventsList(events) {
+  const filtered = events.filter(eventPeriodMatches).filter(eventMatchesCompactFilters);
+  rowsCache = filtered;
+  if (!filtered.length) {
+    return `
+      <div class="cx-events-empty">
+        <strong>Nenhuma ocorrência encontrada neste período.</strong>
+        <p>Quando houver eventos operacionais reais correspondentes aos filtros, eles aparecerão nesta memória operacional.</p>
+      </div>
+    `;
+  }
+  return `
+    <div class="cx-events-list" role="table" aria-label="Ocorrências operacionais">
+      <div class="cx-events-row cx-events-head" role="row">
+        <span>Evento</span>
+        <span>Ativo / Área</span>
+        <span>Severidade</span>
+        <span>Estado</span>
+        <span>Início</span>
+        <span>Duração</span>
+        <span>Evidência</span>
+      </div>
+      ${filtered.map((event, index) => {
+        const context = eventContext(event);
+        return `
+          <button class="cx-events-row" type="button" data-row-index="${index}" role="row">
+            <span><strong>${eventTitle(event)}</strong><small>${familyLabel(eventFamily(event))}</small></span>
+            <span><strong>${homeContextName(context.primary, "Contexto não informado")}</strong><small>${homeContextName(context.location, "Local não informado")}</small></span>
+            <span>${eventSeverityPill(event)}</span>
+            <span><strong>${eventPhysicalStatusLabel(event)}</strong><small>Tratamento: ${workflowLabel(eventWorkflow(event))}</small></span>
+            <span>${eventDateLabel(eventStart(event))}</span>
+            <span>${eventDisplayDuration(event)}</span>
+            <span>${eventHasEvidence(event) ? "Disponível →" : "Sem evidência"}</span>
+          </button>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+async function renderEventsPage(config) {
+  const payload = await requestJson(config.endpoint);
+  const sourceEvents = Array.isArray(payload) ? payload : (payload.events || []);
+  const events = sourceEvents.filter((event) => eventsSelectedFamily === "all" || eventFamily(event) !== "unknown" || eventsSelectedFamily === "unknown");
+  title.textContent = "Events";
+  heading.textContent = "Ocorrências e incidentes registrados pela operação.";
+  subtitle.textContent = "Memória operacional verificável, com evidência, contexto e tratamento.";
+  tableTitle.textContent = "";
+  tableHint.textContent = "";
+  primaryAction.textContent = "Atualizar";
+  primaryAction.onclick = () => loadPage(window.location.pathname);
+  renderTabs({ tabs: [] });
+  renderFilters({ filters: [] });
+  grid.style.display = "none";
+  head.innerHTML = "";
+  body.innerHTML = "";
+  body.closest("table")?.setAttribute("aria-hidden", "true");
+  document.querySelector(".cx-panel")?.classList.add("cx-ops-hide-panel");
+  cards.innerHTML = `
+    <section class="cx-events-v1-page">
+      <div class="cx-home-topbar">
+        <div class="cx-home-search">Buscar ocorrências, ativos, áreas...</div>
+        <div class="cx-home-topbar-actions">
+          <span>Memória operacional</span>
+          <span>${events.length} ocorrência(s)</span>
+        </div>
+      </div>
+      <header class="cx-home-header">
+        <div>
+          <span>Events</span>
+          <h2>Ocorrências e incidentes registrados pela operação.</h2>
+          <p>Investigue o que aconteceu, onde aconteceu, qual evidência existe e como o evento foi tratado.</p>
+        </div>
+      </header>
+      <section class="cx-home-now cx-events-summary">
+        <div class="cx-home-section-head">
+          <span>Resumo de ocorrências</span>
+          <small>Dados reais de /eventos</small>
+        </div>
+        <section class="cx-home-metrics">${eventsSummaryMetrics(sourceEvents)}</section>
+      </section>
+      <section class="cx-home-section cx-events-main">
+        <div class="cx-home-section-head">
+          <span>Lista operacional</span>
+          <small>${rowsCache.length || events.length} ocorrência(s) na seleção</small>
+        </div>
+        ${renderEventsFilters()}
+        ${renderEventsList(events)}
+      </section>
+    </section>
+  `;
 }
 
 function filterCanonicalEvents(rows) {
@@ -1202,53 +2103,71 @@ function eventDetail(event) {
   const workflow = eventWorkflow(event);
   const evidence = event.midia_path || event.snapshot_path;
   return `
-    <h2>${eventTitle(event)}</h2>
-    <p class="muted">${context.primary} · ${context.location}</p>
-    <dl>
-      <div><dt>Família</dt><dd>${familyLabel(eventFamily(event))}</dd></div>
-      <div><dt>Horário</dt><dd>${eventTimeRange(event)}</dd></div>
-      <div><dt>Duração</dt><dd>${eventPhysicalStatus(event) === "open" ? "em andamento" : eventDuration(event)}</dd></div>
-      <div><dt>Status físico</dt><dd>${eventStatusLabel(eventPhysicalStatus(event))}</dd></div>
-      <div><dt>Workflow</dt><dd>${workflowLabel(workflow)}</dd></div>
-      <div><dt>Severidade</dt><dd>${eventSeverity(event)}</dd></div>
-      <div><dt>Identificador do evento</dt><dd>${event.event_uuid ? "Disponível" : "—"}</dd></div>
-    </dl>
-    <h3>Evidência</h3>
-    <div class="cx-detail-frame">${evidence ? `<img src="/eventos/${event.id}/evidence" alt="Frame da ocorrência" />` : "Este evento não possui evidência visual disponível."}</div>
-    <h3>O que a Campex observou</h3>
-    <dl>
-      <div><dt>Tipo técnico</dt><dd>${event.technical_type || event.tipo || "—"}</dd></div>
-      <div><dt>Operador presente</dt><dd>${observed.operador_presente ?? event.operador_presente ?? "—"}</dd></div>
-      <div><dt>Confiança</dt><dd>${observed.confianca ?? event.confianca ?? "—"}</dd></div>
-      <div><dt>Pessoas</dt><dd>${observed.quantidade_maxima ?? event.quantidade_maxima ?? event.quantidade_atual ?? "—"}</dd></div>
-      <div><dt>Contexto observado</dt><dd>${eventObservedSummary(event)}</dd></div>
-    </dl>
-    <h3>Contexto da operação</h3>
-    <dl>
-      <div><dt>Empresa</dt><dd>${event.cliente_id || physical.cliente_id || "—"}</dd></div>
-      <div><dt>Unidade</dt><dd>${event.unidade_id || physical.unidade_id || physical.site_id || "—"}</dd></div>
-      <div><dt>Área</dt><dd>${context.area || "—"}</dd></div>
-      <div><dt>Processo</dt><dd>${context.process || "—"}</dd></div>
-      <div><dt>Ativo/posto</dt><dd>${context.asset || "—"}</dd></div>
-      <div><dt>Câmera</dt><dd>${context.camera || "—"}</dd></div>
-    </dl>
-    <h3>Timeline</h3>
-    ${renderTimelineList(eventTimelineSteps(event))}
-    <h3>Gestão do evento</h3>
-    <form class="cx-event-workflow-form" data-event-workflow-form data-event-id="${event.id || ""}" data-workflow="${workflow}">
-      <label>Causa confirmada<input name="confirmed_cause" value="${human.confirmed_cause || event.confirmed_cause || ""}" placeholder="Ex.: falta de material" /></label>
-      <label>Ação tomada<input name="action_taken" value="${human.action_taken || event.action_taken || ""}" placeholder="Ex.: abastecimento solicitado" /></label>
-      <label>Notas<textarea name="human_notes" rows="3" placeholder="Observações da gestão">${human.human_notes || event.human_notes || ""}</textarea></label>
-      <div class="cx-detail-actions">
-        ${workflow === "new" ? `<button type="button" data-event-workflow-action="acknowledge" data-event-id="${event.id}">Reconhecer</button>` : ""}
-        ${workflow !== "resolved" ? `<button type="button" data-event-workflow-action="save-human" data-event-id="${event.id}">Salvar contexto</button><button type="button" data-event-workflow-action="resolve" data-event-id="${event.id}">Resolver</button>` : `<span class="muted">Resolvido por ${human.resolved_by || event.resolved_by || "—"} em ${human.resolved_at || event.resolved_at || "—"}</span>`}
-      </div>
-      <p class="muted" data-event-workflow-status></p>
-    </form>
-    <details>
-      <summary>Detalhe técnico</summary>
-      <pre>${JSON.stringify({ technical_type: event.technical_type || event.tipo, observed_context: observed, human_context: human }, null, 2)}</pre>
-    </details>
+    <section class="cx-event-detail-v1">
+      <header>
+        <span>${familyLabel(eventFamily(event))}</span>
+        <h2>${eventTitle(event)}</h2>
+        <p>${homeContextName(context.primary, "Contexto não informado")} · ${homeContextName(context.location, "Local não informado")}</p>
+      </header>
+      <dl class="cx-event-detail-facts">
+        <div><dt>Estado da ocorrência</dt><dd>${eventPhysicalStatusLabel(event)}</dd></div>
+        <div><dt>Tratamento</dt><dd>${workflowLabel(workflow)}</dd></div>
+        <div><dt>Severidade</dt><dd>${eventSeverityLabel(eventSeverity(event))}</dd></div>
+        <div><dt>Horário</dt><dd>${eventTimeRange(event)}</dd></div>
+        <div><dt>Duração</dt><dd>${eventDisplayDuration(event)}</dd></div>
+      </dl>
+
+      <section>
+        <h3>Evidência</h3>
+        <div class="cx-detail-frame cx-event-evidence-frame">${evidence ? `<img src="/eventos/${event.id}/evidence" alt="Frame da ocorrência" />` : "Nenhuma evidência visual disponível."}</div>
+      </section>
+
+      <section>
+        <h3>O que a Campex observou</h3>
+        <dl>
+          <div><dt>Operador presente</dt><dd>${observed.operador_presente ?? event.operador_presente ?? "Não informado"}</dd></div>
+          <div><dt>Confiança</dt><dd>${observed.confianca ?? event.confianca ?? "Não informado"}</dd></div>
+          <div><dt>Pessoas</dt><dd>${observed.quantidade_maxima ?? event.quantidade_maxima ?? event.quantidade_atual ?? "Não informado"}</dd></div>
+          <div><dt>Resumo observado</dt><dd>${eventObservedSummary(event)}</dd></div>
+        </dl>
+      </section>
+
+      <section>
+        <h3>Contexto da operação</h3>
+        <dl>
+          <div><dt>Empresa</dt><dd>${event.cliente_id || physical.cliente_id || "Não informado"}</dd></div>
+          <div><dt>Unidade</dt><dd>${event.unidade_id || physical.unidade_id || physical.site_id || "Não informado"}</dd></div>
+          <div><dt>Área</dt><dd>${context.area || "Não informado"}</dd></div>
+          <div><dt>Processo</dt><dd>${context.process || "Não informado"}</dd></div>
+          <div><dt>Ativo/posto</dt><dd>${context.asset || "Não informado"}</dd></div>
+          <div><dt>Câmera</dt><dd>${context.camera ? "Disponível" : "Não informado"}</dd></div>
+        </dl>
+      </section>
+
+      <section>
+        <h3>Timeline</h3>
+        ${renderTimelineList(eventTimelineSteps(event))}
+      </section>
+
+      <section>
+        <h3>Tratamento</h3>
+        <form class="cx-event-workflow-form" data-event-workflow-form data-event-id="${event.id || ""}" data-workflow="${workflow}">
+          <label>Causa confirmada<input name="confirmed_cause" value="${human.confirmed_cause || event.confirmed_cause || ""}" placeholder="Ex.: falta de material" /></label>
+          <label>Ação tomada<input name="action_taken" value="${human.action_taken || event.action_taken || ""}" placeholder="Ex.: abastecimento solicitado" /></label>
+          <label>Notas<textarea name="human_notes" rows="3" placeholder="Observações da gestão">${human.human_notes || event.human_notes || ""}</textarea></label>
+          <div class="cx-detail-actions">
+            ${workflow === "new" ? `<button type="button" data-event-workflow-action="acknowledge" data-event-id="${event.id}">Reconhecer</button>` : ""}
+            ${workflow !== "resolved" ? `<button type="button" data-event-workflow-action="save-human" data-event-id="${event.id}">Salvar contexto</button><button type="button" data-event-workflow-action="resolve" data-event-id="${event.id}">Resolver</button>` : `<span class="muted">Resolvido por ${human.resolved_by || event.resolved_by || "—"} em ${eventDateLabel(human.resolved_at || event.resolved_at)}</span>`}
+          </div>
+          <p class="muted" data-event-workflow-status></p>
+        </form>
+      </section>
+
+      <details>
+        <summary>Detalhes técnicos</summary>
+        <pre>${JSON.stringify({ technical_type: eventTechnicalType(event), observed_context: observed, human_context: human }, null, 2)}</pre>
+      </details>
+    </section>
   `;
 }
 
@@ -1492,19 +2411,23 @@ function renderFilters(config) {
 }
 
 function currentRouteConfig() {
-  return routes[window.location.pathname] || routes["/cameras"];
+  return routes[currentRouteKey()] || routes["/cameras"];
 }
 
 function activeRouteKey(path = window.location.pathname) {
+  if (String(path).includes("?")) {
+    return navigationKeyFromUrl(new URL(path, window.location.origin));
+  }
+  if (path === "/home-view") return "/home-view";
   if (path === "/settings" || path.startsWith("/settings/")) return "/settings/cameras";
-  if (path === "/" || path === "/dashboard" || path === "/operations-view") return "/operations-view";
+  if (path === "/" || path === "/dashboard") return "/operations-view";
   return path;
 }
 
 function emptyState(config) {
   const action = config.actionHref
     ? `<a class="cx-primary-action" href="${config.actionHref}">${config.action || "Abrir"}</a>`
-    : `<button type="button">${config.action || "Atualizar"}</button>`;
+    : `<button type="button" data-refresh-workspace>${config.action || "Atualizar"}</button>`;
   return `
     <div class="cx-empty-state">
       <strong>${config.emptyTitle || `Nenhum registro em ${config.title}.`}</strong>
@@ -1526,10 +2449,11 @@ function loginState(config) {
 }
 
 function usesProductMemoryShell(path) {
-  return path === "/operations-view" || path === "/events" || path === "/insights";
+  return path === "/home-view" || path === "/operations-view" || path === "/events" || path === "/insights";
 }
 
-function renderOperationsAuthState() {
+function renderOperationsAuthState(area = "Operations") {
+  const target = area === "Início" ? "%2Foperations-view%3Fview%3Dhome" : "%2Foperations-view";
   title.textContent = "";
   heading.textContent = "";
   subtitle.textContent = "";
@@ -1537,18 +2461,29 @@ function renderOperationsAuthState() {
   tableHint.textContent = "";
   primaryAction.textContent = "Entrar";
   primaryAction.onclick = () => {
-    window.location.href = "/settings/cameras?next=%2Foperations-view#login";
+    window.location.href = `/settings/cameras?next=${target}#login`;
   };
   cards.innerHTML = `
-    <section class="cx-ops-page">
-      <div class="cx-ops-title">
-        <span>Operations</span>
-        <h2>Como está sua operação?</h2>
+    <section class="cx-ops-v1-page">
+      <div class="cx-home-topbar">
+        <div class="cx-home-search">Buscar ativos, incidentes, câmeras...</div>
+        <div class="cx-home-topbar-actions">
+          <span>Unidade principal</span>
+          <span>Login necessário</span>
+        </div>
       </div>
-      <section class="cx-ops-auth cx-ops-empty">
+      <header class="cx-home-header">
+        <div>
+          <span>${area}</span>
+          <h2>${area === "Início" ? "Visão atual da sua operação." : "Acompanhe o estado operacional dos ativos e áreas monitoradas."}</h2>
+          <p>${area === "Início" ? "Dados reais da instalação Campex, sem preenchimento demonstrativo." : "Estados, incidentes e qualidade de dados vindos do runtime e dos eventos reais da Campex."}</p>
+        </div>
+      </header>
+      <section class="cx-home-section cx-ops-auth">
+        <span>${area}</span>
         <strong>Entre para acessar os dados da operação.</strong>
         <p>A Campex protege os dados operacionais do cliente. Faça login para carregar esta instalação.</p>
-        <a class="cx-primary-action" href="/settings/cameras?next=%2Foperations-view#login">Entrar</a>
+        <a class="cx-primary-action" href="/settings/cameras?next=${target}#login">Entrar</a>
       </section>
     </section>
   `;
@@ -1559,6 +2494,145 @@ function renderOperationsAuthState() {
   head.innerHTML = "";
   body.innerHTML = "";
   document.querySelector(".cx-panel")?.classList.add("cx-ops-hide-panel");
+}
+
+function renderEventsAuthState() {
+  title.textContent = "Events";
+  heading.textContent = "Ocorrências e incidentes registrados pela operação.";
+  subtitle.textContent = "Entre para carregar a memória operacional real.";
+  tableTitle.textContent = "";
+  tableHint.textContent = "";
+  primaryAction.textContent = "Entrar";
+  primaryAction.onclick = () => {
+    window.location.href = "/settings/cameras?next=%2Fevents#login";
+  };
+  renderTabs({ tabs: [] });
+  renderFilters({ filters: [] });
+  rowsCache = [];
+  grid.style.display = "none";
+  head.innerHTML = "";
+  body.innerHTML = "";
+  body.closest("table")?.setAttribute("aria-hidden", "true");
+  document.querySelector(".cx-panel")?.classList.add("cx-ops-hide-panel");
+  cards.innerHTML = `
+    <section class="cx-events-v1-page">
+      <div class="cx-home-topbar">
+        <div class="cx-home-search">Buscar ocorrências, ativos, áreas...</div>
+        <div class="cx-home-topbar-actions">
+          <span>Memória operacional</span>
+          <span>Login necessário</span>
+        </div>
+      </div>
+      <header class="cx-home-header">
+        <div>
+          <span>Events</span>
+          <h2>Ocorrências e incidentes registrados pela operação.</h2>
+          <p>A Campex protege os dados operacionais do cliente. Faça login para investigar ocorrências, evidências e tratamento.</p>
+        </div>
+      </header>
+      <section class="cx-home-section cx-events-auth">
+        <strong>Entre para acessar os eventos da operação.</strong>
+        <p>Sem autenticação, a Campex não carrega ocorrências, evidências, workflow ou contexto operacional.</p>
+        <a class="cx-primary-action" href="/settings/cameras?next=%2Fevents#login">Entrar</a>
+      </section>
+    </section>
+  `;
+}
+
+function renderHomeAuthState() {
+  title.textContent = "Início";
+  heading.textContent = "Visão atual da sua operação.";
+  subtitle.textContent = "Entre para carregar dados reais da instalação.";
+  tableTitle.textContent = "";
+  tableHint.textContent = "";
+  primaryAction.textContent = "Entrar";
+  primaryAction.onclick = () => {
+    window.location.href = "/settings/cameras?next=%2Foperations-view%3Fview%3Dhome#login";
+  };
+  renderTabs({ tabs: [] });
+  renderFilters({ filters: [] });
+  rowsCache = [];
+  grid.style.display = "none";
+  head.innerHTML = "";
+  body.innerHTML = "";
+  body.closest("table")?.setAttribute("aria-hidden", "true");
+  document.querySelector(".cx-panel")?.classList.add("cx-ops-hide-panel");
+  cards.innerHTML = `
+    <section class="cx-home-page">
+      <div class="cx-home-topbar">
+        <div class="cx-home-search">Buscar ativos, incidentes, câmeras...</div>
+        <div class="cx-home-topbar-actions">
+          <span>Unidade principal</span>
+          <span>Sessão necessária</span>
+        </div>
+      </div>
+      <header class="cx-home-header">
+        <div>
+          <span>Início</span>
+          <h2>Visão em tempo real da operação, incidentes e atividade.</h2>
+          <p>A Campex protege os dados operacionais do cliente. Faça login para carregar a leitura real da instalação.</p>
+        </div>
+        <div class="cx-home-period">
+          <small>Status</small>
+          <strong>Sessão necessária</strong>
+        </div>
+      </header>
+      <section class="cx-home-now">
+        <div class="cx-home-section-head">
+          <span>Operação agora</span>
+          ${badge("Indisponível")}
+        </div>
+        ${renderHomeProtectedMetrics()}
+        <div class="cx-home-empty compact">
+          <strong>Entre para acessar os dados da operação.</strong>
+          <p>Sem autenticação, a Campex não carrega tenant, ativos, incidentes, briefing, impacto ou cobertura.</p>
+          <a class="cx-primary-action" href="/settings/cameras?next=%2Foperations-view%3Fview%3Dhome#login">Entrar</a>
+        </div>
+      </section>
+      <section class="cx-home-primary-grid">
+        <section class="cx-home-attention">
+          <div class="cx-home-section-head"><span>O que merece atenção</span><small>Protegido</small></div>
+          <article class="cx-home-attention-card unknown">
+            <span>Sessão necessária</span>
+            <strong>Aguardando login.</strong>
+            <p>Incidentes críticos reais aparecem aqui após a autenticação.</p>
+          </article>
+        </section>
+        <section class="cx-home-activity">
+          <div class="cx-home-section-head"><span>Atividade operacional</span><small>Protegido</small></div>
+          ${renderHomeActivityLegend()}
+          <div class="cx-home-empty"><strong>Aguardando dados da operação.</strong><p>A atividade recente aparecerá quando houver observações suficientes.</p></div>
+        </section>
+      </section>
+      <section class="cx-home-balanced-grid">
+        <section class="cx-home-section">
+          <div class="cx-home-section-head"><span>Ativos / áreas</span><small>Protegido</small></div>
+          <div class="cx-home-empty"><strong>Dados protegidos.</strong><p>Ativos reais aparecem após login.</p></div>
+        </section>
+        <section class="cx-home-section">
+          <div class="cx-home-section-head"><span>Incidentes recentes</span><small>Protegido</small></div>
+          <div class="cx-home-empty"><strong>Dados protegidos.</strong><p>Incidentes reais aparecem após login.</p></div>
+        </section>
+      </section>
+      <section class="cx-home-balanced-grid">
+        <section class="cx-home-section">
+          <div class="cx-home-section-head"><span>Resumo do período</span><small>Protegido</small></div>
+          <div class="cx-home-empty"><strong>Dados protegidos.</strong><p>O briefing real aparece após login.</p></div>
+        </section>
+        <section class="cx-home-section">
+          <div class="cx-home-section-head"><span>Impacto operacional</span><small>Protegido</small></div>
+          <div class="cx-home-impact">
+            <article><span>Impacto operacional</span><strong>Não disponível</strong><small>Entre para carregar dados reais</small></article>
+            <article><span>Impacto financeiro</span><strong>Não configurado</strong><small>Protegido</small></article>
+          </div>
+        </section>
+      </section>
+      <section class="cx-home-quality-section">
+        <div class="cx-home-section-head"><span>Qualidade dos dados</span><small>Protegido</small></div>
+        <div class="cx-home-quality"><p>Cobertura, gaps e dados insuficientes dependem do tenant autenticado.</p></div>
+      </section>
+    </section>
+  `;
 }
 
 function renderRows(config) {
@@ -1639,15 +2713,17 @@ async function openDrawer(row, config) {
 }
 
 async function loadPage(path = window.location.pathname) {
-  const config = routes[path];
+  const key = currentRouteKey();
+  const config = routes[key] || routes[path];
   if (!config) {
     renderNotFound(path);
     return;
   }
-  document.body.classList.toggle("cx-operations-mode", path === "/operations-view");
+  document.body.classList.toggle("cx-home-mode", key === "/home-view");
+  document.body.classList.toggle("cx-operations-mode", key === "/operations-view");
   document.body.classList.toggle("cx-events-mode", path === "/events");
   document.body.classList.toggle("cx-intelligence-mode", path === "/insights");
-  if (path !== "/operations-view" && path !== "/insights") {
+  if (key !== "/home-view" && key !== "/operations-view" && path !== "/insights") {
     document.querySelector(".cx-panel")?.classList.remove("cx-ops-hide-panel");
   }
   if (config.external) {
@@ -1659,8 +2735,9 @@ async function loadPage(path = window.location.pathname) {
   closeSidePanels();
   closeDrawer();
   document.querySelectorAll("[data-route], .cx-nav a").forEach((link) => {
-    const href = link.dataset.route || new URL(link.href, window.location.origin).pathname;
-    const active = activeRouteKey(href) === activeRouteKey(path);
+    const url = new URL(link.href, window.location.origin);
+    const href = link.dataset.route || navigationKeyFromUrl(url);
+    const active = activeRouteKey(href) === activeRouteKey(key);
     link.classList.toggle("active", active);
     link.setAttribute("aria-current", active ? "page" : "false");
     const label = link.textContent.trim();
@@ -1673,6 +2750,7 @@ async function loadPage(path = window.location.pathname) {
   subtitle.textContent = config.subtitle;
   tableTitle.textContent = path === "/events" ? "Eventos registrados" : config.title;
   tableHint.textContent = config.subtitle;
+  body.closest("table")?.setAttribute("aria-hidden", "false");
   primaryAction.textContent = config.action || "Nova ação";
   primaryAction.onclick = () => {
     if (config.actionType === "visual-rule") {
@@ -1684,7 +2762,7 @@ async function loadPage(path = window.location.pathname) {
       return;
     }
     if (config.actionHref) window.location.href = config.actionHref;
-    else openPopover(primaryAction, config.action || "Ação futura", ["Recurso futuro do piloto", "Nenhuma alteração feita"]);
+    else loadPage(window.location.pathname);
   };
   cards.innerHTML = usesProductMemoryShell(path) ? "" : [
     `<article><strong id="workspaceCount">—</strong><span>Registros</span></article>`,
@@ -1696,8 +2774,10 @@ async function loadPage(path = window.location.pathname) {
   try {
     const auth = await authStatus();
     if (!auth.authenticated && !auth.bootstrap && config.endpoint !== "/health") {
-      if (path === "/operations-view") {
-        renderOperationsAuthState();
+      if (key === "/home-view" || key === "/operations-view" || key === "/events") {
+        if (key === "/home-view") renderHomeAuthState();
+        else if (key === "/events") renderEventsAuthState();
+        else renderOperationsAuthState("Operations");
         document.querySelector(".cx-main")?.scrollTo({ top: 0, behavior: "smooth" });
         return;
       }
@@ -1729,18 +2809,22 @@ async function loadPage(path = window.location.pathname) {
 }
 
 function navigateTo(path) {
-  if (!routes[path]) {
+  const url = new URL(path, window.location.origin);
+  const key = navigationKeyFromUrl(url);
+  if (!routes[key] && !routes[url.pathname]) {
     window.location.href = path;
     return;
   }
-  if (routes[path].external) {
+  const route = routes[key] || routes[url.pathname];
+  if (route.external) {
     window.location.href = path;
     return;
   }
-  if (window.location.pathname !== path) {
-    window.history.pushState({ path }, "", path);
+  const nextPath = `${url.pathname}${url.search}`;
+  if (`${window.location.pathname}${window.location.search}` !== nextPath) {
+    window.history.pushState({ path: nextPath }, "", nextPath);
   }
-  loadPage(path);
+  loadPage(url.pathname);
 }
 
 tabs.addEventListener("click", (event) => {
@@ -1764,6 +2848,44 @@ filters.addEventListener("change", (event) => {
     operationsSelectedPeriod = periodSelect.value;
     loadPage(window.location.pathname);
   }
+  const stateSelect = event.target.closest("#operationsStateFilter");
+  if (stateSelect) {
+    operationsSelectedState = stateSelect.value;
+    loadPage(window.location.pathname);
+  }
+  const assetSelect = event.target.closest("#operationsAssetFilter");
+  if (assetSelect) {
+    operationsSelectedAsset = assetSelect.value;
+    loadPage(window.location.pathname);
+  }
+  const eventsPeriod = event.target.closest("#eventsPeriodFilter");
+  if (eventsPeriod) {
+    eventsSelectedPeriod = eventsPeriod.value;
+    loadPage(window.location.pathname);
+  }
+  const eventsStatus = event.target.closest("#eventsStatusFilter");
+  if (eventsStatus) {
+    eventsSelectedStatus = eventsStatus.value;
+    loadPage(window.location.pathname);
+  }
+  const eventsSeverity = event.target.closest("#eventsSeverityFilter");
+  if (eventsSeverity) {
+    eventsSelectedSeverity = eventsSeverity.value;
+    loadPage(window.location.pathname);
+  }
+  const eventsFamily = event.target.closest("#eventsFamilyFilter");
+  if (eventsFamily) {
+    eventsSelectedFamily = eventsFamily.value;
+    loadPage(window.location.pathname);
+  }
+});
+
+filters.addEventListener("input", (event) => {
+  const eventsContext = event.target.closest("#eventsContextFilter");
+  if (eventsContext) {
+    eventsContextQuery = eventsContext.value;
+    loadPage(window.location.pathname);
+  }
 });
 
 document.body.addEventListener("click", async (event) => {
@@ -1778,10 +2900,11 @@ document.body.addEventListener("click", async (event) => {
   if (link) {
     const url = new URL(link.href, window.location.origin);
     const sameOrigin = url.origin === window.location.origin;
-    const route = routes[url.pathname];
+    const key = navigationKeyFromUrl(url);
+    const route = routes[key] || routes[url.pathname];
     if (sameOrigin && route && !route.external && !link.target && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
       event.preventDefault();
-      navigateTo(url.pathname);
+      navigateTo(`${url.pathname}${url.search}`);
       return;
     }
   }
@@ -1843,13 +2966,21 @@ document.body.addEventListener("click", async (event) => {
     }
     return;
   }
+  const refreshButton = event.target.closest("[data-refresh-workspace]");
+  if (refreshButton) {
+    await loadPage(window.location.pathname);
+    return;
+  }
   const ruleForm = event.target.closest("#visualRuleForm");
   if (ruleForm && event.type === "submit") return;
   const row = event.target.closest("[data-row-index]");
   const menu = event.target.closest("[data-open-detail]");
   if (!row && !menu) return;
   const index = row ? Number(row.dataset.rowIndex) : 0;
-  await openDrawer(rowsCache.filter(matchesTab).filter(includesSearch)[index] || rowsCache[0], currentRouteConfig());
+  const sourceRows = document.body.classList.contains("cx-events-mode")
+    ? rowsCache
+    : rowsCache.filter(matchesTab).filter(includesSearch);
+  await openDrawer(sourceRows[index] || sourceRows[0] || rowsCache[0], currentRouteConfig());
 });
 
 document.body.addEventListener("submit", async (event) => {

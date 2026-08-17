@@ -347,6 +347,7 @@ class Edge24x7AnalyticsTest(unittest.TestCase):
                 "campex-api",
                 "campex-camera-runtime",
                 "campex-outbox-sync",
+                "campex-alert-decisioning",
                 "campex-alert-delivery-resume",
             ],
         )

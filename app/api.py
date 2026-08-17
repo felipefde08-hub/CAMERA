@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.camera_rtsp import build_rtsp_url, test_rtsp_connection
-from app.alerts import enqueue_event_alert, resume_pending_deliveries, retry_delivery, send_test_alert, stream_events
+from app.alerts import email_configuration_status, enqueue_alert_decisions_with_connection, enqueue_event_alert, resume_pending_deliveries, retry_delivery, send_test_alert, stream_events
 from app.analytics import aggregate_period, compute_summary, current_period_range, data_quality, generate_insights, parse_dt, timeline
 from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, get_request_user, require_role, require_user, tenant_filter, update_user_password, users_exist
 from app.config import ROOT
@@ -23,7 +23,7 @@ from app.database import connect, init_db
 from app.event_workflow import acknowledge_event, event_detail, resolve_event, update_human_context, update_operational_memory
 from app.context_engine import ContextPackAccessError, ContextPackNotFoundError, build_context_pack
 from app.intelligence_reasoning import ReasoningEngine, ReasoningError, reasoning_error_response
-from app.live_stream import LiveStreamManager
+from app.live_stream import LiveStreamManager, calibration_separation
 from app.recommendation_engine import RecommendationEngine, RecommendationError, recommendation_error_response
 from app.operational_read_model import (
     ReadModelFilters,
@@ -32,10 +32,14 @@ from app.operational_read_model import (
     daily_report as read_model_daily_report,
     intelligence as read_model_intelligence,
     losses as read_model_losses,
+    operational_change_anomalies as read_model_change_anomalies,
     operational_data as read_model_operational_data,
+    operational_timeline as read_model_timeline,
     parse_datetime as read_model_parse_datetime,
     period_bounds as read_model_period_bounds,
     period_summary as read_model_summary,
+    video_context_by_id as read_model_video_context_by_id,
+    video_contexts as read_model_video_contexts,
 )
 from app.operational_context import (
     apply_context_to_camera,
@@ -43,6 +47,23 @@ from app.operational_context import (
     criar_operational_asset,
     criar_operational_process,
     resolve_context,
+)
+from app.operational_alerting import (
+    AlertDecisionFilters,
+    evaluate_alert_decisions,
+    get_alert_decision,
+    list_alert_decisions,
+)
+from app.operational_briefing import operational_shift_briefing
+from app.operational_impact import (
+    calculate_operational_impact,
+    get_asset_economic_config,
+    upsert_asset_economic_config,
+)
+from app.operational_understanding import (
+    UnderstandingFilters,
+    get_validated_understanding,
+    list_validated_understandings,
 )
 from app.models import (
     atualizar_evento,
@@ -97,6 +118,7 @@ from app.operations_history import (
 from app.reports import daily_report_data
 from app.restricted_area import normalize_points
 from app.visual_rule_engine import condition_templates, default_rule_payloads, evaluate_rule
+from app.video_understanding import VideoUnderstandingError, VideoUnderstandingService
 from shared.schemas import now_iso
 
 api = FastAPI(title="Visual Operations Internal API")
@@ -444,6 +466,15 @@ class MachineCalibrationIn(BaseModel):
     stopped_motion: Optional[float] = None
     samples: Optional[list[float]] = None
     duration_seconds: float = 20.0
+
+
+class AssetEconomicConfigIn(BaseModel):
+    method: Optional[str] = None
+    downtime_cost_per_hour: Optional[float] = None
+    production_rate_per_hour: Optional[float] = None
+    contribution_value_per_unit: Optional[float] = None
+    currency: str = "BRL"
+    effective_from: Optional[str] = None
 
 
 class SetupAreaIn(BaseModel):
@@ -1145,6 +1176,20 @@ def _setup_asset_status(asset: dict[str, Any], cameras: list[dict[str, Any]], ar
     }
 
 
+def _has_operational_context(item: dict[str, Any] | None) -> bool:
+    if not item:
+        return False
+    return bool(item.get("site_id") or item.get("unit_id") or item.get("unidade_id")) and bool(
+        item.get("area_context_id") and item.get("process_id") and item.get("asset_id")
+    )
+
+
+def _camera_context_ready(camera: dict[str, Any], monitors: list[dict[str, Any]]) -> bool:
+    if _has_operational_context(camera):
+        return True
+    return any(_has_operational_context(monitor) for monitor in monitors if monitor.get("camera_id") == camera.get("id"))
+
+
 def _check_item(status_value: str, label: str, detail: str) -> dict[str, str]:
     return {"status": status_value, "label": label, "detail": detail}
 
@@ -1178,11 +1223,8 @@ def _setup_installation_readiness(
     ]
     active_monitors = [monitor for monitor in monitors if monitor.get("ativo")]
     ready_monitors = [monitor for monitor in active_monitors if monitor.get("calibration_result") == "READY"]
-    smtp_mode = os.getenv("CAMPEX_EMAIL_MODE", "").strip().lower()
-    smtp_configured = smtp_mode == "console" or (
-        smtp_mode == "smtp"
-        and all(os.getenv(name) for name in ("CAMPEX_SMTP_HOST", "CAMPEX_SMTP_USERNAME", "CAMPEX_SMTP_PASSWORD"))
-    )
+    context_ready_cameras = [camera for camera in active_cameras if _camera_context_ready(camera, monitors)]
+    email_config = email_configuration_status()
     with connect() as connection:
         init_db(connection)
         recipients = connection.execute("SELECT COUNT(*) AS total FROM alert_recipients WHERE ativo = 1").fetchone()["total"]
@@ -1192,9 +1234,9 @@ def _setup_installation_readiness(
         _check_item("PASS" if clientes else "FAIL", "Empresa", f"{len(clientes)} empresa(s) cadastrada(s)"),
         _check_item("PASS" if unidades else "FAIL", "Unidade", f"{len(unidades)} unidade(s) cadastrada(s)"),
         _check_item(
-            "PASS" if areas and processes and assets else "FAIL",
+            "PASS" if areas and processes and assets and context_ready_cameras else "FAIL",
             "Contexto operacional",
-            f"áreas={len(areas)}, processos={len(processes)}, ativos={len(assets)}",
+            f"áreas={len(areas)}, processos={len(processes)}, ativos={len(assets)}, câmeras_contextualizadas={len(context_ready_cameras)}",
         ),
         _check_item("PASS" if cameras else "FAIL", "Câmera cadastrada", f"{len(cameras)} câmera(s)"),
         _check_item(
@@ -1211,9 +1253,9 @@ def _setup_installation_readiness(
             "monitor READY" if ready_monitors else "Pendente: câmera precisa estar online para calibrar",
         ),
         _check_item(
-            "PASS" if recipients and smtp_configured else "FAIL",
+            "PASS" if recipients and email_config["status"] == "CONFIGURED" else "FAIL",
             "Alertas",
-            f"destinatários={recipients}, modo={smtp_mode or 'não configurado'}",
+            f"destinatários={recipients}, modo={email_config.get('mode') or 'não configurado'}, status={email_config['status']}",
         ),
         _check_item("PASS" if heartbeat else "PENDING", "Edge", "heartbeat recebido" if heartbeat else "Edge ainda não registrou heartbeat"),
         _check_item(
@@ -1798,11 +1840,11 @@ def _public_live_event(event: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def _live_context(connection, camera: dict[str, Any], status_payload: dict[str, Any] | None = None) -> dict[str, Any]:
     camera_id = str(camera.get("id"))
-    context = resolve_context(connection, camera_id=camera_id)
     monitor = None
     monitors = listar_machine_monitors_camera(connection, camera_id)
     if monitors:
         monitor = monitors[0]
+    context = resolve_context(connection, camera_id=camera_id, machine_monitor_id=monitor.get("id") if monitor else None)
     area_name = _lookup_name(connection, "operational_areas", context.get("area_context_id"))
     process_name = _lookup_name(connection, "operational_processes", context.get("process_id"))
     asset_name = _lookup_name(connection, "operational_assets", context.get("asset_id"))
@@ -2341,7 +2383,7 @@ def get_local_diagnostics(request: Request) -> dict[str, object]:
         "regras_ativas": rules,
         "eventos_abertos": open_events,
         "outbox_pendente": outbox,
-        "email_mode": os.getenv("CAMPEX_EMAIL_MODE", "console"),
+        "email_mode": email_configuration_status(),
         "ultima_entrega": dict(last_delivery) if last_delivery else None,
         "disco_livre_percentual": round(100 - disk.percent, 2),
     }
@@ -2832,17 +2874,32 @@ def get_machine_monitor_calibration_status(monitor_id: str, request: Request) ->
             raise HTTPException(status_code=403, detail="Monitor de outro cliente.")
     stream = live_streams.get(str(monitor["camera_id"]))
     stream_status = stream.calibration_status() if stream else {"status": "idle"}
+    active_calibration = monitor.get("active_calibration")
+    stopped_calibration = monitor.get("stopped_calibration")
+    separation = calibration_separation(active_calibration, stopped_calibration)
+    diagnostics = {
+        "active_baseline": monitor.get("active_baseline"),
+        "stopped_baseline": monitor.get("stopped_baseline"),
+        "active_samples": (active_calibration or {}).get("samples_count") if isinstance(active_calibration, dict) else 0,
+        "stopped_samples": (stopped_calibration or {}).get("samples_count") if isinstance(stopped_calibration, dict) else 0,
+        "active_noise": monitor.get("active_noise"),
+        "stopped_noise": monitor.get("stopped_noise"),
+        "separability": monitor.get("separation_score"),
+        "separation": separation,
+        "reason": separation.get("message"),
+    }
     return {
         "machine_id": monitor_id,
         "camera_id": monitor["camera_id"],
         "stream": stream_status,
-        "active_calibration": monitor.get("active_calibration"),
-        "stopped_calibration": monitor.get("stopped_calibration"),
+        "active_calibration": active_calibration,
+        "stopped_calibration": stopped_calibration,
         "active_baseline": monitor.get("active_baseline"),
         "stopped_baseline": monitor.get("stopped_baseline"),
         "separation_score": monitor.get("separation_score"),
         "calibration_result": monitor.get("calibration_result"),
         "calibration_status": monitor.get("calibration_status"),
+        "diagnostics": diagnostics,
     }
 
 
@@ -3376,15 +3433,42 @@ def get_operations_summary(
 @api.get("/operations/timeline")
 def get_operations_timeline(
     request: Request,
+    period: str = "day",
     start: Optional[str] = None,
     end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
     camera_id: Optional[str] = None,
-    machine_name: Optional[str] = None,
-) -> list[dict[str, Any]]:
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
-        require_camera_access(connection, require_user(request, connection), camera_id)
-        return operations_timeline(connection, start, end, camera_id, machine_name)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+            start=start,
+            end=end,
+            period=period,
+        )
+        try:
+            return read_model_timeline(connection, filters)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @api.get("/operations/events")
@@ -3720,6 +3804,437 @@ def get_operations_read_model_daily_report(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@api.get("/operations/change-anomalies")
+def get_operations_change_anomalies(
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+            start=start,
+            end=end,
+            period=period,
+        )
+        try:
+            return read_model_change_anomalies(connection, filters)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.get("/operations/impact")
+def get_operations_impact(
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            start=start,
+            end=end,
+            period=period,
+        )
+        try:
+            return calculate_operational_impact(connection, filters)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.get("/operations/assets/{asset_id}/economic-config")
+def get_operations_asset_economic_config(asset_id: str, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        config = get_asset_economic_config(connection, asset_id, tenant_id=tenant_filter(user))
+    if config is None:
+        raise HTTPException(status_code=404, detail="Ativo operacional não encontrado.")
+    return config
+
+
+@api.put("/operations/assets/{asset_id}/economic-config")
+def put_operations_asset_economic_config(asset_id: str, payload: AssetEconomicConfigIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        effective_from = read_model_parse_datetime(payload.effective_from) if payload.effective_from else None
+        try:
+            config = upsert_asset_economic_config(
+                connection,
+                asset_id,
+                tenant_id=tenant_filter(user),
+                method=payload.method,
+                downtime_cost_per_hour=payload.downtime_cost_per_hour,
+                production_rate_per_hour=payload.production_rate_per_hour,
+                contribution_value_per_unit=payload.contribution_value_per_unit,
+                currency=payload.currency,
+                effective_from=effective_from,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if config is None:
+        raise HTTPException(status_code=404, detail="Ativo operacional não encontrado.")
+    return config
+
+
+@api.post("/operations/alert-decisions/evaluate")
+def post_operations_alert_decisions_evaluate(
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+            start=start,
+            end=end,
+            period=period,
+        )
+        try:
+            payload = evaluate_alert_decisions(connection, filters)
+            payload["delivery_ids"] = enqueue_alert_decisions_with_connection(connection, payload.get("decisions") or [])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return payload
+
+
+@api.get("/operations/alert-decisions")
+def get_operations_alert_decisions(
+    request: Request,
+    camera_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    decision: Optional[str] = None,
+    severity: Optional[str] = None,
+    alert_type: Optional[str] = None,
+    active: Optional[bool] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        records = list_alert_decisions(
+            connection,
+            AlertDecisionFilters(
+                tenant_id=tenant_filter(user),
+                camera_id=camera_id,
+                asset_id=asset_id,
+                decision=decision,
+                severity=severity,
+                alert_type=alert_type,
+                active=active,
+                start=start,
+                end=end,
+            ),
+        )
+    return {"decisions": records, "total": len(records)}
+
+
+@api.get("/operations/alert-decisions/{decision_id}")
+def get_operations_alert_decision_detail(decision_id: str, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        record = get_alert_decision(connection, decision_id, tenant_id=tenant_filter(user))
+    if record is None:
+        raise HTTPException(status_code=404, detail="Decisão de alerta não encontrada.")
+    return record
+
+
+@api.get("/operations/briefing")
+def get_operations_briefing(
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+            start=start,
+            end=end,
+            period=period,
+        )
+        try:
+            return operational_shift_briefing(connection, filters)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.get("/operations/video-contexts")
+def get_operations_video_contexts(
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+    trigger_type: Optional[str] = None,
+    before_seconds: int = 300,
+    after_seconds: int = 300,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = _read_model_filters(
+            user,
+            cliente_id=cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+            event_family=event_family,
+            tipo=tipo,
+            workflow_status=workflow_status,
+            start=start,
+            end=end,
+            period=period,
+        )
+        try:
+            return read_model_video_contexts(
+                connection,
+                filters,
+                trigger_type=trigger_type,
+                before_seconds=before_seconds,
+                after_seconds=after_seconds,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.get("/operations/video-contexts/{context_id}")
+def get_operations_video_context_detail(
+    context_id: str,
+    request: Request,
+    period: str = "day",
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    event_family: Optional[str] = None,
+    tipo: Optional[str] = None,
+    workflow_status: Optional[str] = None,
+    before_seconds: int = 300,
+    after_seconds: int = 300,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        if start or end:
+            filters = _read_model_filters(
+                user,
+                cliente_id=cliente_id,
+                site_id=site_id,
+                area_context_id=area_context_id,
+                process_id=process_id,
+                asset_id=asset_id,
+                camera_id=camera_id,
+                event_family=event_family,
+                tipo=tipo,
+                workflow_status=workflow_status,
+                start=start,
+                end=end,
+                period=period,
+            )
+        else:
+            filters = ReadModelFilters(
+                cliente_id=tenant_filter(user) or cliente_id,
+                site_id=site_id,
+                area_context_id=area_context_id,
+                process_id=process_id,
+                asset_id=asset_id,
+                camera_id=camera_id,
+                event_family=event_family,
+                tipo=tipo,
+                workflow_status=workflow_status,
+            )
+        try:
+            context = read_model_video_context_by_id(
+                connection,
+                filters,
+                context_id=context_id,
+                before_seconds=before_seconds,
+                after_seconds=after_seconds,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if context is None:
+        raise HTTPException(status_code=404, detail="Contexto de vídeo não encontrado.")
+    return context
+
+
+@api.post("/operations/video-understanding/{context_id}")
+def post_operations_video_understanding(
+    context_id: str,
+    request: Request,
+    cliente_id: Optional[str] = None,
+    site_id: Optional[str] = None,
+    area_context_id: Optional[str] = None,
+    process_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        filters = ReadModelFilters(
+            cliente_id=tenant_filter(user) or cliente_id,
+            site_id=site_id,
+            area_context_id=area_context_id,
+            process_id=process_id,
+            asset_id=asset_id,
+            camera_id=camera_id,
+        )
+        try:
+            return VideoUnderstandingService().analyze_context(connection, filters, context_id)
+        except VideoUnderstandingError as exc:
+            status_code = 404 if exc.code == "VIDEO_CONTEXT_NOT_FOUND" else 503 if exc.code == "VIDEO_UNDERSTANDING_PROVIDER_NOT_CONFIGURED" else 502
+            raise HTTPException(status_code=status_code, detail={"code": exc.code, "message": exc.message}) from exc
+
+
+@api.get("/operations/video-understandings")
+def get_operations_video_understandings(
+    request: Request,
+    context_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    asset_id: Optional[str] = None,
+    status: Optional[str] = None,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_camera_access(connection, user, camera_id)
+        records = list_validated_understandings(
+            connection,
+            UnderstandingFilters(
+                tenant_id=tenant_filter(user),
+                context_id=context_id,
+                camera_id=camera_id,
+                asset_id=asset_id,
+                status=status,
+                provider=provider,
+                model=model,
+                start=start,
+                end=end,
+            ),
+        )
+    return {"understandings": records, "total": len(records)}
+
+
+@api.get("/operations/video-understandings/{understanding_id}")
+def get_operations_video_understanding_detail(understanding_id: str, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        record = get_validated_understanding(connection, understanding_id, tenant_id=tenant_filter(user))
+    if record is None:
+        raise HTTPException(status_code=404, detail="Video Understanding não encontrado.")
+    return record
+
+
 @api.get("/analytics/summary")
 def get_analytics_summary(
     request: Request,
@@ -3944,6 +4459,7 @@ def delete_alert_recipient(recipient_id: str, request: Request) -> dict[str, obj
 
 @api.post("/alert-recipients/{recipient_id}/test")
 def post_alert_recipient_test(recipient_id: str, request: Request) -> dict[str, object]:
+    email_config = email_configuration_status()
     with connect() as connection:
         init_db(connection)
         user = require_user(request, connection)
@@ -3954,7 +4470,7 @@ def post_alert_recipient_test(recipient_id: str, request: Request) -> dict[str, 
     delivery_id = send_test_alert(recipient_id)
     if delivery_id is None:
         raise HTTPException(status_code=404, detail="Responsavel nao encontrado.")
-    return {"delivery_id": delivery_id, "status": "pending"}
+    return {"delivery_id": delivery_id, "status": "pending", "email_configuration": email_config}
 
 
 @api.get("/alert-deliveries")

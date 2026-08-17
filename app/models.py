@@ -1301,6 +1301,8 @@ def alert_recipient_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, 
 def alert_delivery_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     data = dict(row)
     data["is_test"] = bool(data["is_test"])
+    if "payload_json" in data:
+        data["payload"] = json.loads(data.pop("payload_json") or "{}")
     return data
 
 
@@ -1411,6 +1413,11 @@ def criar_alert_delivery(
     canal: str = "email",
     status: str = "pending",
     is_test: bool = False,
+    decision_id: str | None = None,
+    incident_key: str | None = None,
+    alert_type: str | None = None,
+    severity: str | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> str:
     delivery_id = new_id("del")
     if evento_id is not None:
@@ -1420,13 +1427,34 @@ def criar_alert_delivery(
         ).fetchone()
         if existing:
             return str(existing["id"])
+    if decision_id is not None:
+        existing = connection.execute(
+            "SELECT id FROM alert_deliveries WHERE decision_id = ? AND recipient_id = ? AND canal = ?",
+            (decision_id, recipient_id, canal),
+        ).fetchone()
+        if existing:
+            return str(existing["id"])
     connection.execute(
         """
         INSERT INTO alert_deliveries (
-            id, evento_id, recipient_id, destinatario, canal, status, is_test
-        ) VALUES (?, ?, ?, (SELECT email FROM alert_recipients WHERE id = ?), ?, ?, ?)
+            id, evento_id, decision_id, incident_key, alert_type, severity,
+            recipient_id, destinatario, canal, status, is_test, payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, (SELECT email FROM alert_recipients WHERE id = ?), ?, ?, ?, ?)
         """,
-        (delivery_id, evento_id, recipient_id, recipient_id, canal, status, 1 if is_test else 0),
+        (
+            delivery_id,
+            evento_id,
+            decision_id,
+            incident_key,
+            alert_type,
+            severity,
+            recipient_id,
+            recipient_id,
+            canal,
+            status,
+            1 if is_test else 0,
+            json.dumps(payload or {}, ensure_ascii=False),
+        ),
     )
     connection.commit()
     return delivery_id
@@ -1607,6 +1635,10 @@ def machine_monitor_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, 
     stopped_calibration = data.pop("stopped_calibration_json", None)
     data["active_calibration"] = json.loads(active_calibration) if active_calibration else None
     data["stopped_calibration"] = json.loads(stopped_calibration) if stopped_calibration else None
+    has_partial_calibration = bool(data["active_calibration"] or data["stopped_calibration"])
+    if data.get("calibration_result") == "INVALID" and has_partial_calibration and (not data["active_calibration"] or not data["stopped_calibration"]):
+        data["calibration_result"] = "CALIBRATION_REQUIRED"
+        data["calibration_status"] = "calibration_pending"
     return data
 
 

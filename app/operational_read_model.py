@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import json
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -296,6 +297,162 @@ def _sample_has_inference_signal(sample: dict[str, Any]) -> bool:
         return False
 
 
+def _context_names(connection: sqlite3.Connection, ids: set[str]) -> dict[str, str]:
+    if not ids:
+        return {}
+    lookups = [
+        ("unidades", "nome"),
+        ("operational_areas", "nome"),
+        ("operational_processes", "nome"),
+        ("operational_assets", "nome"),
+        ("cameras", "nome"),
+        ("machine_monitors", "nome"),
+        ("areas_monitoradas", "nome"),
+    ]
+    names: dict[str, str] = {}
+    for table, column in lookups:
+        try:
+            placeholders = ",".join("?" for _ in ids)
+            rows = connection.execute(f"SELECT id, {column} AS name FROM {table} WHERE id IN ({placeholders})", tuple(ids)).fetchall()
+        except sqlite3.Error:
+            continue
+        for row in rows:
+            names[str(row["id"])] = str(row["name"])
+    return names
+
+
+def _timeline_context(source: dict[str, Any], names: dict[str, str]) -> dict[str, Any]:
+    unit_id = source.get("unit_id") or source.get("unidade_id") or source.get("site_id")
+    area_id = source.get("area_context_id")
+    process_id = source.get("process_id")
+    asset_id = source.get("asset_id")
+    camera_id = source.get("camera_id")
+    machine_id = source.get("machine_id") or source.get("machine_monitor_id")
+    zone_id = source.get("zone_id") or source.get("area_id")
+    return {
+        "site_id": source.get("site_id") or unit_id,
+        "unit_id": unit_id,
+        "area_id": area_id,
+        "process_id": process_id,
+        "asset_id": asset_id,
+        "camera_id": camera_id,
+        "machine_id": machine_id,
+        "zone_id": zone_id,
+        "site_name": names.get(str(source.get("site_id") or unit_id)) if (source.get("site_id") or unit_id) else None,
+        "unit_name": names.get(str(unit_id)) if unit_id else None,
+        "area_name": names.get(str(area_id)) if area_id else None,
+        "process_name": names.get(str(process_id)) if process_id else None,
+        "asset_name": names.get(str(asset_id)) if asset_id else None,
+        "camera_name": names.get(str(camera_id)) if camera_id else None,
+        "machine_name": names.get(str(machine_id)) if machine_id else None,
+        "zone_name": names.get(str(zone_id)) if zone_id else None,
+    }
+
+
+def _timeline_context_label(context: dict[str, Any]) -> str:
+    return (
+        context.get("asset_name")
+        or context.get("machine_name")
+        or context.get("process_name")
+        or context.get("area_name")
+        or context.get("camera_name")
+        or context.get("asset_id")
+        or context.get("machine_id")
+        or context.get("camera_id")
+        or "Operação"
+    )
+
+
+def _data_quality_from_sample(sample: dict[str, Any], observation: dict[str, Any] | None = None) -> str:
+    if observation and observation.get("data_quality"):
+        return str(observation["data_quality"])
+    if sample.get("camera_online") == 0:
+        return "camera_offline"
+    if not _sample_has_inference_signal(sample):
+        return "inference_unavailable"
+    return "observed"
+
+
+def _add_timeline_transition(
+    items: list[dict[str, Any]],
+    open_segments: dict[tuple[Any, ...], dict[str, Any]],
+    *,
+    key: tuple[Any, ...],
+    timestamp: datetime,
+    item_type: str,
+    context: dict[str, Any],
+    previous_state: str | None,
+    new_state: str,
+    confidence: float | None,
+    data_quality: str,
+    evidence_refs: list[dict[str, Any]] | None = None,
+    event_uuid: str | None = None,
+) -> None:
+    previous_item = open_segments.get(key)
+    if previous_item:
+        previous_time = parse_datetime(previous_item["timestamp"])
+        previous_item["duration_seconds"] = max(0.0, (timestamp - previous_time).total_seconds())
+    label = _timeline_context_label(context)
+    title_state = new_state.replace("_", " ")
+    item = {
+        "timestamp": to_iso(timestamp),
+        "type": item_type,
+        "context": context,
+        "title": f"{label} -> {title_state}",
+        "description": f"{item_type} mudou de {previous_state or 'sem estado anterior'} para {new_state}.",
+        "previous_state": previous_state,
+        "new_state": new_state,
+        "duration_seconds": None,
+        "confidence": confidence,
+        "data_quality": data_quality,
+        "event_uuid": event_uuid,
+        "evidence_refs": evidence_refs or [],
+    }
+    items.append(item)
+    open_segments[key] = item
+
+
+def _state_from_observations(sample: dict[str, Any], observation_type: str) -> list[dict[str, Any]]:
+    metadata = sample.get("metadata") or {}
+    observations = metadata.get("canonical_observations")
+    if not isinstance(observations, list):
+        return []
+    return [
+        observation
+        for observation in observations
+        if isinstance(observation, dict) and observation.get("observation_type") == observation_type
+    ]
+
+
+def _derive_operational_activity(machine_state: str | None, presence_state: str | None, lighting_state: str | None, zone_state: str | None) -> tuple[str, list[str], float, str]:
+    facts: list[str] = []
+    machine = str(machine_state or "UNKNOWN").upper()
+    presence = str(presence_state or "UNKNOWN").upper()
+    lighting = str(lighting_state or "UNKNOWN").upper()
+    zone = str(zone_state or "UNKNOWN").upper()
+    if machine != "UNKNOWN":
+        facts.append(f"machine_activity={machine}")
+    if presence != "UNKNOWN":
+        facts.append(f"person_presence={presence}")
+    if lighting != "UNKNOWN":
+        facts.append(f"lighting_state={lighting}")
+    if zone != "UNKNOWN":
+        facts.append(f"zone_occupancy={zone}")
+    if not facts:
+        return "UNKNOWN", [], 0.0, "insufficient_data"
+    if machine == "ACTIVE" and presence == "PRESENT":
+        return "NORMAL_ACTIVITY", facts, 0.85, "inferred"
+    if machine == "STOPPED" and presence == "ABSENT" and lighting == "OFF":
+        return "NO_ACTIVITY", facts, 0.85, "inferred"
+    if machine == "STOPPED" and presence in {"ABSENT", "UNKNOWN"}:
+        return "LOW_ACTIVITY", facts, 0.75, "inferred"
+    if presence == "ABSENT" and lighting == "OFF":
+        return "LOW_ACTIVITY", facts, 0.7, "inferred"
+    if zone == "EMPTY" and machine != "ACTIVE":
+        return "LOW_ACTIVITY", facts, 0.65, "inferred"
+    return "NORMAL_ACTIVITY", facts, 0.65, "inferred"
+
+
 def _coverage_from_sample_seconds(known_seconds: float, total_seconds: float, sample_count: int, unknown_seconds: float) -> dict[str, Any]:
     if total_seconds <= 0:
         return {"status": "INSUFFICIENT", "valid_percent": 0.0, "unknown_percent": 100.0, "sample_count": sample_count}
@@ -351,6 +508,743 @@ def _sample_rollup(samples: list[dict[str, Any]], start: datetime, end: datetime
     known_seconds = machine["ACTIVE"] + machine["STOPPED"]
     coverage = _coverage_from_sample_seconds(known_seconds, total_seconds, len(samples), machine["UNKNOWN"])
     return {"machine": machine, "human": human, "coverage": coverage}
+
+
+def operational_timeline(connection: sqlite3.Connection, filters: ReadModelFilters, *, now: datetime | None = None) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    if not filters.start or not filters.end:
+        raise ValueError("Timeline operacional requer início e fim.")
+    samples = _list_samples(connection, filters)
+    events = list_events(connection, filters, now=now)
+    ids: set[str] = set()
+    for sample in samples:
+        for key in ("site_id", "unit_id", "area_context_id", "process_id", "asset_id", "camera_id", "machine_id"):
+            if sample.get(key):
+                ids.add(str(sample[key]))
+        for observation_type in ("machine_activity", "person_presence", "zone_occupancy", "lighting_state"):
+            for observation in _state_from_observations(sample, observation_type):
+                for key in ("site_id", "unit_id", "area_context_id", "process_id", "asset_id", "camera_id", "machine_id", "zone_id"):
+                    if observation.get(key):
+                        ids.add(str(observation[key]))
+                metadata = observation.get("metadata") if isinstance(observation.get("metadata"), dict) else {}
+                if metadata.get("zone_id"):
+                    ids.add(str(metadata["zone_id"]))
+    for event in events:
+        for key in ("site_id", "unidade_id", "area_context_id", "process_id", "asset_id", "camera_id", "machine_monitor_id", "area_id"):
+            if event.get(key):
+                ids.add(str(event[key]))
+    names = _context_names(connection, ids)
+
+    items: list[dict[str, Any]] = []
+    open_segments: dict[tuple[Any, ...], dict[str, Any]] = {}
+    last_states: dict[tuple[Any, ...], str] = {}
+
+    def emit_sample_state(
+        sample: dict[str, Any],
+        *,
+        item_type: str,
+        state: str | None,
+        key_parts: tuple[Any, ...],
+        observation: dict[str, Any] | None = None,
+    ) -> None:
+        if state is None:
+            return
+        normalized = str(state or "UNKNOWN").upper()
+        timestamp = parse_datetime(sample.get("sample_at"), filters.start)
+        context_source = {**sample}
+        if observation:
+            context_source.update({key: value for key, value in observation.items() if key in {"site_id", "unit_id", "area_context_id", "process_id", "asset_id", "camera_id", "machine_id", "zone_id"}})
+            metadata = observation.get("metadata") if isinstance(observation.get("metadata"), dict) else {}
+            if metadata.get("zone_id") and not context_source.get("zone_id"):
+                context_source["zone_id"] = metadata["zone_id"]
+        context = _timeline_context(context_source, names)
+        key = (item_type, *key_parts)
+        previous = last_states.get(key)
+        if previous == normalized:
+            return
+        last_states[key] = normalized
+        confidence = observation.get("confidence") if observation else sample.get("confidence")
+        _add_timeline_transition(
+            items,
+            open_segments,
+            key=key,
+            timestamp=timestamp,
+            item_type=item_type,
+            context=context,
+            previous_state=previous,
+            new_state=normalized,
+            confidence=confidence,
+            data_quality=_data_quality_from_sample(sample, observation),
+        )
+
+    for sample in samples:
+        sample_machine_state: str | None = None
+        sample_presence_state: str | None = None
+        sample_zone_state: str | None = None
+        sample_lighting_state: str | None = None
+        machine_observations = _state_from_observations(sample, "machine_activity")
+        if machine_observations:
+            for observation in machine_observations:
+                machine_key = observation.get("machine_id") or sample.get("machine_id") or observation.get("asset_id") or sample.get("asset_id") or sample.get("camera_id")
+                sample_machine_state = str(observation.get("value") or "UNKNOWN").upper()
+                emit_sample_state(sample, item_type="machine_activity", state=observation.get("value"), key_parts=(machine_key,), observation=observation)
+        else:
+            machine_key = sample.get("machine_id") or sample.get("asset_id") or sample.get("camera_id")
+            sample_machine_state = str(sample.get("machine_state") or "UNKNOWN").upper()
+            emit_sample_state(sample, item_type="machine_activity", state=sample.get("machine_state") or "UNKNOWN", key_parts=(machine_key,))
+
+        presence_observations = _state_from_observations(sample, "person_presence")
+        if presence_observations:
+            for observation in presence_observations:
+                presence_key = observation.get("zone_id") or observation.get("machine_id") or sample.get("machine_id") or sample.get("asset_id") or sample.get("camera_id")
+                sample_presence_state = str(observation.get("value") or "UNKNOWN").upper()
+                emit_sample_state(sample, item_type="person_presence", state=observation.get("value"), key_parts=(presence_key,), observation=observation)
+        else:
+            if sample.get("operator_present") is None:
+                presence_state = "UNKNOWN"
+            else:
+                presence_state = "PRESENT" if int(sample.get("operator_present") or 0) == 1 else "ABSENT"
+            presence_key = sample.get("machine_id") or sample.get("asset_id") or sample.get("camera_id")
+            sample_presence_state = presence_state
+            emit_sample_state(sample, item_type="person_presence", state=presence_state, key_parts=(presence_key,))
+
+        for observation in _state_from_observations(sample, "zone_occupancy"):
+            metadata = observation.get("metadata") if isinstance(observation.get("metadata"), dict) else {}
+            zone_key = observation.get("zone_id") or metadata.get("zone_id") or sample.get("camera_id")
+            sample_zone_state = str(observation.get("value") or "UNKNOWN").upper()
+            emit_sample_state(sample, item_type="zone_occupancy", state=observation.get("value"), key_parts=(zone_key,), observation=observation)
+
+        for observation in _state_from_observations(sample, "lighting_state"):
+            lighting_key = observation.get("asset_id") or sample.get("asset_id") or observation.get("camera_id") or sample.get("camera_id")
+            sample_lighting_state = str(observation.get("value") or "UNKNOWN").upper()
+            emit_sample_state(sample, item_type="lighting_state", state=observation.get("value"), key_parts=(lighting_key,), observation=observation)
+
+        activity_state, facts, activity_confidence, activity_quality = _derive_operational_activity(
+            sample_machine_state,
+            sample_presence_state,
+            sample_lighting_state,
+            sample_zone_state,
+        )
+        activity_key = sample.get("asset_id") or sample.get("machine_id") or sample.get("camera_id")
+        activity_observation = {
+            "value": activity_state,
+            "confidence": activity_confidence,
+            "data_quality": activity_quality,
+            "metadata": {"facts": facts},
+        }
+        emit_sample_state(sample, item_type="operational_activity", state=activity_state, key_parts=(activity_key,), observation=activity_observation)
+
+        camera_key = sample.get("camera_id")
+        camera_state = "UNKNOWN" if sample.get("camera_online") is None else "ONLINE" if int(sample.get("camera_online") or 0) == 1 else "OFFLINE"
+        emit_sample_state(sample, item_type="camera_status", state=camera_state, key_parts=(camera_key,))
+
+    for event in events:
+        context = _timeline_context(event, names)
+        evidence_refs = [{"type": "image", "path": event["midia_path"]}] if event.get("midia_path") else []
+        started_at = parse_datetime(event.get("inicio"), filters.start)
+        event_uuid = _event_uuid(event)
+        items.append(
+            {
+                "timestamp": to_iso(started_at),
+                "type": "event_started",
+                "context": context,
+                "title": f"{_timeline_context_label(context)} -> evento iniciado",
+                "description": f"Evento {event.get('tipo')} iniciado.",
+                "previous_state": None,
+                "new_state": "OPEN",
+                "duration_seconds": float(event.get("read_duration_seconds") or 0) if event.get("fim") else None,
+                "confidence": event.get("confianca"),
+                "data_quality": (event.get("data_quality") or "observed") if "data_quality" in event else "observed",
+                "event_uuid": event_uuid,
+                "evidence_refs": evidence_refs,
+            }
+        )
+        if event.get("fim"):
+            ended_at = parse_datetime(event.get("fim"), filters.end)
+            items.append(
+                {
+                    "timestamp": to_iso(ended_at),
+                    "type": "event_closed",
+                    "context": context,
+                    "title": f"{_timeline_context_label(context)} -> evento encerrado",
+                    "description": f"Evento {event.get('tipo')} encerrado.",
+                    "previous_state": "OPEN",
+                    "new_state": "CLOSED",
+                    "duration_seconds": float(event.get("duracao") or event.get("read_duration_seconds") or 0),
+                    "confidence": event.get("confianca"),
+                    "data_quality": (event.get("data_quality") or "observed") if "data_quality" in event else "observed",
+                    "event_uuid": event_uuid,
+                    "evidence_refs": evidence_refs,
+                }
+            )
+
+    for item in open_segments.values():
+        if item.get("duration_seconds") is None:
+            item_time = parse_datetime(item["timestamp"], filters.start)
+            item["duration_seconds"] = max(0.0, (min(filters.end, now) - item_time).total_seconds())
+
+    items.sort(key=lambda item: (item["timestamp"], item["type"], item.get("event_uuid") or ""))
+    coverage = _coverage(connection, filters)
+    return {
+        "period": {"start": to_iso(filters.start), "end": to_iso(filters.end)},
+        "filters": {key: value for key, value in filters.__dict__.items() if value is not None and key not in {"start", "end"}},
+        "items": items,
+        "count": len(items),
+        "coverage": coverage,
+        "sources": ["operational_samples", "eventos"],
+        "future_observation_types": ["material_flow"],
+    }
+
+
+def _median(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        return float(ordered[mid])
+    return float((ordered[mid - 1] + ordered[mid]) / 2)
+
+
+def _historical_event_durations(connection: sqlite3.Connection, filters: ReadModelFilters, tipo: str, *, before: datetime) -> list[float]:
+    clauses = ["tipo = ?", "fim IS NOT NULL", "inicio < ?"]
+    params: list[Any] = [tipo, to_iso(before)]
+    for column, value in {
+        "cliente_id": filters.cliente_id,
+        "site_id": filters.site_id,
+        "area_context_id": filters.area_context_id,
+        "process_id": filters.process_id,
+        "asset_id": filters.asset_id,
+        "camera_id": filters.camera_id,
+    }.items():
+        if value:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+    rows = connection.execute(
+        f"""
+        SELECT duracao
+        FROM eventos
+        WHERE {' AND '.join(clauses)}
+        ORDER BY inicio DESC
+        LIMIT 100
+        """,
+        params,
+    ).fetchall()
+    return [float(row["duracao"] or 0) for row in rows if float(row["duracao"] or 0) > 0]
+
+
+def _timeline_event_refs(item: dict[str, Any]) -> list[str]:
+    return [str(item["event_uuid"])] if item.get("event_uuid") else []
+
+
+def _anomaly_item(
+    *,
+    anomaly_type: str,
+    severity: str,
+    observed_value: float,
+    expected_value: float | None,
+    timestamp: str,
+    context: dict[str, Any],
+    title: str,
+    description: str,
+    event_refs: list[str] | None = None,
+    evidence_refs: list[dict[str, Any]] | None = None,
+    confidence: float = 0.75,
+    data_quality: str = "observed",
+) -> dict[str, Any]:
+    return {
+        "anomaly_type": anomaly_type,
+        "severity": severity,
+        "observed_value": observed_value,
+        "expected_value": expected_value,
+        "timestamp": timestamp,
+        "context": context,
+        "title": title,
+        "description": description,
+        "event_refs": event_refs or [],
+        "evidence_refs": evidence_refs or [],
+        "confidence": round(float(confidence), 4),
+        "data_quality": data_quality,
+    }
+
+
+def operational_change_anomalies(connection: sqlite3.Connection, filters: ReadModelFilters, *, now: datetime | None = None) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    timeline_payload = operational_timeline(connection, filters, now=now)
+    items = timeline_payload["items"]
+    changes = [
+        item
+        for item in items
+        if item["type"] in {
+            "machine_activity",
+            "person_presence",
+            "zone_occupancy",
+            "camera_status",
+            "lighting_state",
+            "operational_activity",
+            "event_started",
+            "event_closed",
+        }
+    ]
+    anomalies: list[dict[str, Any]] = []
+    if not filters.start or not filters.end:
+        raise ValueError("Anomalias operacionais requerem início e fim.")
+
+    stoppage_events = [
+        item
+        for item in items
+        if item["type"] == "event_closed" and item.get("event_uuid") and "machine_stoppage" in str(item.get("description") or "")
+    ]
+    historical_stop_durations = _historical_event_durations(connection, filters, "machine_stoppage", before=filters.start)
+    reference_stop = _median(historical_stop_durations)
+    for item in stoppage_events:
+        duration = float(item.get("duration_seconds") or 0)
+        threshold = max(900.0, (reference_stop or 0) * 2.0)
+        if duration > threshold:
+            anomalies.append(
+                _anomaly_item(
+                    anomaly_type="exceptionally_long_stoppage",
+                    severity="high" if duration >= 1800 else "medium",
+                    observed_value=duration,
+                    expected_value=reference_stop,
+                    timestamp=item["timestamp"],
+                    context=item["context"],
+                    title=f"{_timeline_context_label(item['context'])} está parada por tempo acima do padrão.",
+                    description="Parada encerrada com duração acima da referência histórica disponível.",
+                    event_refs=_timeline_event_refs(item),
+                    evidence_refs=item.get("evidence_refs"),
+                    confidence=0.85 if reference_stop else 0.65,
+                    data_quality=item.get("data_quality") or "observed",
+                )
+            )
+
+    started_stoppages = [
+        item for item in items if item["type"] == "event_started" and "machine_stoppage" in str(item.get("description") or "")
+    ]
+    for index, item in enumerate(started_stoppages):
+        window_start = parse_datetime(item["timestamp"])
+        window_end = window_start + timedelta(minutes=40)
+        window = [candidate for candidate in started_stoppages[index:] if parse_datetime(candidate["timestamp"]) <= window_end and candidate["context"].get("asset_id") == item["context"].get("asset_id")]
+        if len(window) >= 5:
+            anomalies.append(
+                _anomaly_item(
+                    anomaly_type="recurrent_stoppages_short_window",
+                    severity="medium",
+                    observed_value=float(len(window)),
+                    expected_value=4.0,
+                    timestamp=item["timestamp"],
+                    context=item["context"],
+                    title=f"{len(window)} paradas em 40 minutos.",
+                    description="Foram identificadas paradas recorrentes em uma janela curta no mesmo ativo.",
+                    event_refs=[uuid for window_item in window for uuid in _timeline_event_refs(window_item)],
+                    confidence=0.8,
+                )
+            )
+            break
+
+    for item in items:
+        duration = float(item.get("duration_seconds") or 0)
+        if item["type"] == "person_presence" and item.get("new_state") == "ABSENT" and duration >= 900:
+            anomalies.append(
+                _anomaly_item(
+                    anomaly_type="prolonged_operational_absence",
+                    severity="medium",
+                    observed_value=duration,
+                    expected_value=900.0,
+                    timestamp=item["timestamp"],
+                    context=item["context"],
+                    title=f"Operação sem presença por {_seconds_label(duration)}.",
+                    description="Ausência operacional permaneceu acima do limite determinístico.",
+                    confidence=item.get("confidence") or 0.75,
+                    data_quality=item.get("data_quality") or "observed",
+                )
+            )
+        if item.get("new_state") == "UNKNOWN" and duration >= 600:
+            anomalies.append(
+                _anomaly_item(
+                    anomaly_type="excessive_unknown_period",
+                    severity="medium",
+                    observed_value=duration,
+                    expected_value=600.0,
+                    timestamp=item["timestamp"],
+                    context=item["context"],
+                    title=f"Período sem dado confiável por {_seconds_label(duration)}.",
+                    description="A Campex preservou UNKNOWN em vez de interpretar ausência de dados como estado operacional.",
+                    confidence=0.9,
+                    data_quality=item.get("data_quality") or "insufficient_data",
+                )
+            )
+        if item["type"] == "camera_status" and item.get("new_state") == "OFFLINE" and duration >= 300:
+            anomalies.append(
+                _anomaly_item(
+                    anomaly_type="prolonged_camera_offline",
+                    severity="high",
+                    observed_value=duration,
+                    expected_value=300.0,
+                    timestamp=item["timestamp"],
+                    context=item["context"],
+                    title=f"Câmera offline por {_seconds_label(duration)}.",
+                    description="Perda técnica prolongada; isso afeta cobertura, não vira evento operacional automaticamente.",
+                    confidence=0.9,
+                    data_quality="sensor_unavailable",
+                )
+            )
+        if item["type"] == "lighting_state" and item.get("previous_state") in {"ON", "OFF"} and item.get("new_state") in {"ON", "OFF"}:
+            anomalies.append(
+                _anomaly_item(
+                    anomaly_type="lighting_state_change",
+                    severity="info",
+                    observed_value=1.0,
+                    expected_value=None,
+                    timestamp=item["timestamp"],
+                    context=item["context"],
+                    title=f"Iluminação mudou de {item.get('previous_state')} para {item.get('new_state')}.",
+                    description="Mudança persistente de iluminação registrada pela observação visual.",
+                    confidence=item.get("confidence") or 0.7,
+                    data_quality=item.get("data_quality") or "observed",
+                )
+            )
+
+    operational_activity = [item for item in items if item["type"] == "operational_activity"]
+    return {
+        "period": timeline_payload["period"],
+        "filters": timeline_payload["filters"],
+        "changes": changes,
+        "anomalies": anomalies,
+        "operational_activity": operational_activity,
+        "coverage": timeline_payload["coverage"],
+        "sources": timeline_payload["sources"],
+        "rules": [
+            "state_transition_change_detection_v1",
+            "long_stoppage_vs_history_v1",
+            "recurrent_stoppages_40m_v1",
+            "prolonged_absence_v1",
+            "unknown_and_offline_duration_v1",
+            "lighting_transition_v1",
+            "operational_activity_facts_v1",
+        ],
+        "no_cause_inferred": True,
+    }
+
+
+VIDEO_CONTEXT_DEFAULT_BEFORE_SECONDS = 300
+VIDEO_CONTEXT_DEFAULT_AFTER_SECONDS = 300
+
+
+def _context_id_for_trigger(trigger: dict[str, Any]) -> str:
+    payload = json.dumps(
+        {
+            "type": trigger.get("type"),
+            "ref": trigger.get("ref"),
+            "timestamp": trigger.get("timestamp"),
+            "context": trigger.get("context"),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        default=str,
+    )
+    return "ctx-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
+def _dedupe_refs(refs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for ref in refs:
+        key = json.dumps(ref, sort_keys=True, ensure_ascii=False)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ref)
+    return deduped
+
+
+def _trigger_from_change(item: dict[str, Any]) -> dict[str, Any]:
+    trigger_type = str(item.get("type") or "state_change")
+    if trigger_type == "event_started":
+        trigger_type = "event_started"
+    elif trigger_type == "event_closed":
+        trigger_type = "event_closed"
+    else:
+        trigger_type = f"{trigger_type}_change"
+    return {
+        "type": trigger_type,
+        "ref": item.get("event_uuid") or f"{item.get('type')}:{item.get('timestamp')}:{item.get('new_state')}",
+        "timestamp": item.get("timestamp"),
+        "context": item.get("context") or {},
+        "source": "operational_timeline",
+        "item": item,
+    }
+
+
+def _trigger_from_anomaly(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": item.get("anomaly_type"),
+        "ref": (item.get("event_refs") or [None])[0] or f"{item.get('anomaly_type')}:{item.get('timestamp')}",
+        "timestamp": item.get("timestamp"),
+        "context": item.get("context") or {},
+        "source": "operational_change_anomalies",
+        "item": item,
+    }
+
+
+def _trigger_time_bounds(trigger: dict[str, Any], timeline_items: list[dict[str, Any]], filters: ReadModelFilters, now: datetime) -> tuple[datetime, datetime | None]:
+    trigger_ts = parse_datetime(trigger.get("timestamp"), filters.start or now)
+    ref = trigger.get("ref")
+    if ref:
+        starts = [item for item in timeline_items if item.get("event_uuid") == ref and item.get("type") == "event_started"]
+        closes = [item for item in timeline_items if item.get("event_uuid") == ref and item.get("type") == "event_closed"]
+        if starts:
+            trigger_ts = parse_datetime(starts[0]["timestamp"], trigger_ts)
+        if closes:
+            return trigger_ts, parse_datetime(closes[0]["timestamp"], now)
+    return trigger_ts, None
+
+
+def _phase_for_item(item_ts: datetime, trigger_start: datetime, trigger_end: datetime | None) -> str:
+    transition_end = trigger_start + timedelta(seconds=1)
+    if item_ts < trigger_start:
+        return "before"
+    if item_ts <= transition_end:
+        return "transition"
+    if trigger_end is None or item_ts <= trigger_end:
+        return "during"
+    return "after"
+
+
+def _context_quality(coverage: dict[str, Any], phases: dict[str, list[dict[str, Any]]], evidence_refs: list[dict[str, Any]]) -> dict[str, Any]:
+    gaps = coverage.get("gaps") or []
+    has_unknown = any(item.get("new_state") == "UNKNOWN" or item.get("data_quality") in {"unknown", "insufficient_data", "sensor_unavailable"} for phase in phases.values() for item in phase)
+    missing = [name for name in ("before", "transition", "during", "after") if not phases.get(name)]
+    if gaps or has_unknown or missing:
+        status = "partial"
+    else:
+        status = "complete"
+    return {
+        "status": status,
+        "coverage_status": coverage.get("status"),
+        "gaps": gaps,
+        "has_unknown": has_unknown,
+        "evidence_available": bool(evidence_refs),
+        "missing_phases": missing,
+        "sample_count": coverage.get("sample_count"),
+    }
+
+
+def build_video_context(
+    connection: sqlite3.Connection,
+    filters: ReadModelFilters,
+    trigger: dict[str, Any],
+    *,
+    before_seconds: int = VIDEO_CONTEXT_DEFAULT_BEFORE_SECONDS,
+    after_seconds: int = VIDEO_CONTEXT_DEFAULT_AFTER_SECONDS,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    if not filters.start or not filters.end:
+        raise ValueError("Video context requer início e fim.")
+    change_payload = operational_change_anomalies(connection, filters, now=now)
+    timeline_items = change_payload["changes"]
+    trigger_start, trigger_end = _trigger_time_bounds(trigger, timeline_items, filters, now)
+    window_start = max(filters.start, trigger_start - timedelta(seconds=before_seconds))
+    effective_end = trigger_end or trigger_start
+    window_end = min(filters.end, effective_end + timedelta(seconds=after_seconds))
+    phases: dict[str, list[dict[str, Any]]] = {"before": [], "transition": [], "during": [], "after": []}
+    observations: list[dict[str, Any]] = []
+    evidence_refs: list[dict[str, Any]] = []
+    event_refs: set[str] = set()
+    for item in timeline_items:
+        item_ts = parse_datetime(item.get("timestamp"), filters.start)
+        if item_ts < window_start or item_ts > window_end:
+            continue
+        phase = _phase_for_item(item_ts, trigger_start, trigger_end)
+        duration = item.get("duration_seconds")
+        if duration is not None:
+            duration = min(float(duration), max(0.0, (window_end - item_ts).total_seconds()))
+        fact = {
+            "timestamp": item.get("timestamp"),
+            "type": item.get("type"),
+            "title": item.get("title"),
+            "description": item.get("description"),
+            "previous_state": item.get("previous_state"),
+            "new_state": item.get("new_state"),
+            "duration_seconds": duration,
+            "confidence": item.get("confidence"),
+            "data_quality": item.get("data_quality"),
+            "event_uuid": item.get("event_uuid"),
+            "evidence_refs": item.get("evidence_refs") or [],
+        }
+        phases[phase].append(fact)
+        observations.append(fact)
+        if item.get("event_uuid"):
+            event_refs.add(str(item["event_uuid"]))
+        evidence_refs.extend(item.get("evidence_refs") or [])
+    anomalies = []
+    for anomaly in change_payload["anomalies"]:
+        item_ts = parse_datetime(anomaly.get("timestamp"), filters.start)
+        if window_start <= item_ts <= window_end:
+            anomalies.append(anomaly)
+            event_refs.update(str(ref) for ref in anomaly.get("event_refs") or [])
+            evidence_refs.extend(anomaly.get("evidence_refs") or [])
+    events = [item for item in timeline_items if item.get("event_uuid") in event_refs and item.get("type") in {"event_started", "event_closed"}]
+    context_trigger = {key: value for key, value in trigger.items() if key != "item"}
+    context_id = _context_id_for_trigger(context_trigger)
+    deduped_evidence = _dedupe_refs(evidence_refs)
+    quality = _context_quality(change_payload["coverage"], phases, deduped_evidence)
+    return {
+        "context_id": context_id,
+        "camera_id": (trigger.get("context") or {}).get("camera_id"),
+        "asset_id": (trigger.get("context") or {}).get("asset_id"),
+        "start_ts": to_iso(window_start),
+        "end_ts": to_iso(window_end),
+        "trigger": context_trigger,
+        "phases": {key: value for key, value in phases.items() if value},
+        "observations": observations,
+        "events": events,
+        "anomalies": anomalies,
+        "evidence_refs": deduped_evidence,
+        "data_quality": quality,
+        "cause_inferred": False,
+        "window": {
+            "before_seconds": before_seconds,
+            "after_seconds": after_seconds,
+            "trigger_start": to_iso(trigger_start),
+            "trigger_end": to_iso(trigger_end) if trigger_end else None,
+        },
+    }
+
+
+def video_contexts(
+    connection: sqlite3.Connection,
+    filters: ReadModelFilters,
+    *,
+    trigger_type: str | None = None,
+    context_id: str | None = None,
+    before_seconds: int = VIDEO_CONTEXT_DEFAULT_BEFORE_SECONDS,
+    after_seconds: int = VIDEO_CONTEXT_DEFAULT_AFTER_SECONDS,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    now = now or datetime.now(timezone.utc)
+    change_payload = operational_change_anomalies(connection, filters, now=now)
+    triggers = [_trigger_from_change(item) for item in change_payload["changes"]]
+    triggers.extend(_trigger_from_anomaly(item) for item in change_payload["anomalies"])
+    deduped: dict[str, dict[str, Any]] = {}
+    for trigger in triggers:
+        context_trigger = {key: value for key, value in trigger.items() if key != "item"}
+        cid = _context_id_for_trigger(context_trigger)
+        if trigger_type and trigger.get("type") != trigger_type:
+            continue
+        if context_id and cid != context_id:
+            continue
+        deduped.setdefault(cid, trigger)
+    contexts = [
+        build_video_context(
+            connection,
+            filters,
+            trigger,
+            before_seconds=before_seconds,
+            after_seconds=after_seconds,
+            now=now,
+        )
+        for trigger in deduped.values()
+    ]
+    contexts.sort(key=lambda item: (item["start_ts"], item["context_id"]))
+    return {
+        "period": change_payload["period"],
+        "filters": change_payload["filters"],
+        "contexts": contexts,
+        "count": len(contexts),
+        "cause_inferred": False,
+        "sources": ["operational_timeline", "operational_samples", "eventos", "change_anomalies"],
+    }
+
+
+def _source_bounds_for_video_context(connection: sqlite3.Connection, filters: ReadModelFilters) -> tuple[datetime, datetime] | None:
+    sample_clauses: list[str] = []
+    sample_params: list[Any] = []
+    event_clauses: list[str] = []
+    event_params: list[Any] = []
+    for sample_column, event_column, value in (
+        ("tenant_id", "cliente_id", filters.cliente_id),
+        ("site_id", "site_id", filters.site_id),
+        ("area_context_id", "area_context_id", filters.area_context_id),
+        ("process_id", "process_id", filters.process_id),
+        ("asset_id", "asset_id", filters.asset_id),
+        ("camera_id", "camera_id", filters.camera_id),
+    ):
+        if value:
+            sample_clauses.append(f"{sample_column} = ?")
+            sample_params.append(value)
+            event_clauses.append(f"{event_column} = ?")
+            event_params.append(value)
+    sample_where = f"WHERE {' AND '.join(sample_clauses)}" if sample_clauses else ""
+    event_where = f"WHERE {' AND '.join(event_clauses)}" if event_clauses else ""
+    sample_row = connection.execute(
+        f"SELECT MIN(sample_at) AS min_ts, MAX(sample_at) AS max_ts FROM operational_samples {sample_where}",
+        sample_params,
+    ).fetchone()
+    event_row = connection.execute(
+        f"SELECT MIN(inicio) AS min_ts, MAX(COALESCE(fim, inicio)) AS max_ts FROM eventos {event_where}",
+        event_params,
+    ).fetchone()
+    timestamps = [
+        value
+        for row in (sample_row, event_row)
+        if row
+        for value in (row["min_ts"], row["max_ts"])
+        if value
+    ]
+    if not timestamps:
+        return None
+    parsed = [parse_datetime(str(value)) for value in timestamps]
+    return min(parsed), max(parsed)
+
+
+def video_context_by_id(
+    connection: sqlite3.Connection,
+    filters: ReadModelFilters,
+    context_id: str,
+    *,
+    before_seconds: int = VIDEO_CONTEXT_DEFAULT_BEFORE_SECONDS,
+    after_seconds: int = VIDEO_CONTEXT_DEFAULT_AFTER_SECONDS,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    now = now or datetime.now(timezone.utc)
+    if filters.start and filters.end:
+        payload = video_contexts(
+            connection,
+            filters,
+            context_id=context_id,
+            before_seconds=before_seconds,
+            after_seconds=after_seconds,
+            now=now,
+        )
+        return payload["contexts"][0] if payload["contexts"] else None
+    bounds = _source_bounds_for_video_context(connection, filters)
+    if bounds is None:
+        return None
+    source_start, source_end = bounds
+    search_filters = ReadModelFilters(
+        cliente_id=filters.cliente_id,
+        site_id=filters.site_id,
+        area_context_id=filters.area_context_id,
+        process_id=filters.process_id,
+        asset_id=filters.asset_id,
+        camera_id=filters.camera_id,
+        event_family=filters.event_family,
+        tipo=filters.tipo,
+        workflow_status=filters.workflow_status,
+        start=source_start - timedelta(seconds=before_seconds),
+        end=source_end + timedelta(seconds=after_seconds),
+    )
+    payload = video_contexts(
+        connection,
+        search_filters,
+        context_id=context_id,
+        before_seconds=before_seconds,
+        after_seconds=after_seconds,
+        now=now,
+    )
+    return payload["contexts"][0] if payload["contexts"] else None
 
 
 def operational_data(connection: sqlite3.Connection, filters: ReadModelFilters, *, now: datetime | None = None) -> dict[str, Any]:

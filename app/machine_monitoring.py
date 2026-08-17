@@ -855,7 +855,18 @@ def baseline_stats(values: list[float]) -> tuple[float, float]:
 
 def machine_calibration_separation(active: dict[str, object] | None, stopped: dict[str, object] | None) -> dict[str, object]:
     if not active or not stopped:
-        return {"result": "CALIBRATION_REQUIRED", "score": None, "overlap": None, "threshold": None, "message": "Calibre ativa e parada para calcular separacao."}
+        return {
+            "result": "CALIBRATION_REQUIRED",
+            "score": None,
+            "overlap": None,
+            "threshold": None,
+            "message": "Calibre ativa e parada para calcular separacao.",
+            "active_baseline": None,
+            "stopped_baseline": None,
+            "active_noise": None,
+            "stopped_noise": None,
+            "distance": None,
+        }
     active_center = float(active.get("median") or active.get("mean") or 0)
     stopped_center = float(stopped.get("median") or stopped.get("mean") or 0)
     active_std = float(active.get("std") or 0)
@@ -876,7 +887,18 @@ def machine_calibration_separation(active: dict[str, object] | None, stopped: di
     else:
         result = "INSUFFICIENT_VISUAL_SIGNAL"
         message = "Separacao insuficiente entre ativa e parada."
-    return {"result": result, "score": score, "overlap": overlap, "threshold": threshold, "message": message}
+    return {
+        "result": result,
+        "score": score,
+        "overlap": overlap,
+        "threshold": threshold,
+        "message": message,
+        "active_baseline": active_center,
+        "stopped_baseline": stopped_center,
+        "active_noise": active_std,
+        "stopped_noise": stopped_std,
+        "distance": round(distance, 4),
+    }
 
 
 def merge_event_metadata(connection, event_id: str, values: dict[str, Any]) -> None:

@@ -103,6 +103,12 @@ def init_db(connection: sqlite3.Connection) -> None:
             nome TEXT NOT NULL,
             tipo TEXT NOT NULL DEFAULT 'machine',
             ativo INTEGER NOT NULL DEFAULT 1,
+            economic_method TEXT,
+            downtime_cost_per_hour REAL,
+            production_rate_per_hour REAL,
+            contribution_value_per_unit REAL,
+            economic_currency TEXT,
+            economic_effective_from TEXT,
             criado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             atualizado_em TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (cliente_id) REFERENCES clientes (id),
@@ -233,6 +239,10 @@ def init_db(connection: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS alert_deliveries (
             id TEXT PRIMARY KEY,
             evento_id TEXT,
+            decision_id TEXT,
+            incident_key TEXT,
+            alert_type TEXT,
+            severity TEXT,
             recipient_id TEXT NOT NULL,
             destinatario TEXT,
             canal TEXT NOT NULL DEFAULT 'email',
@@ -517,6 +527,68 @@ def init_db(connection: sqlite3.Connection) -> None:
             UNIQUE (machine_id, period_start, period_end, rule_id)
         );
 
+        CREATE TABLE IF NOT EXISTS video_understandings (
+            understanding_id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL,
+            context_id TEXT NOT NULL,
+            tenant_id TEXT,
+            site_id TEXT,
+            unit_id TEXT,
+            area_context_id TEXT,
+            process_id TEXT,
+            asset_id TEXT,
+            camera_id TEXT,
+            trigger_type TEXT,
+            trigger_ref TEXT,
+            provider TEXT,
+            model TEXT,
+            schema_version TEXT NOT NULL,
+            prompt_version TEXT,
+            status TEXT NOT NULL,
+            quality TEXT NOT NULL,
+            summary TEXT,
+            structured_result_json TEXT NOT NULL DEFAULT '{}',
+            evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+            uncertainties_json TEXT NOT NULL DEFAULT '[]',
+            conflicts_json TEXT NOT NULL DEFAULT '[]',
+            quality_reasons_json TEXT NOT NULL DEFAULT '[]',
+            validation_errors_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS operational_alert_decisions (
+            decision_id TEXT PRIMARY KEY,
+            decision_key TEXT NOT NULL UNIQUE,
+            incident_key TEXT NOT NULL,
+            tenant_id TEXT,
+            site_id TEXT,
+            unit_id TEXT,
+            area_context_id TEXT,
+            process_id TEXT,
+            asset_id TEXT,
+            camera_id TEXT,
+            alert_type TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            priority TEXT,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1,
+            source_refs_json TEXT NOT NULL DEFAULT '[]',
+            event_refs_json TEXT NOT NULL DEFAULT '[]',
+            anomaly_refs_json TEXT NOT NULL DEFAULT '[]',
+            understanding_refs_json TEXT NOT NULL DEFAULT '[]',
+            evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+            reason_codes_json TEXT NOT NULL DEFAULT '[]',
+            suppression_json TEXT,
+            quality_json TEXT NOT NULL DEFAULT '{}',
+            visual_summary TEXT,
+            visual_facts_json TEXT NOT NULL DEFAULT '[]',
+            uncertainties_json TEXT NOT NULL DEFAULT '[]',
+            cause_inferred INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE TABLE IF NOT EXISTS audit_log (
             id TEXT PRIMARY KEY,
             actor_user_id TEXT,
@@ -588,6 +660,18 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "alert_recipients", "cliente_id", "TEXT")
     _ensure_column(connection, "alert_recipients", "event_types", "TEXT NOT NULL DEFAULT '[]'")
     _ensure_column(connection, "alert_deliveries", "destinatario", "TEXT")
+    _ensure_column(connection, "alert_deliveries", "decision_id", "TEXT")
+    _ensure_column(connection, "alert_deliveries", "incident_key", "TEXT")
+    _ensure_column(connection, "alert_deliveries", "alert_type", "TEXT")
+    _ensure_column(connection, "alert_deliveries", "severity", "TEXT")
+    _ensure_column(connection, "alert_deliveries", "payload_json", "TEXT NOT NULL DEFAULT '{}'")
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_alert_deliveries_decision_channel
+        ON alert_deliveries (decision_id, recipient_id, canal)
+        WHERE decision_id IS NOT NULL
+        """
+    )
     _ensure_column(connection, "users", "nome", "TEXT")
     _ensure_column(connection, "eventos", "area_id", "TEXT")
     _ensure_column(connection, "eventos", "regra_id", "TEXT")
@@ -635,6 +719,12 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "eventos", "area_context_id", "TEXT")
     _ensure_column(connection, "eventos", "process_id", "TEXT")
     _ensure_column(connection, "eventos", "asset_id", "TEXT")
+    _ensure_column(connection, "operational_assets", "economic_method", "TEXT")
+    _ensure_column(connection, "operational_assets", "downtime_cost_per_hour", "REAL")
+    _ensure_column(connection, "operational_assets", "production_rate_per_hour", "REAL")
+    _ensure_column(connection, "operational_assets", "contribution_value_per_unit", "REAL")
+    _ensure_column(connection, "operational_assets", "economic_currency", "TEXT")
+    _ensure_column(connection, "operational_assets", "economic_effective_from", "TEXT")
     _ensure_column(connection, "operational_events", "activity_score", "REAL")
     _ensure_column(connection, "operational_events", "snapshot_path", "TEXT")
     _ensure_column(connection, "operational_events", "machine_id", "TEXT")
@@ -694,6 +784,14 @@ def init_db(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "operational_samples", "area_context_id", "TEXT")
     _ensure_column(connection, "operational_samples", "process_id", "TEXT")
     _ensure_column(connection, "operational_samples", "asset_id", "TEXT")
+    _ensure_column(connection, "video_understandings", "site_id", "TEXT")
+    _ensure_column(connection, "video_understandings", "unit_id", "TEXT")
+    _ensure_column(connection, "video_understandings", "area_context_id", "TEXT")
+    _ensure_column(connection, "video_understandings", "process_id", "TEXT")
+    _ensure_column(connection, "video_understandings", "validation_errors_json", "TEXT NOT NULL DEFAULT '[]'")
+    _ensure_column(connection, "operational_alert_decisions", "unit_id", "TEXT")
+    _ensure_column(connection, "operational_alert_decisions", "area_context_id", "TEXT")
+    _ensure_column(connection, "operational_alert_decisions", "process_id", "TEXT")
     _backfill_operational_context(connection)
     _backfill_event_workflow(connection)
     _backfill_event_taxonomy(connection)

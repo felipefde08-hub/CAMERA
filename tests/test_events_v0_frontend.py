@@ -30,9 +30,10 @@ def test_events_v0_uses_canonical_events_and_detail_endpoint() -> None:
 
     assert 'endpoint: "/eventos"' in route_block
     assert 'title: "Events"' in route_block
-    assert "Memória operacional verificável" in route_block
+    assert "Ocorrências e incidentes registrados pela operação." in route_block
     assert "Não classificados" in route_block
     assert "camera_id" not in route_block.lower()
+    assert "customRender: renderEventsPage" in route_block
     assert "/eventos/${row.id}/detail" in script
 
 
@@ -42,7 +43,7 @@ def test_events_v0_separates_physical_status_from_workflow() -> None:
     assert "function eventPhysicalStatus" in script
     assert "function eventWorkflow" in script
     assert "workflow_status || \"new\"" in script
-    assert "Status físico" in script
+    assert "Estado da ocorrência" in script
     assert "Workflow" in script
     assert "/acknowledge" in script
     assert "/human-context" in script
@@ -68,9 +69,11 @@ def test_events_v0_deep_links_by_event_uuid() -> None:
 def test_events_v0_removes_technical_shell_cards_from_events() -> None:
     script = _workspace_script()
 
-    assert 'path === "/operations-view" || path === "/events" || path === "/insights"' in script
+    assert 'path === "/home-view" || path === "/operations-view" || path === "/events" || path === "/insights"' in script
     assert "cx-events-mode" in script
-    assert "cx-event-card" in Path(ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
+    styles = Path(ROOT / "frontend" / "styles.css").read_text(encoding="utf-8")
+    assert "cx-events-v1-page" in styles
+    assert "cx-events-list" in styles
 
 
 def test_events_v0_uses_product_empty_state_and_known_filter_controls() -> None:
@@ -81,9 +84,61 @@ def test_events_v0_uses_product_empty_state_and_known_filter_controls() -> None:
 
     assert "Os acontecimentos monitorados pela Campex aparecerão aqui." in route_block
     assert "eventos canônicos" not in route_block
-    assert 'type="date"' in script
-    assert '<select data-filter="familia">' in script
-    assert '<select data-filter="estado_fisico">' in script
-    assert '<select data-filter="workflow">' in script
-    assert "Identificador do evento" in script
+    assert 'id="eventsPeriodFilter"' in script
+    assert 'id="eventsStatusFilter"' in script
+    assert 'id="eventsSeverityFilter"' in script
+    assert 'id="eventsFamilyFilter"' in script
+    assert 'id="eventsContextFilter"' in script
+    assert "Identificador do evento" not in script
     assert "<dt>event_uuid</dt>" not in script
+
+
+def test_events_v1_renders_operational_list_and_human_mappers() -> None:
+    script = _workspace_script()
+    start = script.index("function renderEventsList")
+    end = script.index("function evidenceDetail")
+    events_block = script[start:end]
+
+    for expected in [
+        "Resumo de ocorrências",
+        "Lista operacional",
+        "Evento",
+        "Ativo / Área",
+        "Severidade",
+        "Estado",
+        "Início",
+        "Duração",
+        "Evidência",
+        "Nenhuma ocorrência encontrada neste período.",
+    ]:
+        assert expected in events_block
+
+    assert "function eventSeverityLabel" in script
+    assert "function eventDateLabel" in script
+    assert "machine_stoppage" in script
+    assert "Parada operacional" in script
+    assert "workstation_unattended" in script
+    assert "Posto sem operador" in script
+    assert "eventPhysicalStatusLabel" in script
+
+
+def test_events_v1_drawer_prioritizes_evidence_and_separates_human_context() -> None:
+    script = _workspace_script()
+    start = script.index("function eventDetail")
+    end = script.index("function evidenceDetail")
+    detail_block = script[start:end]
+
+    for expected in [
+        "Evidência",
+        "O que a Campex observou",
+        "Contexto da operação",
+        "Tratamento",
+        "Causa confirmada",
+        "Ação tomada",
+        "Detalhes técnicos",
+    ]:
+        assert expected in detail_block
+
+    assert "Nenhuma evidência visual disponível." in detail_block
+    assert "technical_type" in detail_block
+    assert "event_uuid" not in detail_block

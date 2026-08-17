@@ -10,8 +10,10 @@ import shutil
 import sqlite3
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 from app.database import connect, init_db
 import app.alerts as alerts_module
@@ -127,6 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_edge_production.add_argument("--port", type=int, default=int(os.getenv("API_PORT", "8000")))
     run_edge_production.add_argument("--heartbeat-seconds", type=float, default=float(os.getenv("CAMPEX_HEARTBEAT_SECONDS", "10")))
     run_edge_production.add_argument("--sync-seconds", type=float, default=float(os.getenv("CAMPEX_SYNC_SECONDS", "10")))
+    run_edge_production.add_argument("--alert-decision-seconds", type=float, default=float(os.getenv("CAMPEX_ALERT_DECISION_SECONDS", "60")))
 
     status = subparsers.add_parser("edge-status")
     status.add_argument("--edge-id", required=True)
@@ -368,6 +371,33 @@ def run_factory_preflight(db_path: Path, api_url: str, camera_id: str | None, ti
     sse_ok, sse_detail = _http_sse_connected(f"{api_url}/events/stream", timeout, opener)
     add("PASS" if sse_ok else "FAIL", "SSE de eventos conectado", sse_detail)
 
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(hours=2)
+    pipeline_params = f"start={urllib.parse.quote(start_dt.isoformat())}&end={urllib.parse.quote(end_dt.isoformat())}"
+    if camera_id:
+        pipeline_params += f"&camera_id={urllib.parse.quote(camera_id)}"
+
+    def add_pipeline_check(label: str, path: str, *, allow_empty: bool = True) -> None:
+        code, payload, error = _http_json(f"{api_url}{path}?{pipeline_params}", timeout, opener)
+        if code == 200 and isinstance(payload, dict):
+            detail = "resposta estrutural válida"
+            if not allow_empty:
+                detail = "resposta estrutural válida; validação física ainda depende de dados reais"
+            add("PASS", label, detail)
+            return
+        if code == 401:
+            add("FAIL", label, "endpoint protegido sem sessão autenticada")
+            return
+        add("FAIL", label, f"{path} -> {code or error}")
+
+    add_pipeline_check("Operational Timeline", "/operations/timeline")
+    add_pipeline_check("Change & Anomaly", "/operations/change-anomalies")
+    add_pipeline_check("Operational Video Context", "/operations/video-contexts")
+    add_pipeline_check("Video Understanding config", "/operations/video-understandings")
+    add_pipeline_check("Alert Decisioning", "/operations/alert-decisions")
+    add_pipeline_check("Operational Shift Briefing", "/operations/briefing")
+    add_pipeline_check("Operational & Financial Impact", "/operations/impact")
+
     evidence_dir = Path("data/evidence")
     try:
         evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -585,6 +615,7 @@ def main() -> int:
                 port=args.port,
                 heartbeat_seconds=args.heartbeat_seconds,
                 sync_seconds=args.sync_seconds,
+                alert_decision_seconds=args.alert_decision_seconds,
             )
         elif args.command == "edge-status":
             status = edge_status(args.edge_id, Path(args.db))

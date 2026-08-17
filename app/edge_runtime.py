@@ -7,6 +7,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import uvicorn
 
@@ -16,6 +17,8 @@ import app.pilot as pilot_module
 from app.config import API_HOST, API_PORT
 from app.database import connect as db_connect, init_db
 from app.models import atualizar_camera_operacao, registrar_edge_heartbeat
+from app.operational_alerting import evaluate_alert_decisions
+from app.operational_read_model import ReadModelFilters
 from edge_agent.health import mark_edge_contact
 from edge_agent.sync_outbox import flush_sync_outbox, pending_sync_count
 from shared.schemas import now_iso
@@ -33,6 +36,7 @@ class ProductionEdgeRuntime:
         port: int = API_PORT,
         heartbeat_seconds: float = 10.0,
         sync_seconds: float = 10.0,
+        alert_decision_seconds: float = 60.0,
     ) -> None:
         self.edge_id = edge_id
         self.db_path = db_path
@@ -40,6 +44,7 @@ class ProductionEdgeRuntime:
         self.port = port
         self.heartbeat_seconds = heartbeat_seconds
         self.sync_seconds = sync_seconds
+        self.alert_decision_seconds = alert_decision_seconds
         self.stop_event = threading.Event()
         self.server: uvicorn.Server | None = None
         self.threads: list[threading.Thread] = []
@@ -136,6 +141,37 @@ class ProductionEdgeRuntime:
                 logger.warning("Falha temporaria ao retomar entregas de alerta: %s", exc)
             self.stop_event.wait(self.sync_seconds)
 
+    def _run_alert_decisioning(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                now = datetime.now(timezone.utc)
+                with db_connect(self.db_path) as connection:
+                    init_db(connection)
+                    tenants = [
+                        row["cliente_id"]
+                        for row in connection.execute(
+                            """
+                            SELECT DISTINCT cliente_id
+                            FROM cameras
+                            WHERE cliente_id IS NOT NULL AND ativa = 1
+                            """
+                        ).fetchall()
+                    ]
+                    for tenant_id in tenants:
+                        payload = evaluate_alert_decisions(
+                            connection,
+                            ReadModelFilters(
+                                cliente_id=tenant_id,
+                                start=now - timedelta(hours=2),
+                                end=now,
+                            ),
+                            now=now,
+                        )
+                        alerts_module.enqueue_alert_decisions(payload.get("decisions") or [])
+            except Exception as exc:
+                logger.warning("Falha temporaria no decisioning de alertas: %s", exc)
+            self.stop_event.wait(self.alert_decision_seconds)
+
     def _bind_runtime_database(self) -> None:
         def runtime_connect(_path: str | Path | None = None):
             return db_connect(self.db_path)
@@ -153,6 +189,7 @@ class ProductionEdgeRuntime:
             ("campex-api", self._run_api),
             ("campex-camera-runtime", self._run_camera_runtime),
             ("campex-outbox-sync", self._run_outbox_sync),
+            ("campex-alert-decisioning", self._run_alert_decisioning),
             ("campex-alert-delivery-resume", self._run_alert_delivery_resume),
         ]
         for name, target in jobs:
@@ -188,6 +225,7 @@ def run_production_edge(
     port: int = API_PORT,
     heartbeat_seconds: float = 10.0,
     sync_seconds: float = 10.0,
+    alert_decision_seconds: float = 60.0,
 ) -> None:
     runtime = ProductionEdgeRuntime(
         edge_id=edge_id,
@@ -196,6 +234,7 @@ def run_production_edge(
         port=port,
         heartbeat_seconds=heartbeat_seconds,
         sync_seconds=sync_seconds,
+        alert_decision_seconds=alert_decision_seconds,
     )
 
     def stop(_signum: int, _frame: object) -> None:
