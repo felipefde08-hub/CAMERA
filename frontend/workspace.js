@@ -705,7 +705,7 @@ function humanStatus(value) {
 function homeContextName(value, fallback = "Ativo sem nome") {
   const text = String(value || "").trim();
   if (!text) return fallback;
-  if (/^(evt|cam|opasset|area|proc|mach|compat|live)_/i.test(text) || /^[a-f0-9-]{16,}$/i.test(text)) return fallback;
+  if (/^(evt|cam|opasset|area|proc|mach|compat|live|cli|uni)_/i.test(text) || /^[a-f0-9-]{16,}$/i.test(text)) return fallback;
   return text;
 }
 
@@ -2264,11 +2264,11 @@ function eventDetail(event) {
       <section>
         <h3>Contexto da operação</h3>
         <dl>
-          <div><dt>Empresa</dt><dd>${event.cliente_id || physical.cliente_id || "Não informado"}</dd></div>
-          <div><dt>Unidade</dt><dd>${event.unidade_id || physical.unidade_id || physical.site_id || "Não informado"}</dd></div>
-          <div><dt>Área</dt><dd>${context.area || "Não informado"}</dd></div>
-          <div><dt>Processo</dt><dd>${context.process || "Não informado"}</dd></div>
-          <div><dt>Ativo/posto</dt><dd>${context.asset || "Não informado"}</dd></div>
+          <div><dt>Empresa</dt><dd>${homeContextName(event.cliente_name || event.cliente_id || physical.cliente_id, "Não informado")}</dd></div>
+          <div><dt>Unidade</dt><dd>${homeContextName(event.unidade_name || event.unit_name || event.unidade_id || physical.unidade_id || physical.site_id, "Não informado")}</dd></div>
+          <div><dt>Área</dt><dd>${homeContextName(context.area, "Não informado")}</dd></div>
+          <div><dt>Processo</dt><dd>${homeContextName(context.process, "Não informado")}</dd></div>
+          <div><dt>Ativo/posto</dt><dd>${homeContextName(context.asset, "Não informado")}</dd></div>
           <div><dt>Câmera</dt><dd>${context.camera ? "Disponível" : "Não informado"}</dd></div>
         </dl>
       </section>

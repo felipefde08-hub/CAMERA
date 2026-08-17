@@ -7577,7 +7577,7 @@ label {
 }
 
 .campex-dashboard.cx-events-mode .cx-detail-drawer {
-  width: min(620px, calc(100vw - 32px));
+  width: min(920px, calc(100vw - 32px));
   border-left: 1px solid #dfe4ec;
   background: #fff;
   box-shadow: -18px 0 42px rgba(13, 20, 36, 0.1);
@@ -7585,7 +7585,24 @@ label {
 
 .campex-dashboard.cx-events-mode .cx-event-detail-v1 {
   display: grid;
-  gap: 18px;
+  grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.75fr);
+  gap: 18px 22px;
+  align-items: start;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 > header,
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 > .cx-event-detail-facts,
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 > section:nth-of-type(n+3),
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 > details {
+  grid-column: 1 / -1;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 > section:nth-of-type(1) {
+  grid-column: 1;
+}
+
+.campex-dashboard.cx-events-mode .cx-event-detail-v1 > section:nth-of-type(2) {
+  grid-column: 2;
 }
 
 .campex-dashboard.cx-events-mode .cx-event-detail-v1 header span {
