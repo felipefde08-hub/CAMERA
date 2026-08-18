@@ -674,10 +674,10 @@ function renderTraceDrawer(uuids) {
   drawer.classList.add("open");
   drawer.setAttribute("aria-hidden", "false");
   drawerContent.innerHTML = `
-    <h2>Eventos que explicam o número</h2>
-    <p>Esta métrica foi composta pelos eventos abaixo.</p>
+    <h2>Eventos relacionados</h2>
+    <p>Veja os registros operacionais relacionados a esta informação.</p>
     <ul class="cx-trace-list">${uuids.map((uuid, index) => `<li><a class="cx-link" href="/events?event_uuid=${encodeURIComponent(uuid)}">Abrir evento ${index + 1}</a></li>`).join("")}</ul>
-    <p class="muted">Cada item leva ao registro operacional que originou o número.</p>
+    <p class="muted">Cada item leva ao evento original registrado pela Campex.</p>
   `;
   drawer.querySelector("h2")?.setAttribute("id", "workspaceDrawerTitle");
   drawer.focus({ preventScroll: true });
@@ -1155,7 +1155,7 @@ function renderOperationsAssetList(rows) {
           <span>${operationsStateDot(row.state)}</span>
           <span>${row.durationSeconds === null || row.durationSeconds === undefined ? "Indisponível" : `${secondsLabel(row.durationSeconds)} no estado`}</span>
           <span>${row.activity}</span>
-          <span>${row.incident}</span>
+          <span class="cx-ops-incident ${row.incident === "Sem incidente ativo" ? "clear" : "active"}">${row.incident}</span>
           <span>${row.updatedAt ? new Date(row.updatedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "Indisponível"}</span>
         </button>
       `).join("")}

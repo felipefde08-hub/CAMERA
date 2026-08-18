@@ -7071,9 +7071,9 @@ label {
 
 .campex-dashboard.cx-operations-mode .cx-ops-asset-list {
   overflow: hidden;
-  border: 1px solid #e6e9ef;
-  border-radius: 10px;
-  background: #fff;
+  border-top: 1px solid #dfe4eb;
+  border-bottom: 1px solid #dfe4eb;
+  background: transparent;
 }
 
 .campex-dashboard.cx-operations-mode .cx-ops-asset-row {
@@ -7086,7 +7086,7 @@ label {
   border-bottom: 1px solid #edf0f4;
   background: transparent;
   color: #202736;
-  padding: 13px 16px;
+  padding: 16px 12px;
   text-align: left;
 }
 
@@ -8693,4 +8693,36 @@ label {
   .campex-dashboard.cx-live-mode .cx-live-rail {
     position: static;
   }
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-incident {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 560;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-incident::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-incident.clear {
+  color: #7a8492;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-incident.clear::before {
+  background: #aab2bd;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-incident.active {
+  color: #a4161a;
+  font-weight: 650;
+}
+
+.campex-dashboard.cx-operations-mode .cx-ops-incident.active::before {
+  background: #dc2626;
 }
