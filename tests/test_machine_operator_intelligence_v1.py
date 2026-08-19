@@ -125,6 +125,67 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
         self.assertIsInstance(recent[0]["jpeg"], bytes)
         self.assertGreater(len(recent[0]["jpeg"]), 0)
 
+    def test_visual_candidate_persists_before_transition_after_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, _cliente_id, _unidade_id, camera_id, _monitor_id = self.make_context(temp_dir)
+            stream = LiveCameraStream(camera_id, "fake.mp4")
+
+            frame = np.zeros((60, 80, 3), dtype=np.uint8)
+            encoded, jpeg = __import__("cv2").imencode(".jpg", frame)
+            self.assertTrue(encoded)
+            jpeg_bytes = jpeg.tobytes()
+
+            stream._evidence_buffer.extend([
+                {"captured_at": "2026-08-19T10:00:00+00:00", "monotonic": 90.0, "jpeg": jpeg_bytes},
+                {"captured_at": "2026-08-19T10:00:05+00:00", "monotonic": 95.0, "jpeg": jpeg_bytes},
+            ])
+
+            evidence_root = Path(temp_dir)
+
+            with patch("app.live_stream.ROOT", evidence_root), patch("app.live_stream.connect", test_connect), patch("app.live_stream.time.monotonic", return_value=100.0):
+                candidate_id = stream.start_visual_candidate(
+                    "scene_change",
+                    context={"camera_id": camera_id},
+                    before_seconds=12.0,
+                    after_seconds=5.0,
+                )
+
+                stream._update_visual_candidates({
+                    "captured_at": "2026-08-19T10:00:01+00:00",
+                    "monotonic": 101.0,
+                    "jpeg": jpeg_bytes,
+                })
+                stream._update_visual_candidates({
+                    "captured_at": "2026-08-19T10:00:03+00:00",
+                    "monotonic": 103.0,
+                    "jpeg": jpeg_bytes,
+                })
+                stream._update_visual_candidates({
+                    "captured_at": "2026-08-19T10:00:06+00:00",
+                    "monotonic": 106.0,
+                    "jpeg": jpeg_bytes,
+                })
+
+            with test_connect() as connection:
+                rows = connection.execute(
+                    "SELECT path, metadata_json FROM evidences WHERE camera_id = ? ORDER BY created_at, id",
+                    (camera_id,),
+                ).fetchall()
+
+            self.assertNotIn(candidate_id, stream._visual_candidates)
+            self.assertGreaterEqual(len(rows), 4)
+
+            metadata = [__import__("json").loads(row["metadata_json"]) for row in rows]
+            phases = {item.get("phase") for item in metadata}
+
+            self.assertIn("before", phases)
+            self.assertIn("transition", phases)
+            self.assertIn("after", phases)
+            self.assertTrue(all(item.get("candidate_id") == candidate_id for item in metadata))
+
+            for row in rows:
+                self.assertTrue((evidence_root / row["path"]).exists())
+
     def test_assisted_calibration_collects_frame_samples_and_persists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             test_connect, _cliente_id, _unidade_id, camera_id, monitor_id = self.make_context(temp_dir)

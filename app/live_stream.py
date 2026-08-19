@@ -11,13 +11,14 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
+from app.config import ROOT
 from app.database import connect, init_db
 from edge_agent.camera_connector import CameraSource, UniversalCameraConnector, now_iso
 from app.person_detection import Detection, PersonAnalysisEngine
 from app.incidents import IncidentManager
 from app.people_zones import PeopleZonesEngine
 from app.machine_monitoring import MachineMonitorEngine, config_from_dict, draw_machine_overlay, machine_activity_score, machine_calibration_separation
-from app.models import atualizar_machine_monitor, listar_areas_ativas_camera, listar_machine_monitors_ativos_camera, registrar_machine_calibration
+from app.models import atualizar_machine_monitor, listar_areas_ativas_camera, listar_machine_monitors_ativos_camera, new_id, registrar_evidence_index, registrar_machine_calibration
 from app.operations_history import OperationsRecorder
 from app.observation_engine import ObservationEngine
 from app.operational_rule_runtime import OperationalRuleRuntime, facts_from_stream
@@ -125,6 +126,7 @@ class LiveCameraStream:
         self._last_evidence_sample_seconds = 0.0
         self._evidence_buffer_lock = threading.Lock()
         self._evidence_buffer = deque(maxlen=18)
+        self._visual_candidates: dict[str, dict[str, Any]] = {}
 
         self._area_presence_tracker = AreaPresenceTracker()
         self._active_area: RestrictedArea | None = None
@@ -166,6 +168,7 @@ class LiveCameraStream:
             while self._evidence_buffer and self._evidence_buffer[0]["monotonic"] < cutoff:
                 self._evidence_buffer.popleft()
 
+        self._update_visual_candidates(sample)
         self._last_evidence_sample_seconds = now
 
     def recent_evidence_frames(self, seconds: float = 30.0) -> list[dict[str, object]]:
@@ -179,6 +182,123 @@ class LiveCameraStream:
                 for sample in self._evidence_buffer
                 if sample["monotonic"] >= cutoff
             ]
+
+    def start_visual_candidate(
+        self,
+        candidate_type: str,
+        *,
+        context: dict[str, Any] | None = None,
+        before_seconds: float = 12.0,
+        after_seconds: float = 12.0,
+    ) -> str:
+        candidate_id = new_id("vcan")
+        now = time.monotonic()
+        cutoff = now - max(0.0, before_seconds)
+
+        with self._evidence_buffer_lock:
+            before = [
+                dict(sample)
+                for sample in self._evidence_buffer
+                if sample["monotonic"] >= cutoff
+            ]
+
+        self._visual_candidates[candidate_id] = {
+            "candidate_id": candidate_id,
+            "candidate_type": candidate_type,
+            "context": context or {},
+            "triggered_at": now_iso(),
+            "trigger_monotonic": now,
+            "after_seconds": max(0.0, after_seconds),
+            "before": before,
+            "after": [],
+        }
+        return candidate_id
+
+    def _update_visual_candidates(self, sample: dict[str, object]) -> None:
+        completed: list[str] = []
+
+        for candidate_id, candidate in list(self._visual_candidates.items()):
+            trigger_monotonic = float(candidate["trigger_monotonic"])
+            sample_monotonic = float(sample["monotonic"])
+
+            if sample_monotonic >= trigger_monotonic:
+                candidate["after"].append(dict(sample))
+
+            if sample_monotonic >= trigger_monotonic + float(candidate["after_seconds"]):
+                completed.append(candidate_id)
+
+        for candidate_id in completed:
+            candidate = self._visual_candidates.pop(candidate_id, None)
+            if candidate:
+                self._persist_visual_evidence_bundle(candidate)
+
+    def _persist_visual_evidence_bundle(self, candidate: dict[str, Any]) -> list[dict[str, Any]]:
+        now = datetime.now(timezone.utc).astimezone()
+        folder = ROOT / "data" / "evidence" / self.camera_id / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
+        folder.mkdir(parents=True, exist_ok=True)
+
+        before = candidate.get("before") or []
+        after = candidate.get("after") or []
+
+        selected: list[tuple[str, dict[str, Any]]] = []
+
+        if before:
+            selected.extend(("before", sample) for sample in before[-3:])
+
+        if after:
+            selected.append(("transition", after[0]))
+            selected.extend(("after", sample) for sample in after[1:4])
+
+        refs: list[dict[str, Any]] = []
+
+        with connect() as connection:
+            init_db(connection)
+
+            for index, (phase, sample) in enumerate(selected):
+                evidence_id = new_id("evd")
+                filename = f"{now:%H%M%S}_{candidate['candidate_id']}_{phase}_{index}.jpg"
+                path = folder / filename
+                path.write_bytes(sample["jpeg"])
+
+                try:
+                    relative_path = str(path.relative_to(ROOT))
+                except ValueError:
+                    relative_path = str(path)
+
+                metadata = {
+                    "source": "visual_candidate",
+                    "candidate_id": candidate["candidate_id"],
+                    "candidate_type": candidate["candidate_type"],
+                    "phase": phase,
+                    "captured_at": sample.get("captured_at"),
+                    "triggered_at": candidate.get("triggered_at"),
+                    "context": candidate.get("context") or {},
+                }
+
+                registrar_evidence_index(
+                    connection,
+                    evidence_id=evidence_id,
+                    event_id=None,
+                    event_uuid=None,
+                    tenant_id=(candidate.get("context") or {}).get("tenant_id"),
+                    unit_id=(candidate.get("context") or {}).get("unit_id"),
+                    camera_id=self.camera_id,
+                    machine_id=(candidate.get("context") or {}).get("machine_id"),
+                    path=relative_path,
+                    media_type="image",
+                    size_bytes=path.stat().st_size,
+                    metadata=metadata,
+                )
+
+                refs.append({
+                    "evidence_id": evidence_id,
+                    "path": relative_path,
+                    "type": "image",
+                    "phase": phase,
+                    "captured_at": sample.get("captured_at"),
+                })
+
+        return refs
 
     def _evaluate_rules(
         self,
