@@ -99,6 +99,32 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
 
         self.assertEqual(config.operator_presence_grace_seconds, 45.0)
 
+    def test_evidence_window_keeps_only_recent_compressed_frames(self) -> None:
+        stream = LiveCameraStream("cam_evidence", "fake.mp4")
+        frame = np.zeros((60, 80, 3), dtype=np.uint8)
+
+        with patch(
+            "app.live_stream.time.monotonic",
+            side_effect=[100.0, 101.0, 102.1, 133.0, 133.0],
+        ), patch(
+            "app.live_stream.now_iso",
+            side_effect=[
+                "2026-08-19T10:00:00+00:00",
+                "2026-08-19T10:00:02+00:00",
+                "2026-08-19T10:00:33+00:00",
+            ],
+        ):
+            stream._buffer_evidence_frame(frame)
+            stream._buffer_evidence_frame(frame)
+            stream._buffer_evidence_frame(frame)
+            stream._buffer_evidence_frame(frame)
+            recent = stream.recent_evidence_frames(30)
+
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(recent[0]["captured_at"], "2026-08-19T10:00:33+00:00")
+        self.assertIsInstance(recent[0]["jpeg"], bytes)
+        self.assertGreater(len(recent[0]["jpeg"]), 0)
+
     def test_assisted_calibration_collects_frame_samples_and_persists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             test_connect, _cliente_id, _unidade_id, camera_id, monitor_id = self.make_context(temp_dir)

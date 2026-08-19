@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import os
+from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -115,6 +116,16 @@ class LiveCameraStream:
         self._analysis_frame_lock = threading.Lock()
         self._analysis_frame = None
         self._last_raw_frame = None
+
+        # Rolling visual evidence buffer.
+        # Keeps a small compressed history in memory so future visual events
+        # can recover what happened before a trigger without recording video 24/7.
+        self._evidence_sample_interval_seconds = 2.0
+        self._evidence_buffer_seconds = 30.0
+        self._last_evidence_sample_seconds = 0.0
+        self._evidence_buffer_lock = threading.Lock()
+        self._evidence_buffer = deque(maxlen=18)
+
         self._area_presence_tracker = AreaPresenceTracker()
         self._active_area: RestrictedArea | None = None
         self._active_areas: list[dict[str, object]] = []
@@ -129,6 +140,45 @@ class LiveCameraStream:
         self._observation_engine = ObservationEngine(camera_id)
         self._calibration_lock = threading.Lock()
         self._calibration: dict[str, Any] | None = None
+
+    def _buffer_evidence_frame(self, frame: np.ndarray) -> None:
+        now = time.monotonic()
+        if now - self._last_evidence_sample_seconds < self._evidence_sample_interval_seconds:
+            return
+
+        encoded, jpeg = cv2.imencode(
+            ".jpg",
+            frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), 82],
+        )
+        if not encoded:
+            return
+
+        sample = {
+            "captured_at": now_iso(),
+            "monotonic": now,
+            "jpeg": jpeg.tobytes(),
+        }
+
+        cutoff = now - self._evidence_buffer_seconds
+        with self._evidence_buffer_lock:
+            self._evidence_buffer.append(sample)
+            while self._evidence_buffer and self._evidence_buffer[0]["monotonic"] < cutoff:
+                self._evidence_buffer.popleft()
+
+        self._last_evidence_sample_seconds = now
+
+    def recent_evidence_frames(self, seconds: float = 30.0) -> list[dict[str, object]]:
+        cutoff = time.monotonic() - max(0.0, float(seconds))
+        with self._evidence_buffer_lock:
+            return [
+                {
+                    "captured_at": sample["captured_at"],
+                    "jpeg": sample["jpeg"],
+                }
+                for sample in self._evidence_buffer
+                if sample["monotonic"] >= cutoff
+            ]
 
     def _evaluate_rules(
         self,
@@ -694,6 +744,7 @@ class LiveCameraStream:
                         break
 
                     self._last_raw_frame = frame.copy()
+                    self._buffer_evidence_frame(frame)
                     self._update_calibration(frame)
                     output_frame = self._maybe_analyze(frame)
                     encoded, jpeg = cv2.imencode(".jpg", output_frame)
