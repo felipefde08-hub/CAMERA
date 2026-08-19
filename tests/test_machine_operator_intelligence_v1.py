@@ -132,6 +132,34 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
         self.assertGreater(updated["active_calibration"]["samples_count"], 0)
         self.assertEqual(updated["calibration_algorithm_version"], "frame-diff-roi-temporal-v1")
 
+    def test_live_people_count_uses_temporal_detection_consistent_with_overlay(self) -> None:
+        stream = LiveCameraStream("cam_temporal", "fake.mp4")
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        temporal_person = Detection(10, 10, 30, 80, 0.9, track_id=7)
+
+        class FakeEngine:
+            analysis_fps = 5.0
+            model_name = "fake"
+
+            def analyze(self, _frame):
+                return []
+
+            def recent_detections(self):
+                return [temporal_person]
+
+            def draw(self, output, _detections):
+                return output
+
+        stream._analysis_enabled = True
+        stream._last_analysis_seconds = 0
+        stream._ensure_analysis_engine = lambda: FakeEngine()
+        stream._load_active_areas = lambda: []
+        stream._load_machine_engines = lambda: []
+
+        stream._maybe_analyze(frame)
+
+        self.assertEqual(stream.public_status()["people_count"], 1)
+
     def test_calibration_separation_ready_and_invalid(self) -> None:
         active = calibration_stats([30, 32, 31, 33, 29])
         stopped = calibration_stats([1, 2, 1, 3, 2])

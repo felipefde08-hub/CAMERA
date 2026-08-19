@@ -499,6 +499,7 @@ class LiveCameraStream:
         temporal_detections = self._last_temporal_detections or self._last_detections
         presence, inside_ids = evaluate_area(area, temporal_detections, width, height, self._area_presence_tracker)
         with self._lock:
+            self.status.people_count = len([d for d in temporal_detections if d.class_name == "person"])
             self.status.area_id = presence.area_id
             self.status.area_nome = presence.area_nome
             self.status.area_estado = presence.estado
