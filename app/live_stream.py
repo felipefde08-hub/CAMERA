@@ -4,6 +4,7 @@ import threading
 import time
 import os
 from collections import deque
+import queue
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -127,6 +128,11 @@ class LiveCameraStream:
         self._evidence_buffer_lock = threading.Lock()
         self._evidence_buffer = deque(maxlen=18)
         self._visual_candidates: dict[str, dict[str, Any]] = {}
+        self._visual_understanding_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=32)
+        self._visual_understanding_worker_thread: threading.Thread | None = None
+        self._visual_understanding_worker_stop = threading.Event()
+        self._visual_understanding_processed: set[str] = set()
+        self._last_visual_understanding_error: str | None = None
 
         self._area_presence_tracker = AreaPresenceTracker()
         self._active_area: RestrictedArea | None = None
@@ -298,7 +304,104 @@ class LiveCameraStream:
                     "captured_at": sample.get("captured_at"),
                 })
 
+        self._enqueue_visual_understanding(candidate)
         return refs
+
+    def _ensure_visual_understanding_worker(self) -> None:
+        thread = self._visual_understanding_worker_thread
+        if thread and thread.is_alive():
+            return
+
+        self._visual_understanding_worker_stop.clear()
+        self._visual_understanding_worker_thread = threading.Thread(
+            target=self._visual_understanding_worker_loop,
+            name=f"visual-understanding-{self.camera_id}",
+            daemon=True,
+        )
+        self._visual_understanding_worker_thread.start()
+
+    def _enqueue_visual_understanding(self, candidate: dict[str, Any]) -> None:
+        import os
+
+        auto_enabled = (
+            os.getenv("CAMPEX_VISUAL_UNDERSTANDING_AUTO_ENABLED", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on"}
+        )
+        provider = (
+            os.getenv("CAMPEX_VIDEO_UNDERSTANDING_PROVIDER")
+            or os.getenv("VIDEO_UNDERSTANDING_PROVIDER")
+            or ""
+        ).strip().lower()
+
+        if not auto_enabled or provider not in {"fake", "stub", "openai"}:
+            return
+
+        candidate_id = str(candidate.get("candidate_id") or "")
+        if not candidate_id or candidate_id in self._visual_understanding_processed:
+            return
+
+        job = {
+            "candidate_id": candidate_id,
+            "candidate_type": candidate.get("candidate_type"),
+            "triggered_at": candidate.get("triggered_at"),
+            "context": dict(candidate.get("context") or {}),
+        }
+
+        self._ensure_visual_understanding_worker()
+
+        try:
+            self._visual_understanding_queue.put_nowait(job)
+        except queue.Full:
+            self._last_visual_understanding_error = "visual_understanding_queue_full"
+
+    def _visual_understanding_worker_loop(self) -> None:
+        from app.operational_read_model import ReadModelFilters, _context_id_for_trigger
+        from app.video_understanding import VideoUnderstandingService
+
+        while not self._visual_understanding_worker_stop.is_set():
+            try:
+                job = self._visual_understanding_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            try:
+                context = dict(job.get("context") or {})
+                context.setdefault("camera_id", self.camera_id)
+
+                trigger = {
+                    "type": f"visual_candidate_{job.get('candidate_type') or 'scene_change'}",
+                    "ref": job["candidate_id"],
+                    "timestamp": job.get("triggered_at"),
+                    "context": context,
+                    "source": "visual_evidence_bundle",
+                }
+
+                context_id = _context_id_for_trigger(trigger)
+
+                filters = ReadModelFilters(
+                    cliente_id=context.get("tenant_id"),
+                    site_id=context.get("unit_id"),
+                    camera_id=context.get("camera_id") or self.camera_id,
+                )
+
+                with connect() as connection:
+                    init_db(connection)
+                    VideoUnderstandingService().analyze_context(
+                        connection,
+                        filters,
+                        context_id,
+                    )
+
+                self._visual_understanding_processed.add(job["candidate_id"])
+                self._last_visual_understanding_error = None
+
+            except Exception as exc:
+                self._last_visual_understanding_error = str(exc)
+
+            finally:
+                self._visual_understanding_queue.task_done()
 
     def _evaluate_rules(
         self,
@@ -752,9 +855,29 @@ class LiveCameraStream:
         zone_states = list(zone_states or [])
         for engine in machine_engines:
             try:
+                previous_machine_state = self.status.machine_state
                 state = engine.update(output, self._last_detections)
                 output = draw_machine_overlay(output, engine.config, state)
                 machine_state = "ACTIVE" if state.state == "ACTIVE" else "STOPPED" if state.state == "STOPPED" else "UNKNOWN"
+
+                if (
+                    previous_machine_state in {"ACTIVE", "STOPPED"}
+                    and state.state in {"ACTIVE", "STOPPED"}
+                    and previous_machine_state != state.state
+                ):
+                    self.start_visual_candidate(
+                        "machine_state_change",
+                        context={
+                            "tenant_id": engine.config.client_id,
+                            "unit_id": engine.config.unit_id,
+                            "camera_id": self.camera_id,
+                            "machine_id": engine.config.id,
+                            "previous_state": previous_machine_state,
+                            "new_state": state.state,
+                        },
+                        before_seconds=12.0,
+                        after_seconds=12.0,
+                    )
                 if area_presence and not zone_states:
                     zone_states.append({**area_presence.to_dict(), "tipo": "restricted_zone"})
                 monitor_public = getattr(engine, "_monitor_public", {}) or {}

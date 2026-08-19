@@ -8,6 +8,7 @@ EVENT_FAMILY_INTERRUPTION: Final = "interruption"
 EVENT_FAMILY_WAIT: Final = "wait"
 EVENT_FAMILY_FLOW: Final = "flow"
 EVENT_FAMILY_ABSENCE: Final = "absence"
+EVENT_FAMILY_VISUAL: Final = "visual"
 EVENT_FAMILY_UNKNOWN: Final = "unknown"
 
 OFFICIAL_EVENT_FAMILIES: Final = {
@@ -15,6 +16,7 @@ OFFICIAL_EVENT_FAMILIES: Final = {
     EVENT_FAMILY_WAIT,
     EVENT_FAMILY_FLOW,
     EVENT_FAMILY_ABSENCE,
+    EVENT_FAMILY_VISUAL,
 }
 
 
@@ -30,6 +32,7 @@ EVENT_TAXONOMY: Final[dict[str, EventTaxonomy]] = {
     "repeated_microstops": EventTaxonomy(EVENT_FAMILY_INTERRUPTION, "microstops"),
     "machine_running_without_operator": EventTaxonomy(EVENT_FAMILY_ABSENCE, "running_without_operator"),
     "workstation_unattended": EventTaxonomy(EVENT_FAMILY_ABSENCE, "work_area_unattended"),
+    "visual_occurrence": EventTaxonomy(EVENT_FAMILY_VISUAL, "visual_occurrence"),
 }
 
 

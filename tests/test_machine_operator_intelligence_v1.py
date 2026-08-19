@@ -186,6 +186,266 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
             for row in rows:
                 self.assertTrue((evidence_root / row["path"]).exists())
 
+    def test_visual_candidate_rebuilds_as_official_video_context(self) -> None:
+        from datetime import datetime, timezone
+
+        from app.models import new_id, registrar_evidence_index
+        from app.operational_read_model import (
+            ReadModelFilters,
+            _context_id_for_trigger,
+            video_context_by_id,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, cliente_id, unidade_id, camera_id, _monitor_id = self.make_context(temp_dir)
+
+            candidate_id = new_id("vcan")
+            triggered_at = "2026-08-19T14:00:10+00:00"
+            context = {"camera_id": camera_id}
+
+            samples = [
+                ("before", "2026-08-19T14:00:05+00:00"),
+                ("transition", "2026-08-19T14:00:10+00:00"),
+                ("after", "2026-08-19T14:00:15+00:00"),
+            ]
+
+            with test_connect() as connection:
+                for phase, captured_at in samples:
+                    registrar_evidence_index(
+                        connection,
+                        evidence_id=new_id("evd"),
+                        event_id=None,
+                        event_uuid=None,
+                        tenant_id=cliente_id,
+                        unit_id=unidade_id,
+                        camera_id=camera_id,
+                        machine_id=None,
+                        path=f"data/evidence/{camera_id}/{phase}.jpg",
+                        media_type="image",
+                        size_bytes=123,
+                        metadata={
+                            "source": "visual_candidate",
+                            "candidate_id": candidate_id,
+                            "candidate_type": "scene_change",
+                            "phase": phase,
+                            "captured_at": captured_at,
+                            "triggered_at": triggered_at,
+                            "context": context,
+                        },
+                    )
+
+                trigger = {
+                    "type": "visual_candidate_scene_change",
+                    "ref": candidate_id,
+                    "timestamp": triggered_at,
+                    "context": context,
+                    "source": "visual_evidence_bundle",
+                }
+                context_id = _context_id_for_trigger(trigger)
+
+                filters = ReadModelFilters(
+                    cliente_id=cliente_id,
+                    site_id=unidade_id,
+                    camera_id=camera_id,
+                    start=datetime(2026, 8, 19, 13, 59, tzinfo=timezone.utc),
+                    end=datetime(2026, 8, 19, 14, 1, tzinfo=timezone.utc),
+                )
+
+                video_context = video_context_by_id(
+                    connection,
+                    filters,
+                    context_id,
+                )
+
+            self.assertIsNotNone(video_context)
+            self.assertEqual(video_context["context_id"], context_id)
+            self.assertEqual(video_context["camera_id"], camera_id)
+            self.assertEqual(video_context["trigger"]["ref"], candidate_id)
+
+            self.assertIn("before", video_context["phases"])
+            self.assertIn("transition", video_context["phases"])
+            self.assertIn("after", video_context["phases"])
+
+            self.assertEqual(len(video_context["evidence_refs"]), 3)
+            self.assertTrue(video_context["data_quality"]["evidence_available"])
+
+    def test_machine_state_change_starts_visual_candidate(self) -> None:
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+
+            stream = LiveCameraStream(camera_id, "fake.mp4")
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            stream.status.machine_state = "ACTIVE"
+
+            state = SimpleNamespace(
+                state="STOPPED",
+                smoothed_motion=2.0,
+                threshold=15.0,
+                operator_present=False,
+                event_id=None,
+                confidence=0.9,
+                reason="motion_below_threshold",
+                analysis_status="ok",
+                analysis_error=None,
+                raw_activity_score=2.0,
+                frames_analyzed=10,
+                roi_width=100,
+                roi_height=100,
+            )
+
+            frame = np.zeros((100, 100, 3), dtype=np.uint8)
+
+            with patch.object(engine, "update", return_value=state), \
+                 patch("app.live_stream.draw_machine_overlay", side_effect=lambda frame, config, state: frame), \
+                 patch.object(stream._observation_engine, "build", return_value={"seconds_in_machine_state": 0}), \
+                 patch.object(stream._operations_recorder, "update_status"), \
+                 patch.object(stream, "_evaluate_rules"), \
+                 patch.object(stream, "start_visual_candidate") as start_candidate:
+
+                stream._update_machines(frame, [engine])
+
+            start_candidate.assert_called_once()
+            args, kwargs = start_candidate.call_args
+
+            self.assertEqual(args[0], "machine_state_change")
+            self.assertEqual(kwargs["context"]["camera_id"], camera_id)
+            self.assertEqual(kwargs["context"]["machine_id"], monitor_id)
+            self.assertEqual(kwargs["context"]["previous_state"], "ACTIVE")
+            self.assertEqual(kwargs["context"]["new_state"], "STOPPED")
+
+    def test_visual_candidate_runs_automatic_understanding_worker(self) -> None:
+        stream = LiveCameraStream("cam_auto_understanding", "fake.mp4")
+
+        candidate = {
+            "candidate_id": "vcan_auto_1",
+            "candidate_type": "machine_state_change",
+            "triggered_at": "2026-08-19T15:00:00+00:00",
+            "context": {
+                "tenant_id": "tenant_1",
+                "unit_id": "unit_1",
+                "camera_id": "cam_auto_understanding",
+                "machine_id": "machine_1",
+                "previous_state": "ACTIVE",
+                "new_state": "STOPPED",
+            },
+        }
+
+        with patch.dict(
+            "os.environ",
+            {
+                "CAMPEX_VISUAL_UNDERSTANDING_AUTO_ENABLED": "true",
+                "CAMPEX_VIDEO_UNDERSTANDING_PROVIDER": "fake",
+            },
+        ), patch(
+            "app.video_understanding.VideoUnderstandingService.analyze_context",
+            return_value={"status": "ok"},
+        ) as analyze_context:
+            stream._enqueue_visual_understanding(candidate)
+            stream._visual_understanding_queue.join()
+
+        stream._visual_understanding_worker_stop.set()
+        thread = stream._visual_understanding_worker_thread
+        if thread:
+            thread.join(timeout=2.0)
+
+        analyze_context.assert_called_once()
+        self.assertIn(
+            candidate["candidate_id"],
+            stream._visual_understanding_processed,
+        )
+        self.assertIsNone(stream._last_visual_understanding_error)
+
+    def test_validated_understanding_materializes_visual_occurrence_once(self) -> None:
+        from app.models import new_id, registrar_evidence_index
+        from app.operational_understanding import _materialize_visual_occurrence
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, cliente_id, unidade_id, camera_id, _monitor_id = self.make_context(temp_dir)
+
+            candidate_id = new_id("vcan")
+
+            with test_connect() as connection:
+                for phase in ("before", "transition", "after"):
+                    registrar_evidence_index(
+                        connection,
+                        evidence_id=new_id("evd"),
+                        event_id=None,
+                        event_uuid=None,
+                        tenant_id=cliente_id,
+                        unit_id=unidade_id,
+                        camera_id=camera_id,
+                        machine_id=None,
+                        path=f"data/evidence/{camera_id}/{candidate_id}_{phase}.jpg",
+                        media_type="image",
+                        size_bytes=123,
+                        metadata={
+                            "source": "visual_candidate",
+                            "candidate_id": candidate_id,
+                            "candidate_type": "scene_change",
+                            "phase": phase,
+                        },
+                    )
+
+                video_context = {
+                    "trigger": {
+                        "type": "visual_candidate_scene_change",
+                        "ref": candidate_id,
+                        "timestamp": "2026-08-19T16:00:00+00:00",
+                        "context": {"camera_id": camera_id},
+                    }
+                }
+
+                understanding = {
+                    "status": "VALID",
+                    "tenant_id": cliente_id,
+                    "unit_id": unidade_id,
+                    "camera_id": camera_id,
+                    "trigger_ref": candidate_id,
+                }
+
+                first_event_id = _materialize_visual_occurrence(
+                    connection,
+                    video_context=video_context,
+                    understanding=understanding,
+                )
+                second_event_id = _materialize_visual_occurrence(
+                    connection,
+                    video_context=video_context,
+                    understanding=understanding,
+                )
+
+                events = connection.execute(
+                    """
+                    SELECT id, event_uuid, tipo, event_family, event_subtype
+                    FROM eventos
+                    WHERE event_uuid = ?
+                    """,
+                    (f"visual:{candidate_id}",),
+                ).fetchall()
+
+                evidences = connection.execute(
+                    """
+                    SELECT event_id, event_uuid
+                    FROM evidences
+                    WHERE camera_id = ?
+                      AND metadata_json LIKE ?
+                    """,
+                    (camera_id, f"%{candidate_id}%"),
+                ).fetchall()
+
+            self.assertIsNotNone(first_event_id)
+            self.assertEqual(first_event_id, second_event_id)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["tipo"], "visual_occurrence")
+            self.assertEqual(events[0]["event_family"], "visual")
+            self.assertEqual(events[0]["event_subtype"], "visual_occurrence")
+
+            self.assertEqual(len(evidences), 3)
+            self.assertTrue(all(row["event_id"] == first_event_id for row in evidences))
+            self.assertTrue(all(row["event_uuid"] == f"visual:{candidate_id}" for row in evidences))
+
     def test_assisted_calibration_collects_frame_samples_and_persists(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             test_connect, _cliente_id, _unidade_id, camera_id, monitor_id = self.make_context(temp_dir)

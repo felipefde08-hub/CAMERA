@@ -24,6 +24,100 @@ class UnderstandingFilters:
     end: str | None = None
 
 
+
+def _materialize_visual_occurrence(
+    connection: sqlite3.Connection,
+    *,
+    video_context: dict[str, Any],
+    understanding: dict[str, Any],
+) -> str | None:
+    if understanding.get("status") not in {"VALID", "PARTIAL"}:
+        return None
+
+    trigger = video_context.get("trigger") if isinstance(video_context.get("trigger"), dict) else {}
+    trigger_type = str(trigger.get("type") or "")
+
+    if not trigger_type.startswith("visual_candidate_"):
+        return None
+
+    trigger_ref = str(trigger.get("ref") or understanding.get("trigger_ref") or "")
+    if not trigger_ref:
+        return None
+
+    cliente_id = understanding.get("tenant_id")
+    unidade_id = understanding.get("unit_id") or understanding.get("site_id")
+    camera_id = understanding.get("camera_id")
+
+    if not cliente_id or not unidade_id or not camera_id:
+        return None
+
+    event_uuid = f"visual:{trigger_ref}"
+
+    existing = connection.execute(
+        "SELECT id FROM eventos WHERE event_uuid = ? LIMIT 1",
+        (event_uuid,),
+    ).fetchone()
+
+    if existing:
+        return str(existing["id"])
+
+    evidence_rows = connection.execute(
+        """
+        SELECT id, path, metadata_json
+        FROM evidences
+        WHERE camera_id = ?
+        ORDER BY created_at, id
+        """,
+        (camera_id,),
+    ).fetchall()
+
+    candidate_evidences: list[sqlite3.Row] = []
+
+    for row in evidence_rows:
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+
+        if (
+            metadata.get("source") == "visual_candidate"
+            and str(metadata.get("candidate_id") or "") == trigger_ref
+        ):
+            candidate_evidences.append(row)
+
+    midia_path = candidate_evidences[0]["path"] if candidate_evidences else None
+
+    from app.models import registrar_evento
+
+    event_id = registrar_evento(
+        connection,
+        cliente_id=str(cliente_id),
+        unidade_id=str(unidade_id),
+        camera_id=str(camera_id),
+        tipo="visual_occurrence",
+        inicio=trigger.get("timestamp"),
+        fim=None,
+        duracao=None,
+        operador_presente=None,
+        confianca=None,
+        midia_path=midia_path,
+        event_uuid=event_uuid,
+    )
+
+    for row in candidate_evidences:
+        connection.execute(
+            """
+            UPDATE evidences
+            SET event_id = ?, event_uuid = ?
+            WHERE id = ?
+            """,
+            (event_id, event_uuid, row["id"]),
+        )
+
+    connection.commit()
+    return event_id
+
+
 def validate_normalize_and_persist_understanding(
     connection: sqlite3.Connection,
     *,
@@ -35,6 +129,13 @@ def validate_normalize_and_persist_understanding(
     record = _record_from_parts(video_context=video_context, request=request, normalized=normalized, validation_errors=validation_errors)
     _resolve_record_scope(connection, record)
     persisted = persist_validated_understanding(connection, record)
+    materialized_event_id = _materialize_visual_occurrence(
+        connection,
+        video_context=video_context,
+        understanding=persisted,
+    )
+    if materialized_event_id:
+        persisted["materialized_event_id"] = materialized_event_id
     return persisted
 
 

@@ -1199,6 +1199,194 @@ def _source_bounds_for_video_context(connection: sqlite3.Connection, filters: Re
     return min(parsed), max(parsed)
 
 
+def _visual_candidate_context_by_id(
+    connection: sqlite3.Connection,
+    filters: ReadModelFilters,
+    context_id: str,
+) -> dict[str, Any] | None:
+    clauses = ["metadata_json LIKE ?"]
+    params: list[Any] = ["%visual_candidate%"]
+
+    for column, value in (
+        ("tenant_id", filters.cliente_id),
+        ("unit_id", filters.site_id),
+        ("camera_id", filters.camera_id),
+    ):
+        if value:
+            clauses.append(f"{column} = ?")
+            params.append(value)
+
+    rows = connection.execute(
+        f"""
+        SELECT
+            id,
+            tenant_id,
+            unit_id,
+            camera_id,
+            machine_id,
+            path,
+            media_type,
+            size_bytes,
+            created_at,
+            metadata_json
+        FROM evidences
+        WHERE {' AND '.join(clauses)}
+        ORDER BY created_at, id
+        """,
+        params,
+    ).fetchall()
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+
+    for row in rows:
+        try:
+            metadata = json.loads(row["metadata_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+
+        if metadata.get("source") != "visual_candidate":
+            continue
+
+        candidate_id = metadata.get("candidate_id")
+        if not candidate_id:
+            continue
+
+        captured_at = metadata.get("captured_at") or row["created_at"]
+
+        if filters.start and parse_datetime(captured_at) < filters.start:
+            continue
+        if filters.end and parse_datetime(captured_at) > filters.end:
+            continue
+
+        grouped.setdefault(str(candidate_id), []).append(
+            {
+                "row": row,
+                "metadata": metadata,
+                "captured_at": captured_at,
+            }
+        )
+
+    for candidate_id, items in grouped.items():
+        first = items[0]
+        first_row = first["row"]
+        first_metadata = first["metadata"]
+
+        candidate_type = str(first_metadata.get("candidate_type") or "scene_change")
+        triggered_at = first_metadata.get("triggered_at") or first["captured_at"]
+
+        candidate_context = dict(first_metadata.get("context") or {})
+        candidate_context.setdefault("camera_id", first_row["camera_id"])
+
+        if first_row["machine_id"]:
+            candidate_context.setdefault("asset_id", first_row["machine_id"])
+
+        trigger = {
+            "type": f"visual_candidate_{candidate_type}",
+            "ref": candidate_id,
+            "timestamp": triggered_at,
+            "context": candidate_context,
+            "source": "visual_evidence_bundle",
+        }
+
+        candidate_context_id = _context_id_for_trigger(trigger)
+        if candidate_context_id != context_id:
+            continue
+
+        phases: dict[str, list[dict[str, Any]]] = {
+            "before": [],
+            "transition": [],
+            "during": [],
+            "after": [],
+        }
+        observations: list[dict[str, Any]] = []
+        evidence_refs: list[dict[str, Any]] = []
+        timestamps: list[datetime] = []
+
+        for item in items:
+            row = item["row"]
+            metadata = item["metadata"]
+            phase = str(metadata.get("phase") or "during")
+
+            if phase not in phases:
+                phase = "during"
+
+            captured_at = item["captured_at"]
+            timestamps.append(parse_datetime(captured_at))
+
+            evidence_ref = {
+                "evidence_id": row["id"],
+                "path": row["path"],
+                "media_type": row["media_type"],
+                "size_bytes": row["size_bytes"],
+            }
+
+            fact = {
+                "timestamp": captured_at,
+                "type": "visual_evidence",
+                "title": "Evidência visual",
+                "description": f"Evidência visual do candidato {candidate_type}.",
+                "previous_state": None,
+                "new_state": None,
+                "duration_seconds": None,
+                "confidence": None,
+                "data_quality": "observed",
+                "event_uuid": None,
+                "evidence_refs": [evidence_ref],
+            }
+
+            phases[phase].append(fact)
+            observations.append(fact)
+            evidence_refs.append(evidence_ref)
+
+        if not timestamps:
+            continue
+
+        trigger_ts = parse_datetime(triggered_at)
+        start_ts = min(timestamps)
+        end_ts = max(timestamps)
+
+        present_phases = {
+            phase: facts
+            for phase, facts in phases.items()
+            if facts
+        }
+
+        required_phases = {"before", "transition", "after"}
+        missing_phases = sorted(required_phases - set(present_phases))
+
+        return {
+            "context_id": candidate_context_id,
+            "camera_id": candidate_context.get("camera_id"),
+            "asset_id": candidate_context.get("asset_id"),
+            "start_ts": to_iso(start_ts),
+            "end_ts": to_iso(end_ts),
+            "trigger": trigger,
+            "phases": present_phases,
+            "observations": observations,
+            "events": [],
+            "anomalies": [],
+            "evidence_refs": _dedupe_refs(evidence_refs),
+            "data_quality": {
+                "status": "complete" if not missing_phases else "partial",
+                "coverage_status": "visual_evidence_bundle",
+                "gaps": [],
+                "has_unknown": False,
+                "evidence_available": bool(evidence_refs),
+                "missing_phases": missing_phases,
+                "sample_count": len(observations),
+            },
+            "cause_inferred": False,
+            "window": {
+                "before_seconds": max(0.0, (trigger_ts - start_ts).total_seconds()),
+                "after_seconds": max(0.0, (end_ts - trigger_ts).total_seconds()),
+                "trigger_start": to_iso(trigger_ts),
+                "trigger_end": None,
+            },
+        }
+
+    return None
+
+
 def video_context_by_id(
     connection: sqlite3.Connection,
     filters: ReadModelFilters,
@@ -1218,10 +1406,13 @@ def video_context_by_id(
             after_seconds=after_seconds,
             now=now,
         )
-        return payload["contexts"][0] if payload["contexts"] else None
+        if payload["contexts"]:
+            return payload["contexts"][0]
+        return _visual_candidate_context_by_id(connection, filters, context_id)
+
     bounds = _source_bounds_for_video_context(connection, filters)
     if bounds is None:
-        return None
+        return _visual_candidate_context_by_id(connection, filters, context_id)
     source_start, source_end = bounds
     search_filters = ReadModelFilters(
         cliente_id=filters.cliente_id,
@@ -1244,7 +1435,9 @@ def video_context_by_id(
         after_seconds=after_seconds,
         now=now,
     )
-    return payload["contexts"][0] if payload["contexts"] else None
+    if payload["contexts"]:
+        return payload["contexts"][0]
+    return _visual_candidate_context_by_id(connection, filters, context_id)
 
 
 def operational_data(connection: sqlite3.Connection, filters: ReadModelFilters, *, now: datetime | None = None) -> dict[str, Any]:
