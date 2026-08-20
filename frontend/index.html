@@ -33,6 +33,7 @@
         <a href="/operations-view"><span class="cx-nav-icon" data-icon="operations"></span>Operations</a>
         <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Events</a>
         <a href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Intelligence</a>
+        <a data-route="/reports" href="/reports"><span class="cx-nav-icon" data-icon="insights"></span>Relatórios</a>
         <a href="/live-grid"><span class="cx-nav-icon" data-icon="camera"></span>Live</a>
         <hr />
         <a class="active" aria-current="page" title="Setup" href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Setup</a>
@@ -67,20 +68,25 @@
 
       <section class="cx-settings-layout">
         <aside class="cx-settings-menu">
-          <a href="#cliente" data-setup-nav="cliente">Cliente</a>
+          <span class="cx-settings-menu-label">Geral</span>
+          <a href="#cliente" data-setup-nav="cliente">Organização</a>
           <a href="#unidades" data-setup-nav="unidades">Unidades</a>
-          <a href="#usuarios" data-setup-nav="usuarios">Usuários</a>
+          <a href="#usuarios" data-setup-nav="usuarios">Usuários e permissões</a>
+
+          <span class="cx-settings-menu-label">Operação</span>
           <a href="#cameras" data-setup-nav="cameras">Câmeras</a>
-          <a href="#maquinas" data-setup-nav="maquinas">Máquinas e áreas</a>
-          <a href="#destinatarios" data-setup-nav="destinatarios">Destinatários</a>
+          <a href="#maquinas" data-setup-nav="maquinas">Ativos e áreas</a>
+
+          <span class="cx-settings-menu-label">Comunicação</span>
+          <a href="#destinatarios" data-setup-nav="destinatarios">Notificações</a>
           <a href="#entregas" data-setup-nav="entregas">Histórico</a>
         </aside>
 
         <div class="cx-settings-content">
       <section class="cx-setup-hero">
         <div>
-          <span>Setup</span>
-          <h2>Configure a operação para a Campex monitorar com contexto.</h2>
+          <span>CONFIGURAÇÕES</span>
+          <h2>Organize sua operação para a Campex entender o que acontece em cada área.</h2>
           <p>Organize cliente, unidades, câmeras, ativos, zonas e alertas em uma sequência clara, usando somente dados reais da instalação.</p>
         </div>
         <div class="cx-setup-hero-status">

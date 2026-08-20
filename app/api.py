@@ -116,6 +116,16 @@ from app.operations_history import (
     operations_timeline,
 )
 from app.reports import daily_report_data
+from app.report_delivery import (
+    build_report_for_tenant,
+    ensure_report_delivery_schema,
+    get_report_schedule,
+    send_due_reports_once,
+    send_report_email,
+    start_report_scheduler,
+    stop_report_scheduler,
+    upsert_report_schedule,
+)
 from app.restricted_area import normalize_points
 from app.visual_rule_engine import condition_templates, default_rule_payloads, evaluate_rule
 from app.video_understanding import VideoUnderstandingError, VideoUnderstandingService
@@ -658,11 +668,14 @@ def require_live_view_session_access(connection, request: Request, session_id: s
 def startup() -> None:
     with connect() as connection:
         init_db(connection)
+        ensure_report_delivery_schema(connection)
     resume_pending_deliveries()
+    start_report_scheduler()
 
 
 @api.on_event("shutdown")
 def shutdown() -> None:
+    stop_report_scheduler()
     live_streams.stop_all()
 
 
@@ -3366,6 +3379,52 @@ def get_evento_evidence(evento_id: str, request: Request) -> FileResponse:
     return FileResponse(path, media_type="image/jpeg", filename=f"{evento_id}.jpg")
 
 
+@api.get("/eventos/{evento_id}/evidence/{evidence_id}")
+def get_evento_evidence_item(
+    evento_id: str,
+    evidence_id: str,
+    request: Request,
+) -> FileResponse:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        event = obter_evento(connection, evento_id)
+
+        if event is None:
+            raise HTTPException(status_code=404, detail="Evento nao encontrado.")
+
+        if tenant_filter(user) and event.get("cliente_id") != tenant_filter(user):
+            raise HTTPException(status_code=403, detail="Evento de outro cliente.")
+
+        evidence = connection.execute(
+            """
+            SELECT id, path, media_type
+            FROM evidences
+            WHERE id = ? AND event_id = ?
+            LIMIT 1
+            """,
+            (evidence_id, evento_id),
+        ).fetchone()
+
+    if evidence is None:
+        raise HTTPException(status_code=404, detail="Evidencia nao encontrada.")
+
+    path = (ROOT / str(evidence["path"])).resolve()
+    evidence_root = (ROOT / "data" / "evidence").resolve()
+
+    if evidence_root not in path.parents:
+        raise HTTPException(status_code=403, detail="Caminho de evidencia invalido.")
+
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Arquivo de evidencia nao encontrado.")
+
+    return FileResponse(
+        path,
+        media_type=evidence["media_type"] or "image/jpeg",
+        filename=f"{evidence_id}.jpg",
+    )
+
+
 @api.get("/eventos/{evento_id}/replay")
 def get_evento_replay(evento_id: str, request: Request) -> FileResponse:
     with connect() as connection:
@@ -4532,6 +4591,213 @@ def get_camera_estado(request: Request) -> list[dict[str, Any]]:
             if "ativa" in camera:
                 camera["ativa"] = bool(camera["ativa"])
         return cameras
+
+
+class ReportSchedulePayload(BaseModel):
+    enabled: bool = True
+    send_time: str = "08:00"
+    timezone: str = "America/Sao_Paulo"
+    channel: str = "email"
+    email: Optional[str] = None
+    whatsapp_number: Optional[str] = None
+    tenant_id: Optional[str] = None
+
+
+def _report_tenant(user: dict[str, Any], requested_tenant: str | None = None) -> str:
+    scoped_tenant = tenant_filter(user)
+
+    if scoped_tenant:
+        if requested_tenant and requested_tenant != scoped_tenant:
+            raise HTTPException(
+                status_code=403,
+                detail="Não é permitido configurar relatório de outra empresa.",
+            )
+        return str(scoped_tenant)
+
+    if requested_tenant:
+        return str(requested_tenant)
+
+    raise HTTPException(
+        status_code=400,
+        detail="Empresa não informada para configuração do relatório.",
+    )
+
+
+@api.get("/reports/tenants")
+def get_report_tenants(request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        scoped_tenant = tenant_filter(user)
+
+        if scoped_tenant:
+            rows = connection.execute(
+                """
+                SELECT id, nome
+                FROM clientes
+                WHERE id = ?
+                """,
+                (scoped_tenant,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT id, nome
+                FROM clientes
+                ORDER BY nome
+                """
+            ).fetchall()
+
+        return {
+            "tenants": [
+                {
+                    "id": str(row["id"]),
+                    "nome": str(row["nome"] or "Empresa"),
+                }
+                for row in rows
+            ]
+        }
+
+
+@api.get("/reports/schedule")
+def get_reports_schedule(
+    request: Request,
+    tenant_id: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        resolved_tenant = _report_tenant(user, tenant_id)
+        schedule = get_report_schedule(connection, resolved_tenant)
+
+        return {
+            "tenant_id": resolved_tenant,
+            "schedule": schedule,
+            "email_configuration": email_configuration_status(),
+        }
+
+
+@api.put("/reports/schedule")
+def put_reports_schedule(
+    payload: ReportSchedulePayload,
+    request: Request,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        resolved_tenant = _report_tenant(user, payload.tenant_id)
+
+        try:
+            schedule = upsert_report_schedule(
+                connection,
+                tenant_id=resolved_tenant,
+                enabled=payload.enabled,
+                send_time=payload.send_time,
+                timezone_name=payload.timezone,
+                channel=payload.channel,
+                email=payload.email,
+                whatsapp_number=payload.whatsapp_number,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return {
+            "status": "ok",
+            "schedule": schedule,
+        }
+
+
+@api.post("/reports/send-now")
+def post_reports_send_now(
+    request: Request,
+    tenant_id: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        resolved_tenant = _report_tenant(user, tenant_id)
+
+        schedule = get_report_schedule(connection, resolved_tenant)
+        if not schedule:
+            raise HTTPException(
+                status_code=404,
+                detail="Configure o relatório antes de testar o envio.",
+            )
+
+        channel = str(schedule.get("channel") or "email")
+        if channel not in {"email", "both"}:
+            raise HTTPException(
+                status_code=503,
+                detail="WhatsApp ainda não possui provedor configurado.",
+            )
+
+        email = schedule.get("email")
+        if not email:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum email configurado.",
+            )
+
+        timezone_name = str(
+            schedule.get("timezone") or "America/Sao_Paulo"
+        )
+
+        from zoneinfo import ZoneInfo
+
+        now_local = datetime.now(timezone.utc).astimezone(
+            ZoneInfo(timezone_name)
+        )
+
+        report = build_report_for_tenant(
+            connection,
+            tenant_id=resolved_tenant,
+            end_at=now_local,
+        )
+
+        try:
+            send_report_email(report, str(email))
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Falha ao enviar relatório: {exc}",
+            ) from exc
+
+        return {
+            "status": "sent",
+            "tenant_id": resolved_tenant,
+            "channel": "email",
+            "destination": email,
+            "report": report,
+        }
+
+
+@api.get("/reports/preview")
+def get_reports_preview(
+    request: Request,
+    tenant_id: Optional[str] = None,
+) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        resolved_tenant = _report_tenant(user, tenant_id)
+
+        schedule = get_report_schedule(connection, resolved_tenant)
+        timezone_name = str(
+            (schedule or {}).get("timezone")
+            or "America/Sao_Paulo"
+        )
+
+        from zoneinfo import ZoneInfo
+
+        now_local = datetime.now(timezone.utc).astimezone(
+            ZoneInfo(timezone_name)
+        )
+
+        return build_report_for_tenant(
+            connection,
+            tenant_id=resolved_tenant,
+            end_at=now_local,
+        )
 
 
 @api.get("/relatorios/diario")

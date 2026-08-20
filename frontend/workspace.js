@@ -186,16 +186,9 @@ const routes = {
     breadcrumb: "Inteligência / Relatórios",
     permissions: [],
     heading: "Relatórios",
-    subtitle: "Leitura gerencial por período, unidade, áreas, categorias, alertas e evidências.",
-    endpoint: "/relatorios/diario",
-    action: "Gerar relatório",
-    emptyTitle: "Nenhum relatório gerado.",
-    emptyDescription: "Organize eventos, duração e recorrência por período.",
-    tabs: ["Resumo operacional", "Eventos por período", "Duração", "Disponibilidade", "Área", "Alertas", "Evidências"],
-    filters: ["Período", "Unidade", "Áreas", "Categorias", "Formato"],
-    columns: ["Relatório", "Período", "Criado em", "Responsável", "Status", "Formato", "Ação"],
-    transform: (payload) => Object.entries(payload || {}).map(([key, value]) => ({ key, value })),
-    row: (item) => [reportLabel(item.key), "Período atual", "—", "—", badge(item.value ? "Prévia" : "Sem dados"), "Tela", typeof item.value === "object" ? JSON.stringify(item.value) : item.value ?? "—"],
+    subtitle: "Receba automaticamente a leitura diária da sua operação.",
+    columns: [],
+    customRender: renderReportsPage,
   },
   "/insights": {
     title: "Intelligence",
@@ -442,13 +435,14 @@ function familyLabel(family) {
     wait: "Esperas",
     absence: "Ausências",
     flow: "Fluxo/movimentação",
+    visual: "Inteligência visual",
     unknown: "Sem classificação",
   };
   return labels[family] || family || "Sem classificação";
 }
 
 function isOfficialFamily(family) {
-  return ["interruption", "wait", "absence", "flow"].includes(String(family || ""));
+  return ["interruption", "wait", "absence", "flow", "visual"].includes(String(family || ""));
 }
 
 function officialFamilyRows(summary) {
@@ -1574,6 +1568,457 @@ function renderIntelligenceComparison(payload) {
   }).join("");
 }
 
+async function renderReportsPage(config) {
+  const tenantsPayload = await requestJson("/reports/tenants");
+  const tenants = tenantsPayload.tenants || [];
+
+  title.textContent = "Relatórios";
+  heading.textContent = "Relatórios";
+  subtitle.textContent = "Configure uma vez. A Campex envia automaticamente a leitura da operação todos os dias.";
+  tableTitle.textContent = "Relatório diário";
+  tableHint.textContent = "Cada empresa recebe somente os dados da própria operação.";
+  filters.innerHTML = "";
+  grid.style.display = "none";
+
+  if (!tenants.length) {
+    primaryAction.textContent = "Atualizar";
+    primaryAction.onclick = () => loadPage(window.location.pathname);
+
+    cards.innerHTML = `
+      <section class="cx-empty-state">
+        <strong>Nenhuma empresa cadastrada.</strong>
+        <p>Cadastre uma empresa antes de configurar o relatório diário.</p>
+      </section>
+    `;
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  const requestedTenant = url.searchParams.get("tenant_id");
+
+  let selectedTenant = tenants.find(
+    (tenant) => String(tenant.id) === String(requestedTenant)
+  );
+
+  if (!selectedTenant) {
+    const rememberedTenant = localStorage.getItem("campex_reports_tenant");
+
+    selectedTenant = tenants.find(
+      (tenant) => String(tenant.id) === String(rememberedTenant)
+    );
+  }
+
+  if (!selectedTenant) {
+    selectedTenant = tenants[0];
+  }
+
+  const tenantId = String(selectedTenant.id);
+
+  localStorage.setItem("campex_reports_tenant", tenantId);
+
+  const encodedTenant = encodeURIComponent(tenantId);
+
+  const [schedulePayload, previewPayload] = await Promise.all([
+    requestJson(`/reports/schedule?tenant_id=${encodedTenant}`),
+    requestJson(`/reports/preview?tenant_id=${encodedTenant}`),
+  ]);
+
+  const schedule = schedulePayload.schedule || {};
+  const preview = previewPayload.report || {};
+  const summary = preview.summary || {};
+  const machines = summary.machines || {};
+  const events = preview.main_events || [];
+
+  const enabled = schedule.enabled === undefined
+    ? true
+    : Boolean(schedule.enabled);
+
+  const sendTime = schedule.send_time || "08:00";
+  const destination = schedule.email || "";
+
+  function nextSendLabel(timeValue) {
+    const [hour, minute] = String(timeValue || "08:00")
+      .split(":")
+      .map(Number);
+
+    const now = new Date();
+    const next = new Date();
+
+    next.setHours(hour || 0, minute || 0, 0, 0);
+
+    if (next <= now) {
+      next.setDate(next.getDate() + 1);
+    }
+
+    const day = next.toLocaleDateString("pt-BR", {
+      day: "2-digit",
+      month: "short",
+    });
+
+    const time = next.toLocaleTimeString("pt-BR", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
+    return `${day} às ${time}`;
+  }
+
+  const tenantSelector = tenants.length > 1
+    ? `
+      <label>
+        Empresa
+        <select data-report-tenant>
+          ${tenants.map((tenant) => `
+            <option
+              value="${sanitize(tenant.id)}"
+              ${String(tenant.id) === tenantId ? "selected" : ""}
+            >
+              ${sanitize(tenant.nome)}
+            </option>
+          `).join("")}
+        </select>
+        <small>
+          A visualização e o envio abaixo pertencem somente a esta empresa.
+        </small>
+      </label>
+    `
+    : `
+      <div class="cx-report-company-fixed">
+        <span>Empresa</span>
+        <strong>${sanitize(selectedTenant.nome)}</strong>
+      </div>
+    `;
+
+  const importantEvents = events.slice(0, 5);
+
+  primaryAction.textContent = "Enviar agora";
+
+  cards.innerHTML = `
+    <section class="cx-reports-page">
+
+      <section class="cx-report-hero">
+        <div>
+          <span class="cx-report-eyebrow">Entrega automática</span>
+          <h2>Seu resumo operacional, todos os dias.</h2>
+          <p>
+            A Campex consolida os acontecimentos, indicadores e evidências
+            da operação e entrega o relatório automaticamente no horário
+            definido pela empresa.
+          </p>
+        </div>
+
+        <div class="cx-report-next">
+          <span>Próximo envio</span>
+          <strong>${enabled ? nextSendLabel(sendTime) : "Desativado"}</strong>
+          <small>${sanitize(selectedTenant.nome)}</small>
+        </div>
+      </section>
+
+      <section class="cx-report-layout">
+
+        <section class="cx-report-settings">
+          <div class="cx-report-section-heading">
+            <div>
+              <span class="cx-report-eyebrow">Configuração</span>
+              <h3>Relatório diário</h3>
+            </div>
+
+            <label class="cx-report-switch">
+              <input
+                type="checkbox"
+                name="enabled"
+                form="reportScheduleForm"
+                ${enabled ? "checked" : ""}
+              />
+              <span>Ativo</span>
+            </label>
+          </div>
+
+          <form id="reportScheduleForm" data-report-schedule-form>
+
+            ${tenantSelector}
+
+            <label>
+              Horário de envio
+              <input
+                type="time"
+                name="send_time"
+                value="${sanitize(sendTime)}"
+                required
+              />
+              <small>
+                Pode ser qualquer horário, como 08:00, 11:55 ou 18:37.
+              </small>
+            </label>
+
+            <label>
+              Canal
+              <select name="channel">
+                <option value="email" selected>Email</option>
+                <option value="whatsapp" disabled>
+                  WhatsApp — requer integração
+                </option>
+              </select>
+            </label>
+
+            <label>
+              Destinatário
+              <input
+                type="email"
+                name="email"
+                value="${sanitize(destination)}"
+                placeholder="diretoria@empresa.com"
+                required
+              />
+            </label>
+
+            <input
+              type="hidden"
+              name="timezone"
+              value="${sanitize(schedule.timezone || "America/Sao_Paulo")}"
+            />
+
+            <div class="cx-report-form-actions">
+              <button type="submit">
+                Salvar configuração
+              </button>
+
+              <button
+                type="button"
+                class="secondary"
+                data-report-send-now
+              >
+                Enviar agora
+              </button>
+            </div>
+
+            <p
+              class="cx-report-form-status"
+              data-report-status
+            ></p>
+          </form>
+
+          <div class="cx-report-delivery-status">
+            <div>
+              <span>Último envio</span>
+              <strong>
+                ${schedule.last_sent_at
+                  ? eventDateLabel(schedule.last_sent_at)
+                  : "Ainda não enviado"}
+              </strong>
+            </div>
+
+            <div>
+              <span>Status</span>
+              <strong>
+                ${schedule.last_status === "sent"
+                  ? "Enviado"
+                  : schedule.last_status === "failed"
+                    ? "Falha no último envio"
+                    : "Aguardando"}
+              </strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="cx-report-preview">
+          <div class="cx-report-section-heading">
+            <div>
+              <span class="cx-report-eyebrow">Prévia</span>
+              <h3>Relatório Operacional Campex</h3>
+            </div>
+
+            <span class="cx-report-preview-badge">
+              Modelo diário
+            </span>
+          </div>
+
+          <p class="cx-report-preview-period">
+            Últimas 24 horas · ${sanitize(selectedTenant.nome)}
+          </p>
+
+          <div class="cx-report-metrics">
+            <article>
+              <span>Acontecimentos</span>
+              <strong>${events.length}</strong>
+            </article>
+
+            <article>
+              <span>Tempo ativo</span>
+              <strong>${secondsLabel(machines.active_seconds || 0)}</strong>
+            </article>
+
+            <article>
+              <span>Tempo parado</span>
+              <strong>${secondsLabel(machines.stopped_seconds || 0)}</strong>
+            </article>
+
+            <article>
+              <span>Sem leitura</span>
+              <strong>${secondsLabel(machines.unknown_seconds || 0)}</strong>
+            </article>
+          </div>
+
+          <section class="cx-report-events-preview">
+            <div class="cx-report-preview-title">
+              <h4>Principais acontecimentos</h4>
+              <a href="/events">Ver todos</a>
+            </div>
+
+            ${importantEvents.length
+              ? importantEvents.map((event) => `
+                  <article>
+                    <div class="cx-report-event-time">
+                      ${eventDateLabel(event.started_at)}
+                    </div>
+
+                    <div>
+                      <strong>${eventTitle(event)}</strong>
+                      <span>
+                        ${event.duration_seconds
+                          ? secondsLabel(event.duration_seconds)
+                          : "Ocorrência registrada"}
+                      </span>
+                    </div>
+
+                    <span class="cx-report-event-family">
+                      ${familyLabel(event.event_family)}
+                    </span>
+                  </article>
+                `).join("")
+              : `
+                <div class="cx-empty-state">
+                  <strong>Nenhum acontecimento relevante.</strong>
+                  <p>
+                    Os acontecimentos reais desta empresa aparecerão aqui.
+                  </p>
+                </div>
+              `
+            }
+          </section>
+
+          <div class="cx-report-fixed-model-note">
+            <strong>Dados isolados por empresa.</strong>
+            <span>
+              Este relatório é gerado usando exclusivamente os dados
+              operacionais da empresa selecionada.
+            </span>
+          </div>
+        </section>
+
+      </section>
+    </section>
+  `;
+
+  document
+    .querySelector("[data-report-tenant]")
+    ?.addEventListener("change", (event) => {
+      const nextTenant = String(event.target.value);
+
+      localStorage.setItem(
+        "campex_reports_tenant",
+        nextTenant
+      );
+
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.set("tenant_id", nextTenant);
+
+      window.history.replaceState(
+        {},
+        "",
+        `${nextUrl.pathname}${nextUrl.search}`
+      );
+
+      loadPage(nextUrl.pathname);
+    });
+
+  async function sendReportNow() {
+    const statusEl = document.querySelector("[data-report-status]");
+
+    if (statusEl) {
+      statusEl.textContent = "Enviando relatório...";
+    }
+
+    try {
+      await requestJson(
+        `/reports/send-now?tenant_id=${encodedTenant}`,
+        {
+          method: "POST",
+        }
+      );
+
+      if (statusEl) {
+        statusEl.textContent = "Relatório enviado com sucesso.";
+      }
+    } catch (error) {
+      if (statusEl) {
+        statusEl.textContent =
+          error?.message || "Não foi possível enviar o relatório.";
+      }
+    }
+  }
+
+  primaryAction.onclick = sendReportNow;
+
+  document
+    .querySelector("[data-report-send-now]")
+    ?.addEventListener("click", sendReportNow);
+
+  document
+    .querySelector("[data-report-schedule-form]")
+    ?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      const form = event.currentTarget;
+      const data = new FormData(form);
+      const statusEl = document.querySelector("[data-report-status]");
+
+      const payload = {
+        tenant_id: tenantId,
+        enabled: Boolean(
+          form.querySelector('[name="enabled"]')?.checked
+        ),
+        send_time: String(
+          data.get("send_time") || "08:00"
+        ),
+        timezone: String(
+          data.get("timezone") || "America/Sao_Paulo"
+        ),
+        channel: String(
+          data.get("channel") || "email"
+        ),
+        email: String(
+          data.get("email") || ""
+        ).trim(),
+      };
+
+      if (statusEl) {
+        statusEl.textContent = "Salvando...";
+      }
+
+      try {
+        await requestJson("/reports/schedule", {
+          method: "PUT",
+          body: JSON.stringify(payload),
+        });
+
+        if (statusEl) {
+          statusEl.textContent = "Configuração salva.";
+        }
+
+        setTimeout(() => {
+          loadPage(window.location.pathname);
+        }, 400);
+      } catch (error) {
+        if (statusEl) {
+          statusEl.textContent =
+            error?.message || "Não foi possível salvar.";
+        }
+      }
+    });
+}
+
+
 async function renderIntelligencePage(config) {
   const params = readModelQuery();
   const payload = await requestJson(`/operations/read-model/insights?${params}`);
@@ -1890,11 +2335,15 @@ function eventDateLabel(value) {
 }
 
 function eventTitle(event) {
+  if (event.tipo === "visual_occurrence") {
+    return "Mudança visual detectada";
+  }
   return eventFamilyTitle(event);
 }
 
 function eventCategory(event) {
   const text = `${event.tipo || event.event_type || ""}`.toLowerCase();
+  if (text === "visual_occurrence") return "Inteligência visual";
   if (text.includes("machine") || text.includes("stoppage")) return "Máquina";
   if (text.includes("person") || text.includes("restricted")) return "Pessoas";
   return "Operação";
@@ -1927,11 +2376,17 @@ function eventContext(event) {
 function eventTimeRange(event) {
   const start = eventStart(event);
   const end = eventEnd(event);
+  if (event.tipo === "visual_occurrence") return eventDateLabel(start);
   if (!end || end === "—") return `${eventDateLabel(start)} → em andamento`;
   return `${eventDateLabel(start)} → ${eventDateLabel(end)}`;
 }
 
 function eventObservedSummary(event) {
+  const visual = event.visual_understanding || {};
+  if (event.tipo === "visual_occurrence" && visual.summary) {
+    return visual.summary;
+  }
+
   const observed = event.observed_context || event.metadata || event.metadados || {};
   const parts = [];
   if (observed.operator_absent_seconds) parts.push(`Operador ausente durante ${secondsLabel(observed.operator_absent_seconds)}`);
@@ -1940,6 +2395,52 @@ function eventObservedSummary(event) {
   if (event.confianca || observed.confianca) parts.push(`Confiança: ${Number(event.confianca || observed.confianca).toFixed(2)}`);
   return parts.join(" · ") || "Fatos observados disponíveis no detalhe.";
 }
+
+function visualEvidenceSequence(event) {
+  const items = Array.isArray(event.visual_evidence) ? event.visual_evidence : [];
+  if (!items.length) return "";
+
+  const phaseOrder = { before: 0, transition: 1, during: 2, after: 3 };
+  const phaseLabels = {
+    before: "Antes",
+    transition: "Momento detectado",
+    during: "Durante",
+    after: "Depois",
+  };
+
+  const sorted = [...items].sort((a, b) => {
+    const phaseDiff = (phaseOrder[a.phase] ?? 9) - (phaseOrder[b.phase] ?? 9);
+    if (phaseDiff !== 0) return phaseDiff;
+    return String(a.captured_at || "").localeCompare(String(b.captured_at || ""));
+  });
+
+  return `
+    <section class="cx-visual-sequence-section">
+      <div class="cx-visual-section-head">
+        <div>
+          <span class="cx-visual-eyebrow">Contexto visual</span>
+          <h3>O que aconteceu ao redor do momento</h3>
+        </div>
+        <span>${sorted.length} evidência${sorted.length === 1 ? "" : "s"}</span>
+      </div>
+
+      <div class="cx-visual-sequence">
+        ${sorted.map((item) => `
+          <figure class="cx-visual-evidence-card">
+            <div class="cx-visual-evidence-image">
+              <img src="${item.url}" alt="${sanitize(phaseLabels[item.phase] || "Evidência visual")}" />
+            </div>
+            <figcaption>
+              <strong>${sanitize(phaseLabels[item.phase] || "Evidência")}</strong>
+              <span>${eventDateLabel(item.captured_at)}</span>
+            </figcaption>
+          </figure>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
 
 function eventHasEvidence(event) {
   return Boolean(event.midia_path || event.snapshot_path || event.evidence_id);
@@ -2231,6 +2732,8 @@ function eventDetail(event) {
   const human = event.human_context || {};
   const workflow = eventWorkflow(event);
   const evidence = event.midia_path || event.snapshot_path;
+  const visual = event.visual_understanding || null;
+  const hasVisualSequence = Array.isArray(event.visual_evidence) && event.visual_evidence.length > 0;
   return `
     <section class="cx-event-detail-v1">
       <header>
@@ -2239,26 +2742,54 @@ function eventDetail(event) {
         <p>${homeContextName(context.primary, "Contexto não informado")} · ${homeContextName(context.location, "Local não informado")}</p>
       </header>
       <dl class="cx-event-detail-facts">
-        <div><dt>Estado da ocorrência</dt><dd>${eventPhysicalStatusLabel(event)}</dd></div>
+        <div><dt>Estado da ocorrência</dt><dd>${event.tipo === "visual_occurrence" ? "Registrada" : eventPhysicalStatusLabel(event)}</dd></div>
         <div><dt>Tratamento</dt><dd>${workflowLabel(workflow)}</dd></div>
         <div><dt>Severidade</dt><dd>${eventSeverityLabel(eventSeverity(event))}</dd></div>
         <div><dt>Horário</dt><dd>${eventTimeRange(event)}</dd></div>
-        <div><dt>Duração</dt><dd>${eventDisplayDuration(event)}</dd></div>
+        <div><dt>Duração</dt><dd>${event.tipo === "visual_occurrence" ? "Ocorrência pontual" : eventDisplayDuration(event)}</dd></div>
       </dl>
 
-      <section>
-        <h3>Evidência</h3>
-        <div class="cx-detail-frame cx-event-evidence-frame">${evidence ? `<img src="/eventos/${event.id}/evidence" alt="Frame da ocorrência" />` : "Nenhuma evidência visual disponível."}</div>
-      </section>
+      ${event.tipo === "visual_occurrence" && hasVisualSequence
+        ? visualEvidenceSequence(event)
+        : `
+          <section>
+            <h3>Evidência</h3>
+            <div class="cx-detail-frame cx-event-evidence-frame">${evidence ? `<img src="/eventos/${event.id}/evidence" alt="Frame da ocorrência" />` : "Nenhuma evidência visual disponível."}</div>
+          </section>
+        `
+      }
 
       <section>
         <h3>O que a Campex observou</h3>
-        <dl>
-          <div><dt>Operador presente</dt><dd>${observed.operador_presente ?? event.operador_presente ?? "Não informado"}</dd></div>
-          <div><dt>Confiança</dt><dd>${observed.confianca ?? event.confianca ?? "Não informado"}</dd></div>
-          <div><dt>Pessoas</dt><dd>${observed.quantidade_maxima ?? event.quantidade_maxima ?? event.quantidade_atual ?? "Não informado"}</dd></div>
-          <div><dt>Resumo observado</dt><dd>${eventObservedSummary(event)}</dd></div>
-        </dl>
+
+        ${visual ? `
+          <div class="cx-visual-understanding">
+            <span class="cx-visual-eyebrow">Análise visual</span>
+            <p>${sanitize(visual.summary || "A Campex analisou as evidências visuais deste momento.")}</p>
+
+            <div class="cx-visual-analysis-meta">
+              <div>
+                <span>Validação</span>
+                <strong>${visual.status === "VALID" ? "Validada" : visual.status === "PARTIAL" ? "Com ressalvas" : sanitize(visual.status || "Não informada")}</strong>
+              </div>
+              <div>
+                <span>Qualidade</span>
+                <strong>${visual.quality === "complete" ? "Completa" : visual.quality === "partial" ? "Parcial" : sanitize(visual.quality || "Não informada")}</strong>
+              </div>
+              <div>
+                <span>Incertezas</span>
+                <strong>${Array.isArray(visual.uncertainties) ? visual.uncertainties.length : 0}</strong>
+              </div>
+            </div>
+          </div>
+        ` : `
+          <dl>
+            <div><dt>Operador presente</dt><dd>${observed.operador_presente ?? event.operador_presente ?? "Não informado"}</dd></div>
+            <div><dt>Confiança</dt><dd>${observed.confianca ?? event.confianca ?? "Não informado"}</dd></div>
+            <div><dt>Pessoas</dt><dd>${observed.quantidade_maxima ?? event.quantidade_maxima ?? event.quantidade_atual ?? "Não informado"}</dd></div>
+            <div><dt>Resumo observado</dt><dd>${eventObservedSummary(event)}</dd></div>
+          </dl>
+        `}
       </section>
 
       <section>
@@ -2578,11 +3109,15 @@ function loginState(config) {
 }
 
 function usesProductMemoryShell(path) {
-  return path === "/home-view" || path === "/operations-view" || path === "/events" || path === "/insights";
+  return path === "/home-view" || path === "/operations-view" || path === "/events" || path === "/insights" || path === "/reports";
 }
 
 function renderOperationsAuthState(area = "Operations") {
-  const target = area === "Início" ? "%2Foperations-view%3Fview%3Dhome" : "%2Foperations-view";
+  const target = area === "Início"
+    ? "%2Foperations-view%3Fview%3Dhome"
+    : area === "Relatórios"
+      ? "%2Freports"
+      : "%2Foperations-view";
   title.textContent = "";
   heading.textContent = "";
   subtitle.textContent = "";

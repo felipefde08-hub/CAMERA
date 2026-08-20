@@ -5,6 +5,275 @@ const shellState = {
   authenticated: false,
 };
 
+
+/* CAMPEX GLOBAL SHELL V2 */
+
+const SHELL_DESTINATIONS = [
+  { label: "Início", href: "/operations-view?view=home", icon: "home" },
+  { label: "Operations", href: "/operations-view", icon: "operations" },
+  { label: "Events", href: "/events", icon: "events" },
+  { label: "Intelligence", href: "/insights", icon: "insights" },
+  { label: "Relatórios", href: "/reports", icon: "insights" },
+  { label: "Live", href: "/live-grid", icon: "camera" },
+];
+
+function normalizePrimaryNavigation() {
+  document.querySelectorAll(".cx-nav").forEach((nav) => {
+    nav.innerHTML = `
+      ${SHELL_DESTINATIONS.map((item) => `
+        <a href="${item.href}">
+          <span class="cx-nav-icon" data-icon="${item.icon}"></span>
+          ${item.label}
+        </a>
+      `).join("")}
+      <hr />
+      <a href="/settings/cameras">
+        <span class="cx-nav-icon" data-icon="settings"></span>
+        Setup
+      </a>
+    `;
+  });
+}
+
+function normalizeAccountFooter() {
+  document.querySelectorAll(".cx-account").forEach((account) => {
+    const links = account.querySelectorAll(".cx-footer-link");
+
+    links.forEach((link) => {
+      const icon = link.querySelector(".cx-nav-icon");
+
+      if (icon?.dataset.icon === "help") {
+        link.href = "/help";
+        link.innerHTML = `
+          <span class="cx-nav-icon" data-icon="help"></span>
+          Ajuda
+        `;
+      }
+
+      if (icon?.dataset.icon === "status") {
+        link.href = "/local-diagnostics-view";
+        link.innerHTML = `
+          <span class="cx-nav-icon" data-icon="status"></span>
+          <span>Status do sistema</span>
+          <i class="cx-shell-online-dot" aria-hidden="true"></i>
+        `;
+      }
+    });
+  });
+}
+
+function ensureGlobalHeaderTools() {
+  document.querySelectorAll(".cx-header-tools").forEach((tools) => {
+    const hasPageSearch = tools.querySelector(
+      "#workspaceSearch, .cx-top-search, [data-shell-search]"
+    );
+
+    if (!hasPageSearch) {
+      tools.insertAdjacentHTML(
+        "afterbegin",
+        `<button class="cx-shell-search-trigger" type="button" data-shell-search>
+          <span class="cx-shell-search-label">Buscar na Campex</span>
+          <kbd>⌘K</kbd>
+        </button>`
+      );
+    }
+
+    if (!tools.querySelector('[aria-label="Ajuda"]')) {
+      tools.insertAdjacentHTML(
+        "beforeend",
+        `<button class="cx-icon-button" type="button" aria-label="Ajuda">
+          <span class="cx-nav-icon" data-icon="help"></span>
+        </button>`
+      );
+    }
+
+    if (!tools.querySelector('[aria-label="Notificações"]')) {
+      tools.insertAdjacentHTML(
+        "beforeend",
+        `<button class="cx-icon-button" type="button" aria-label="Notificações">
+          <span class="cx-nav-icon" data-icon="alert"></span>
+        </button>`
+      );
+    }
+
+    if (!tools.querySelector(".cx-top-avatar")) {
+      tools.insertAdjacentHTML(
+        "beforeend",
+        `<button class="cx-top-avatar" type="button" aria-label="Conta">C</button>`
+      );
+    }
+  });
+}
+
+function shellSearchResults(query = "") {
+  const q = String(query).trim().toLowerCase();
+
+  return SHELL_DESTINATIONS
+    .concat([
+      { label: "Setup", href: "/settings/cameras", icon: "settings" },
+      { label: "Ajuda", href: "/help", icon: "help" },
+      { label: "Status do sistema", href: "/local-diagnostics-view", icon: "status" },
+    ])
+    .filter((item) => !q || item.label.toLowerCase().includes(q));
+}
+
+function renderShellSearchResults(container, query = "") {
+  const rows = shellSearchResults(query);
+
+  container.innerHTML = rows.length
+    ? rows.map((item, index) => `
+        <a class="cx-command-item ${index === 0 ? "active" : ""}" href="${item.href}">
+          <span class="cx-nav-icon" data-icon="${item.icon}"></span>
+          <span>${sanitize(item.label)}</span>
+          <small>↵</small>
+        </a>
+      `).join("")
+    : `<div class="cx-command-empty">Nenhum resultado encontrado.</div>`;
+}
+
+function closeCommandPalette() {
+  document.querySelector(".cx-command-overlay")?.remove();
+}
+
+function openCommandPalette() {
+  closeCommandPalette();
+  closePopover();
+
+  const overlay = document.createElement("div");
+  overlay.className = "cx-command-overlay";
+
+  overlay.innerHTML = `
+    <div class="cx-command-palette" role="dialog" aria-modal="true" aria-label="Buscar na Campex">
+      <div class="cx-command-search">
+        <span class="cx-nav-icon" data-icon="search"></span>
+        <input
+          type="text"
+          placeholder="Buscar páginas e áreas..."
+          autocomplete="off"
+          aria-label="Buscar páginas e áreas"
+        />
+        <kbd>ESC</kbd>
+      </div>
+
+      <div class="cx-command-section-label">Navegação</div>
+      <div class="cx-command-results"></div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  const input = overlay.querySelector("input");
+  const results = overlay.querySelector(".cx-command-results");
+
+  renderShellSearchResults(results);
+
+  input.addEventListener("input", () => {
+    renderShellSearchResults(results, input.value);
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      const first = results.querySelector(".cx-command-item");
+      if (first) window.location.href = first.href;
+    }
+  });
+
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) closeCommandPalette();
+  });
+
+  requestAnimationFrame(() => input.focus());
+}
+
+function closeAccountPanel() {
+  document.querySelector(".cx-account-overlay")?.remove();
+}
+
+function openAccountPanel() {
+  closeAccountPanel();
+  closePopover();
+
+  const user = shellState.user || {};
+
+  const name = shellState.authenticated
+    ? (user.nome || user.email || "Usuário Campex")
+    : "Sessão não iniciada";
+
+  const email = shellState.authenticated
+    ? (user.email || "E-mail não informado")
+    : "Entre para acessar sua conta.";
+
+  const role = shellState.authenticated
+    ? (user.role || user.funcao || "Usuário")
+    : "Sem sessão";
+
+  const overlay = document.createElement("div");
+  overlay.className = "cx-account-overlay";
+
+  overlay.innerHTML = `
+    <section class="cx-account-panel" role="dialog" aria-modal="true" aria-label="Minha conta">
+      <header>
+        <div>
+          <span>CONTA</span>
+          <h2>Minha conta</h2>
+        </div>
+        <button type="button" class="cx-account-close" aria-label="Fechar">×</button>
+      </header>
+
+      <div class="cx-account-identity">
+        <div class="cx-account-avatar-large">${sanitize(initialsFrom(name))}</div>
+        <div>
+          <strong>${sanitize(name)}</strong>
+          <span>${sanitize(email)}</span>
+        </div>
+      </div>
+
+      <div class="cx-account-details">
+        <div>
+          <span>Função</span>
+          <strong>${sanitize(role)}</strong>
+        </div>
+        <div>
+          <span>Organização</span>
+          <strong>Cliente piloto</strong>
+        </div>
+        <div>
+          <span>Unidade</span>
+          <strong>Unidade principal</strong>
+        </div>
+      </div>
+
+      <nav class="cx-account-actions">
+        <a href="/settings/cameras">
+          <span class="cx-nav-icon" data-icon="settings"></span>
+          Setup
+        </a>
+        <a href="/settings/cameras#destinatarios">
+          <span class="cx-nav-icon" data-icon="alert"></span>
+          Preferências de notificações
+        </a>
+        <a href="/local-diagnostics-view">
+          <span class="cx-nav-icon" data-icon="status"></span>
+          Status do sistema
+        </a>
+        <a href="/help">
+          <span class="cx-nav-icon" data-icon="help"></span>
+          Ajuda e suporte
+        </a>
+      </nav>
+    </section>
+  `;
+
+  document.body.appendChild(overlay);
+
+  overlay.querySelector(".cx-account-close")
+    ?.addEventListener("click", closeAccountPanel);
+
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) closeAccountPanel();
+  });
+}
+
 function routeKey(pathname = window.location.pathname, search = window.location.search) {
   if (pathname === "/operations-view" && new URLSearchParams(search).get("view") === "home") return "/operations-view?view=home";
   if (pathname === "/settings" || pathname.startsWith("/settings/")) return "/settings/cameras";
@@ -174,12 +443,22 @@ function setupSidebar() {
 
 function setupGlobalButtons() {
   document.addEventListener("click", (event) => {
+    const shellSearch = event.target.closest("[data-shell-search]");
+    if (shellSearch) {
+      openCommandPalette();
+      return;
+    }
+
     const popoverAction = event.target.closest("[data-popover-action]");
     if (popoverAction) {
       const action = popoverAction.dataset.popoverAction;
       if (action === "logout") {
         fetch("/auth/logout", { method: "POST" })
           .finally(() => { window.location.href = "/settings/cameras#login"; });
+      }
+
+      if (action === "account") {
+        openAccountPanel();
       }
       if (action === "copy-location") {
         navigator.clipboard?.writeText(window.location.href).catch(() => {});
@@ -196,8 +475,11 @@ function setupGlobalButtons() {
         : "Entre para acessar dados protegidos.";
       const profileItems = shellState.authenticated ? [
         userLine,
-        { label: "Configurações", href: "/settings/cameras", icon: "settings" },
-        { label: "Diagnóstico/status", href: "/local-diagnostics-view", icon: "status" },
+        { label: "Minha conta", action: "account", icon: "users" },
+        { label: "Setup", href: "/settings/cameras", icon: "settings" },
+        { label: "Preferências de notificações", href: "/settings/cameras#destinatarios", icon: "alert" },
+        { label: "Status do sistema", href: "/local-diagnostics-view", icon: "status" },
+        { label: "Ajuda e suporte", href: "/help", icon: "help" },
         { label: "Sair", action: "logout", icon: "logout" },
       ] : [
         userLine,
@@ -211,15 +493,15 @@ function setupGlobalButtons() {
     if (iconButton) {
       const label = iconButton.getAttribute("aria-label") || "Menu";
       openPopover(iconButton, label, label.includes("Notifica")
-        ? ["Nenhuma notificação nova", { label: "Abrir Events", href: "/events", icon: "events" }]
-        : [{ label: "Ajuda", href: "/help", icon: "help" }, { label: "Diagnóstico/status", href: "/local-diagnostics-view", icon: "status" }]);
+        ? ["Nenhuma notificação nova", { label: "Abrir Eventos", href: "/events", icon: "events" }]
+        : [{ label: "Ajuda e suporte", href: "/help", icon: "help" }, { label: "Status do sistema", href: "/local-diagnostics-view", icon: "status" }]);
       return;
     }
 
     const workspaceSwitcher = event.target.closest(".cx-workspace-switcher");
     if (workspaceSwitcher) {
       const currentWorkspace = workspaceSwitcher.getAttribute("title") || "Cliente piloto · Unidade principal";
-      openPopover(workspaceSwitcher, "Workspace", [currentWorkspace, { label: "Configurar operação", href: "/settings/cameras", icon: "settings" }]);
+      openPopover(workspaceSwitcher, "Organização", [currentWorkspace, { label: "Configurar organização", href: "/settings/cameras", icon: "settings" }]);
       return;
     }
 
@@ -235,14 +517,25 @@ function setupGlobalButtons() {
 
 function setupKeyboard() {
   document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openCommandPalette();
+      return;
+    }
+
     if (event.key === "Escape") {
       closePopover();
+      closeCommandPalette();
+      closeAccountPanel();
       closeSidePanels();
       closeDrawer();
     }
   });
 }
 
+normalizePrimaryNavigation();
+normalizeAccountFooter();
+ensureGlobalHeaderTools();
 setupActiveNavigation();
 setupSidebar();
 setupGlobalButtons();

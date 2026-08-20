@@ -235,6 +235,84 @@ def event_detail(connection: sqlite3.Connection, event_id: str) -> dict[str, Any
     event = obter_evento(connection, event_id)
     if event is None:
         return None
+
+    visual_understanding = None
+    visual_evidence: list[dict[str, Any]] = []
+
+    if event.get("tipo") == "visual_occurrence":
+        import json as _json
+
+        event_uuid = str(event.get("event_uuid") or "")
+        candidate_id = event_uuid[len("visual:"):] if event_uuid.startswith("visual:") else None
+
+        if candidate_id:
+            try:
+                from app.operational_understanding import (
+                    UnderstandingFilters,
+                    list_validated_understandings,
+                )
+
+                understandings = list_validated_understandings(
+                    connection,
+                    UnderstandingFilters(
+                        tenant_id=event.get("cliente_id"),
+                        camera_id=event.get("camera_id"),
+                    ),
+                )
+
+                matched = next(
+                    (
+                        item
+                        for item in understandings
+                        if str(item.get("trigger_ref") or "") == candidate_id
+                        and item.get("status") in {"VALID", "PARTIAL"}
+                    ),
+                    None,
+                )
+
+                if matched:
+                    structured = matched.get("structured_result") or {}
+                    visual_understanding = {
+                        "understanding_id": matched.get("understanding_id"),
+                        "status": matched.get("status"),
+                        "quality": matched.get("quality"),
+                        "summary": matched.get("summary"),
+                        "trigger_type": matched.get("trigger_type"),
+                        "uncertainties": matched.get("uncertainties") or [],
+                        "scene_changes": structured.get("scene_changes") or [],
+                        "observed_entities": structured.get("observed_entities") or [],
+                        "observed_actions": structured.get("observed_actions") or [],
+                    }
+            except Exception:
+                visual_understanding = None
+
+        rows = connection.execute(
+            """
+            SELECT id, path, media_type, size_bytes, created_at, metadata_json
+            FROM evidences
+            WHERE event_id = ?
+            ORDER BY created_at, id
+            """,
+            (event_id,),
+        ).fetchall()
+
+        for row in rows:
+            try:
+                metadata = _json.loads(row["metadata_json"] or "{}")
+            except (TypeError, _json.JSONDecodeError):
+                metadata = {}
+
+            visual_evidence.append(
+                {
+                    "evidence_id": row["id"],
+                    "phase": metadata.get("phase") or "during",
+                    "captured_at": metadata.get("captured_at") or row["created_at"],
+                    "media_type": row["media_type"],
+                    "size_bytes": row["size_bytes"],
+                    "url": f"/eventos/{event_id}/evidence/{row['id']}",
+                }
+            )
+
     return {
         **event,
         "technical_type": event.get("tipo"),
@@ -256,6 +334,8 @@ def event_detail(connection: sqlite3.Connection, event_id: str) -> dict[str, Any
         "physical_status": event.get("status"),
         "workflow_status": event.get("workflow_status") or WORKFLOW_NEW,
         "observed_context": observed_context(event),
+        "visual_understanding": visual_understanding,
+        "visual_evidence": visual_evidence,
         "human_context": {
             "confirmed_cause": event.get("confirmed_cause") or event.get("cause_category"),
             "confirmed_by": event.get("confirmed_by") or event.get("classified_by"),

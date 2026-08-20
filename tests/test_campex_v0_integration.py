@@ -67,12 +67,13 @@ def test_campex_v0_official_areas_are_navigable_without_legacy_primary_nav() -> 
         assert 'href="/operations-view"' in response.text
         assert 'href="/events"' in response.text
         assert 'href="/insights"' in response.text
+        assert 'href="/reports"' in response.text
         assert 'href="/live-grid"' in response.text
         assert 'href="/settings/cameras"' in response.text
 
     shell = client.get("/operations-view").text
     primary_nav = shell[shell.index('<nav class="cx-nav') : shell.index('<div class="cx-account">')]
-    for legacy in ["Home", "Visão geral", "Câmeras", "Alertas", "Evidências", "Regras", "Relatórios"]:
+    for legacy in ["Home", "Visão geral", "Câmeras", "Alertas", "Evidências", "Regras"]:
         assert legacy not in primary_nav
 
 
