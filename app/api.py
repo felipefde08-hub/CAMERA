@@ -868,7 +868,15 @@ def ready() -> dict[str, object]:
 
 
 @api.get("/edge/status")
-def get_edge_runtime_status(edge_id: Optional[str] = None) -> dict[str, object]:
+def get_edge_runtime_status(
+    request: Request,
+    edge_id: Optional[str] = None,
+) -> dict[str, object]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, {"admin_campex"})
+
     disk = psutil.disk_usage(str(ROOT))
     streams = live_streams.statuses()
     with connect() as connection:
@@ -4569,8 +4577,16 @@ def post_alert_delivery_retry(delivery_id: str, request: Request) -> dict[str, A
 
 
 @api.get("/events/stream")
-def get_events_stream() -> StreamingResponse:
-    return StreamingResponse(stream_events(), media_type="text/event-stream")
+def get_events_stream(request: Request) -> StreamingResponse:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        scoped_tenant = tenant_filter(user)
+
+    return StreamingResponse(
+        stream_events(scoped_tenant),
+        media_type="text/event-stream",
+    )
 
 
 @api.get("/cameras/estado")
@@ -4801,10 +4817,27 @@ def get_reports_preview(
 
 
 @api.get("/relatorios/diario")
-def get_relatorio_diario(data: Optional[str] = None) -> dict[str, Any]:
+def get_relatorio_diario(
+    request: Request,
+    data: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> dict[str, Any]:
     with connect() as connection:
         init_db(connection)
-        return daily_report_data(connection, data)
+        user = require_user(request, connection)
+        resolved_tenant = _report_tenant(user, tenant_id)
+
+        filters = ReadModelFilters(
+            cliente_id=resolved_tenant,
+            start=data,
+            end=data,
+            period="day",
+        )
+
+        try:
+            return read_model_daily_report(connection, filters)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 api.add_api_route(

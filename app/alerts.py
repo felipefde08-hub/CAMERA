@@ -92,13 +92,19 @@ def publish_alert(payload: dict[str, Any]) -> None:
             pass
 
 
-def stream_events():
+def stream_events(tenant_id: str | None = None):
     subscriber = subscribe()
     try:
         yield "event: connected\ndata: {\"status\":\"ok\"}\n\n"
         while True:
             try:
                 payload = subscriber.get(timeout=15)
+
+                if tenant_id:
+                    payload_tenant = payload.get("cliente_id") or payload.get("tenant_id")
+                    if payload_tenant != tenant_id:
+                        continue
+
                 yield f"event: alert\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
             except queue.Empty:
                 yield "event: heartbeat\ndata: {}\n\n"
@@ -127,6 +133,7 @@ def event_alert_payload(event: dict[str, Any], phase: str = "start") -> dict[str
     return {
         "type": "incident_normalized" if phase == "normalization" else "incident_opened",
         "event_id": event["id"],
+        "cliente_id": event.get("cliente_id"),
         "titulo": title,
         "camera_id": event.get("camera_id"),
         "area_id": event.get("area_id"),
@@ -152,6 +159,7 @@ def event_type_allowed(event_type: str | None, enabled_types: list[str] | None) 
 
 def alert_decision_payload(decision: dict[str, Any]) -> dict[str, Any]:
     return {
+        "tenant_id": decision.get("tenant_id"),
         "type": "critical_alert_decision",
         "decision_id": decision["decision_id"],
         "incident_key": decision["incident_key"],
@@ -472,6 +480,7 @@ def send_test_alert(recipient_id: str) -> str | None:
     publish_alert(
         {
             "type": "test_alert",
+            "cliente_id": recipient.get("cliente_id"),
             "titulo": "Alerta de teste",
             "recipient_id": recipient_id,
             "horario": now_iso(),
