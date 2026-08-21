@@ -5,19 +5,22 @@ import hashlib
 import time
 import os
 import psutil
+import secrets
 from pathlib import Path
 import logging
 from datetime import datetime, timezone
+from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import httpx
 
 from app.camera_rtsp import build_rtsp_url, test_rtsp_connection
 from app.alerts import email_configuration_status, enqueue_alert_decisions_with_connection, enqueue_event_alert, resume_pending_deliveries, retry_delivery, send_test_alert, stream_events
 from app.analytics import aggregate_period, compute_summary, current_period_range, data_quality, generate_insights, parse_dt, timeline
-from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, get_request_user, require_role, require_user, tenant_filter, update_user_password, users_exist
+from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, find_active_user_by_email, get_request_user, require_role, require_user, tenant_filter, update_user_password, users_exist
 from app.config import ROOT
 from app.database import connect, init_db
 from app.event_workflow import acknowledge_event, event_detail, resolve_event, update_human_context, update_operational_memory
@@ -136,6 +139,11 @@ logger = logging.getLogger("campex.api")
 FRONTEND_DIR = ROOT / "frontend"
 live_streams = LiveStreamManager()
 live_view_sessions: dict[str, dict[str, Any]] = {}
+GOOGLE_OAUTH_STATE_COOKIE = "campex_google_oauth_state"
+GOOGLE_OAUTH_NEXT_COOKIE = "campex_google_oauth_next"
+GOOGLE_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 
 if FRONTEND_DIR.exists():
     api.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
@@ -396,6 +404,13 @@ class AlertRecipientPatchIn(BaseModel):
 class LoginIn(BaseModel):
     email: str
     senha: str
+
+
+class SignupIn(BaseModel):
+    nome: str
+    email: str
+    senha: str
+    empresa_nome: str
 
 
 class UserIn(BaseModel):
@@ -714,6 +729,17 @@ INTERNAL_ROUTE_FILES = {
     "/help": "workspace.html",
 }
 
+
+@api.get("/login", include_in_schema=False)
+def login_page() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "login.html")
+
+
+@api.get("/login/", include_in_schema=False)
+def login_page_slash() -> FileResponse:
+    return login_page()
+
+
 FRONTEND_404_PREFIXES = {"settings"}
 API_404_PREFIXES = {
     "alert-deliveries",
@@ -737,11 +763,30 @@ API_404_PREFIXES = {
 }
 
 
-def serve_internal_route(request: Request) -> FileResponse:
+def _request_has_valid_session(request: Request) -> bool:
+    with connect() as connection:
+        init_db(connection)
+        return get_request_user(request, connection) is not None
+
+
+def _login_redirect_for(request: Request) -> RedirectResponse:
+    next_path = request.url.path
+    if request.url.query:
+        next_path = f"{next_path}?{request.url.query}"
+    return RedirectResponse(url=f"/login?next={quote(next_path, safe='')}", status_code=303)
+
+
+def _protected_frontend_response(request: Request, filename: str):
+    if not _request_has_valid_session(request):
+        return _login_redirect_for(request)
+    return FileResponse(FRONTEND_DIR / filename)
+
+
+def serve_internal_route(request: Request):
     filename = INTERNAL_ROUTE_FILES.get(request.url.path)
     if filename is None:
         raise HTTPException(status_code=404, detail="Página não encontrada.")
-    return FileResponse(FRONTEND_DIR / filename)
+    return _protected_frontend_response(request, filename)
 
 
 for internal_route in INTERNAL_ROUTE_FILES:
@@ -765,33 +810,33 @@ def serve_internal_not_found(request: Request) -> FileResponse:
 
 
 @api.get("/live-view")
-def live_view_page() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "live-view.html")
+def live_view_page(request: Request):
+    return _protected_frontend_response(request, "live-view.html")
 
 
 @api.get("/live-view/")
-def live_view_page_slash() -> FileResponse:
-    return live_view_page()
+def live_view_page_slash(request: Request):
+    return live_view_page(request)
 
 
 @api.get("/live-grid")
-def live_grid_page() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "live-grid.html")
+def live_grid_page(request: Request):
+    return _protected_frontend_response(request, "live-grid.html")
 
 
 @api.get("/live-grid/")
-def live_grid_page_slash() -> FileResponse:
-    return live_grid_page()
+def live_grid_page_slash(request: Request):
+    return live_grid_page(request)
 
 
 @api.get("/people-zones")
-def people_zones_page() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "people-zones.html")
+def people_zones_page(request: Request):
+    return _protected_frontend_response(request, "people-zones.html")
 
 
 @api.get("/people-zones/")
-def people_zones_page_slash() -> FileResponse:
-    return people_zones_page()
+def people_zones_page_slash(request: Request):
+    return people_zones_page(request)
 
 
 @api.get("/local-diagnostics-view")
@@ -909,6 +954,120 @@ def favicon() -> FileResponse:
     return FileResponse(FRONTEND_DIR / "campex-logo-oficial.png", media_type="image/png")
 
 
+@api.get("/users")
+def get_users(request: Request) -> list[dict[str, Any]]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+
+        tenant = tenant_filter(user)
+
+        if tenant:
+            rows = connection.execute(
+                "SELECT id, cliente_id, nome, email, role, ativo FROM users WHERE cliente_id = ? ORDER BY nome, email",
+                (tenant,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT id, cliente_id, nome, email, role, ativo FROM users ORDER BY nome, email"
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
+
+@api.post("/users", status_code=status.HTTP_201_CREATED)
+def post_user(payload: UserIn, request: Request) -> dict[str, Any]:
+    if len(payload.senha) < 8:
+        raise HTTPException(
+            status_code=400,
+            detail="A senha deve ter pelo menos 8 caracteres.",
+        )
+
+    allowed_customer_roles = {"admin_cliente", "operador", "visualizador"}
+    if payload.role not in allowed_customer_roles:
+        raise HTTPException(
+            status_code=400,
+            detail="Função de usuário inválida.",
+        )
+
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+
+        if user["role"] == "admin_campex":
+            cliente_id = payload.cliente_id
+            if not cliente_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Empresa é obrigatória para criar o usuário.",
+                )
+
+            cliente = connection.execute(
+                "SELECT id FROM clientes WHERE id = ?",
+                (cliente_id,),
+            ).fetchone()
+            if cliente is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Empresa não encontrada.",
+                )
+        else:
+            cliente_id = user.get("cliente_id")
+            if payload.cliente_id and payload.cliente_id != cliente_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Não é permitido criar usuário para outra empresa.",
+                )
+
+            if payload.role == "admin_cliente":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Administrador do cliente não pode criar outro administrador.",
+                )
+
+        existing = connection.execute(
+            "SELECT id FROM users WHERE email = ?",
+            (payload.email.lower().strip(),),
+        ).fetchone()
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Já existe usuário com este e-mail.",
+            )
+
+        user_id = create_user(
+            connection,
+            payload.email,
+            payload.senha,
+            payload.role,
+            cliente_id=cliente_id,
+            nome=payload.nome,
+        )
+
+        created = connection.execute(
+            """
+            SELECT id, cliente_id, nome, email, role, ativo
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+        registrar_audit_log(
+            connection,
+            action="user.create",
+            actor=user,
+            entity_type="user",
+            entity_id=user_id,
+            tenant_id=cliente_id,
+            metadata={"role": payload.role},
+        )
+
+        return dict(created)
+
+
 @api.post("/auth/login")
 def post_login(payload: LoginIn, response: Response) -> dict[str, object]:
     with connect() as connection:
@@ -920,6 +1079,168 @@ def post_login(payload: LoginIn, response: Response) -> dict[str, object]:
         registrar_audit_log(connection, action="auth.login", actor=user, entity_type="user", entity_id=user["id"], tenant_id=user.get("cliente_id"))
     response.set_cookie("campex_session", token, httponly=True, samesite="lax")
     return {"user": user}
+
+
+@api.post("/auth/signup", status_code=status.HTTP_201_CREATED)
+def post_signup(payload: SignupIn, response: Response) -> dict[str, object]:
+    if os.getenv("CAMPEX_ENABLE_PUBLIC_SIGNUP", "").strip().lower() not in {"1", "true", "yes", "on"}:
+        raise HTTPException(status_code=403, detail="Cadastro público desativado. Solicite uma demonstração com a Campex.")
+
+    nome = payload.nome.strip()
+    email = payload.email.lower().strip()
+    empresa_nome = payload.empresa_nome.strip()
+    if not nome:
+        raise HTTPException(status_code=400, detail="Nome é obrigatório.")
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="E-mail válido é obrigatório.")
+    if len(payload.senha) < 8:
+        raise HTTPException(status_code=400, detail="A senha deve ter pelo menos 8 caracteres.")
+    if not empresa_nome:
+        raise HTTPException(status_code=400, detail="Nome da empresa é obrigatório.")
+
+    with connect() as connection:
+        init_db(connection)
+        existing = connection.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+        if existing is not None:
+            raise HTTPException(status_code=409, detail="Já existe usuário com este e-mail.")
+
+        cliente_id = criar_cliente(connection, empresa_nome)
+        unidade_id = criar_unidade(connection, cliente_id, "Unidade principal")
+        user_id = create_user(connection, email, payload.senha, "admin_cliente", cliente_id=cliente_id, nome=nome)
+        token = create_session(connection, user_id)
+        user = find_active_user_by_email(connection, email)
+        registrar_audit_log(
+            connection,
+            action="auth.signup",
+            actor=user,
+            entity_type="cliente",
+            entity_id=cliente_id,
+            tenant_id=cliente_id,
+            metadata={"unidade_id": unidade_id, "role": "admin_cliente"},
+        )
+
+    response.set_cookie("campex_session", token, httponly=True, samesite="lax")
+    return {
+        "cliente_id": cliente_id,
+        "unidade_id": unidade_id,
+        "user": user,
+        "next": "/operations-view?view=home",
+    }
+
+
+def _safe_oauth_next(value: str | None) -> str:
+    if not value:
+        return "/operations-view?view=home"
+    text = value.strip()
+    if not text.startswith("/") or text.startswith("//") or "\r" in text or "\n" in text:
+        return "/operations-view?view=home"
+    return text
+
+
+def _oauth_redirect_with_error(error: str) -> RedirectResponse:
+    return RedirectResponse(url=f"/login?oauth_error={error}", status_code=303)
+
+
+def _google_redirect_uri() -> str:
+    base_url = (os.getenv("CAMPEX_PUBLIC_BASE_URL") or "http://127.0.0.1:8000").rstrip("/")
+    return f"{base_url}/auth/oauth/google/callback"
+
+
+@api.get("/auth/oauth/google/start")
+def google_oauth_start(next: Optional[str] = None) -> RedirectResponse:
+    client_id = os.getenv("CAMPEX_GOOGLE_CLIENT_ID")
+    client_secret = os.getenv("CAMPEX_GOOGLE_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        return _oauth_redirect_with_error("google_failed")
+    state = secrets.token_urlsafe(32)
+    safe_next = _safe_oauth_next(next)
+    params = {
+        "client_id": client_id,
+        "redirect_uri": _google_redirect_uri(),
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "access_type": "online",
+        "prompt": "select_account",
+    }
+    response = RedirectResponse(url=f"{GOOGLE_AUTHORIZATION_URL}?{urlencode(params)}", status_code=303)
+    response.set_cookie(GOOGLE_OAUTH_STATE_COOKIE, state, httponly=True, samesite="lax", max_age=600)
+    response.set_cookie(GOOGLE_OAUTH_NEXT_COOKIE, safe_next, httponly=True, samesite="lax", max_age=600)
+    return response
+
+
+@api.get("/auth/oauth/google/callback")
+def google_oauth_callback(request: Request, response: Response, code: Optional[str] = None, state: Optional[str] = None) -> RedirectResponse:
+    expected_state = request.cookies.get(GOOGLE_OAUTH_STATE_COOKIE)
+    next_url = _safe_oauth_next(request.cookies.get(GOOGLE_OAUTH_NEXT_COOKIE))
+    if not code or not state or not expected_state or not secrets.compare_digest(state, expected_state):
+        redirect = _oauth_redirect_with_error("invalid_state")
+        redirect.delete_cookie(GOOGLE_OAUTH_STATE_COOKIE)
+        redirect.delete_cookie(GOOGLE_OAUTH_NEXT_COOKIE)
+        return redirect
+
+    client_id = os.getenv("CAMPEX_GOOGLE_CLIENT_ID")
+    client_secret = os.getenv("CAMPEX_GOOGLE_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        redirect = _oauth_redirect_with_error("google_failed")
+        redirect.delete_cookie(GOOGLE_OAUTH_STATE_COOKIE)
+        redirect.delete_cookie(GOOGLE_OAUTH_NEXT_COOKIE)
+        return redirect
+
+    try:
+        token_response = httpx.post(
+            GOOGLE_TOKEN_URL,
+            data={
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": _google_redirect_uri(),
+                "grant_type": "authorization_code",
+            },
+            headers={"Accept": "application/json"},
+            timeout=10.0,
+        )
+        token_response.raise_for_status()
+        access_token = token_response.json().get("access_token")
+        if not access_token:
+            raise ValueError("missing access token")
+        userinfo_response = httpx.get(
+            GOOGLE_USERINFO_URL,
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=10.0,
+        )
+        userinfo_response.raise_for_status()
+        identity = userinfo_response.json()
+    except Exception:
+        redirect = _oauth_redirect_with_error("google_failed")
+        redirect.delete_cookie(GOOGLE_OAUTH_STATE_COOKIE)
+        redirect.delete_cookie(GOOGLE_OAUTH_NEXT_COOKIE)
+        return redirect
+
+    email = str(identity.get("email") or "").lower().strip()
+    email_verified = identity.get("email_verified") is True or str(identity.get("email_verified")).lower() == "true"
+    if not email or not email_verified:
+        redirect = _oauth_redirect_with_error("google_failed")
+        redirect.delete_cookie(GOOGLE_OAUTH_STATE_COOKIE)
+        redirect.delete_cookie(GOOGLE_OAUTH_NEXT_COOKIE)
+        return redirect
+
+    with connect() as connection:
+        init_db(connection)
+        user = find_active_user_by_email(connection, email)
+        if user is None:
+            redirect = _oauth_redirect_with_error("access_not_provisioned")
+            redirect.delete_cookie(GOOGLE_OAUTH_STATE_COOKIE)
+            redirect.delete_cookie(GOOGLE_OAUTH_NEXT_COOKIE)
+            return redirect
+        token = create_session(connection, user["id"])
+        registrar_audit_log(connection, action="auth.oauth.google.login", actor=user, entity_type="user", entity_id=user["id"], tenant_id=user.get("cliente_id"))
+
+    redirect = RedirectResponse(url=next_url, status_code=303)
+    redirect.set_cookie("campex_session", token, httponly=True, samesite="lax")
+    redirect.delete_cookie(GOOGLE_OAUTH_STATE_COOKIE)
+    redirect.delete_cookie(GOOGLE_OAUTH_NEXT_COOKIE)
+    return redirect
 
 
 @api.post("/auth/logout")

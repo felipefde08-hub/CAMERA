@@ -46,6 +46,15 @@ def authenticate(connection, email: str, password: str) -> dict[str, Any] | None
     return data
 
 
+def find_active_user_by_email(connection, email: str) -> dict[str, Any] | None:
+    row = connection.execute("SELECT * FROM users WHERE email = ? AND ativo = 1", (email.lower().strip(),)).fetchone()
+    if row is None:
+        return None
+    data = row_to_dict(row)
+    data.pop("password_hash", None)
+    return data
+
+
 def create_session(connection, user_id: str, hours: int = 12) -> str:
     token = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(hours=hours)

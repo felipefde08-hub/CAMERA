@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Entrar | Campex</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;650;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/styles.css?v=campex-settings-v1-20260821" />
+  </head>
+  <body class="cx-login-page">
+    <main class="cx-login-shell">
+      <section class="cx-login-brand">
+        <a class="cx-login-logo" href="/operations-view?view=home" aria-label="Campex">
+          <img src="/static/campex-logo-oficial.png" alt="Campex" />
+        </a>
+        <div>
+          <span>INTELIGÊNCIA OPERACIONAL</span>
+          <h1>Sua operação, visível em tempo real.</h1>
+          <p>Acompanhe eventos, câmeras e inteligência operacional em um só lugar.</p>
+        </div>
+      </section>
+
+      <section class="cx-login-card" aria-live="polite">
+        <form id="loginForm" class="cx-auth-form" method="post" autocomplete="on">
+          <p class="cx-login-title">
+            Entrar na Campex
+            <span>Acesse sua operação.</span>
+          </p>
+
+          <label>
+            E-mail
+            <input name="email" type="email" required autocomplete="username" />
+          </label>
+
+          <label>
+            Senha
+            <span class="cx-password-field">
+              <input id="loginPasswordInput" name="senha" type="password" required autocomplete="current-password" />
+              <button id="loginPasswordToggle" type="button" aria-label="Mostrar senha" aria-pressed="false">
+                <span aria-hidden="true">👁</span>
+              </button>
+            </span>
+          </label>
+
+          <button class="cx-auth-submit" type="submit">Entrar</button>
+          <div class="cx-auth-divider"><span>ou</span></div>
+          <a id="googleOAuthButton" class="cx-oauth-button" href="/auth/oauth/google/start?next=/operations-view?view=home">
+            <span class="cx-google-mark" aria-hidden="true">G</span>
+            Continuar com Google
+          </a>
+          <div id="loginStatus" class="cx-login-status" role="status"></div>
+          <p class="cx-login-footnote">Ainda não tem acesso? Solicite uma demonstração.</p>
+        </form>
+
+        <section id="firstRunPanel" class="cx-first-run-card" hidden>
+          <div class="cx-auth-heading">
+            <span>Primeira instalação</span>
+            <h2>Configurar primeiro acesso</h2>
+            <p>Use este fluxo somente no primeiro uso do computador Edge.</p>
+          </div>
+          <form id="firstRunForm" class="cx-auth-form" method="post" autocomplete="off">
+            <label>
+              Nome do administrador
+              <input name="admin_nome" required />
+            </label>
+            <label>
+              E-mail do administrador
+              <input name="admin_email" type="email" required autocomplete="username" />
+            </label>
+            <label>
+              Senha
+              <input name="admin_senha" type="password" required minlength="8" autocomplete="new-password" />
+            </label>
+            <label>
+              Empresa
+              <input name="empresa_nome" required />
+            </label>
+            <label>
+              Unidade inicial
+              <input name="unidade_nome" required value="Unidade principal" />
+            </label>
+            <button class="cx-auth-submit" type="submit">Criar primeira instalação</button>
+            <div id="firstRunStatus" class="cx-login-status" role="status">Verificando First Run...</div>
+          </form>
+        </section>
+      </section>
+    </main>
+    <script src="/static/login.js?v=campex-settings-v1-20260821"></script>
+  </body>
+</html>
