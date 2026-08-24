@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
 
-from app.config import DATABASE_PATH, ROOT
+from app.config import DATABASE_PATH, EVIDENCE_DIR, ROOT
 from app.database import connect, init_db
 from app.models import get_installation_state, listar, listar_alert_deliveries, listar_eventos_filtrados, listar_technical_notices
 
@@ -148,7 +148,7 @@ def prune_old_evidence(days: int, confirm: bool = False) -> list[Path]:
     if not confirm:
         raise ValueError("Confirme explicitamente para apagar evidencias antigas.")
     cutoff = time.time() - (days * 86400)
-    evidence_root = ROOT / "data" / "evidence"
+    evidence_root = EVIDENCE_DIR
     removed: list[Path] = []
     if not evidence_root.exists():
         return removed

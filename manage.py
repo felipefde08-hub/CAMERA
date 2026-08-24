@@ -16,8 +16,13 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 from app.database import connect, init_db
+from app.config import API_PORT, DATABASE_PATH, EVIDENCE_DIR
 import app.alerts as alerts_module
 from app.auth import create_user, update_user_password
+from app.edge_config import EdgeConfigError, edge_config_report, validate_edge_config
+from app.edge_pilot_check import format_edge_pilot_check, run_edge_pilot_check
+from app.edge_service import run_edge_service_command
+from app.env import load_env_file
 from app.models import (
     criar_camera,
     criar_alert_recipient,
@@ -35,30 +40,14 @@ from app.reports import save_daily_report
 from app.pilot import acceptance_checklist, create_backup, health_snapshot, prune_old_evidence, restore_backup
 from app.machine_replay import run_machine_replay
 from app.edge_runtime import run_production_edge
-from app.security import require_configured_credential_key
 from edge_agent.camera_connector import detect_source_type, safe_source_ref
 from edge_agent.camera_check import check_camera
 from edge_agent.service import EdgeSupervisor, edge_status
 from edge_agent.sync_outbox import flush_sync_outbox, pending_sync_count, run_sync_loop
 
-
-def load_env_file(path: Path = Path(".env")) -> None:
-    if not path.exists():
-        return
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
-            os.environ[key] = value
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Comandos locais do MVP de produto.")
-    parser.add_argument("--db", default=os.getenv("DATABASE_PATH", "data/visual_ops_product.sqlite3"))
+    parser.add_argument("--db", default=os.getenv("DATABASE_PATH") or str(DATABASE_PATH))
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init-db")
 
@@ -125,8 +114,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_edge_production = subparsers.add_parser("run-edge-production")
     run_edge_production.add_argument("--edge-id", default=os.getenv("CAMPEX_EDGE_ID"), required=False)
-    run_edge_production.add_argument("--host", default=os.getenv("API_HOST", "0.0.0.0"))
-    run_edge_production.add_argument("--port", type=int, default=int(os.getenv("API_PORT", "8000")))
+    run_edge_production.add_argument("--host", default=os.getenv("API_HOST") or "0.0.0.0")
+    run_edge_production.add_argument("--port", type=int, default=int(os.getenv("API_PORT") or API_PORT or 8000))
     run_edge_production.add_argument("--heartbeat-seconds", type=float, default=float(os.getenv("CAMPEX_HEARTBEAT_SECONDS", "10")))
     run_edge_production.add_argument("--sync-seconds", type=float, default=float(os.getenv("CAMPEX_SYNC_SECONDS", "10")))
     run_edge_production.add_argument("--alert-decision-seconds", type=float, default=float(os.getenv("CAMPEX_ALERT_DECISION_SECONDS", "60")))
@@ -146,6 +135,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("system-health")
     subparsers.add_parser("pilot-checklist")
+    edge_config_check = subparsers.add_parser("edge-config-check")
+    edge_config_check.add_argument("--edge-id", default=os.getenv("CAMPEX_EDGE_ID"))
+
+    edge_pilot_check = subparsers.add_parser("edge-pilot-check")
+    edge_pilot_check.add_argument("--api-url", default=os.getenv("CAMPEX_API_URL"))
+    edge_pilot_check.add_argument("--camera-timeout", type=float, default=5.0)
+    edge_pilot_check.add_argument("--http-timeout", type=float, default=2.0)
+
+    edge_service = subparsers.add_parser("edge-service")
+    edge_service.add_argument(
+        "action",
+        choices=["install", "uninstall", "start", "stop", "restart", "status", "logs"],
+    )
 
     sync_cloud = subparsers.add_parser("sync-cloud")
     sync_cloud.add_argument("--cloud-url", default=os.getenv("CAMPEX_CLOUD_URL"))
@@ -398,7 +400,7 @@ def run_factory_preflight(db_path: Path, api_url: str, camera_id: str | None, ti
     add_pipeline_check("Operational Shift Briefing", "/operations/briefing")
     add_pipeline_check("Operational & Financial Impact", "/operations/impact")
 
-    evidence_dir = Path("data/evidence")
+    evidence_dir = EVIDENCE_DIR
     try:
         evidence_dir.mkdir(parents=True, exist_ok=True)
         test_file = evidence_dir / ".preflight_write_test"
@@ -498,6 +500,27 @@ def run_send_test_email(db_path: Path, email: str, nome: str, timeout: float) ->
 def main() -> int:
     load_env_file()
     args = build_parser().parse_args()
+    if args.command == "edge-config-check":
+        try:
+            print(edge_config_report(db_path=Path(args.db), edge_id=args.edge_id))
+            return 0
+        except EdgeConfigError as exc:
+            print("Campex Edge configuration error:")
+            print(str(exc))
+            return 2
+    if args.command == "edge-service":
+        result = run_edge_service_command(args.action)
+        print(result.message)
+        return 0 if result.ok else 2
+    if args.command == "edge-pilot-check":
+        report = run_edge_pilot_check(
+            db_path=Path(args.db),
+            api_url=args.api_url,
+            camera_timeout=args.camera_timeout,
+            http_timeout=args.http_timeout,
+        )
+        print(format_edge_pilot_check(report))
+        return report.exit_code
     if args.command == "factory-preflight":
         return run_factory_preflight(Path(args.db), args.api_url, args.camera_id, args.timeout, args.min_free_gb)
     if args.command == "send-test-email":
@@ -598,12 +621,10 @@ def main() -> int:
                 print("\nEdge encerrado pelo usuario.")
                 supervisor.shutdown()
         elif args.command == "run-edge-production":
-            if not args.edge_id:
-                raise SystemExit("Configure CAMPEX_EDGE_ID ou informe --edge-id.")
             try:
-                require_configured_credential_key()
-            except RuntimeError as exc:
-                raise SystemExit(str(exc)) from exc
+                validate_edge_config(db_path=Path(args.db), edge_id=args.edge_id)
+            except EdgeConfigError as exc:
+                raise SystemExit(f"Campex Edge configuration error:\n{exc}") from exc
             logging.basicConfig(
                 level=os.getenv("CAMPEX_LOG_LEVEL", "INFO"),
                 format="%(asctime)s %(levelname)s %(name)s: %(message)s",

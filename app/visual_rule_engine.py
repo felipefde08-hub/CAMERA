@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from app.alerts import enqueue_event_alert
-from app.config import ROOT
+from app.config import EVIDENCE_DIR, storage_path
 from app.database import init_db
 from app.models import obter_camera, obter_regra, registrar_evento, atualizar_evento, atualizar_outbox_evento
 from shared.schemas import now_iso
@@ -288,11 +288,11 @@ def _save_snapshot(rule: dict[str, Any], frame: np.ndarray | None) -> str | None
         return None
     try:
         now = datetime.now(timezone.utc).astimezone()
-        folder = ROOT / "data" / "evidence" / str(rule["camera_id"]) / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
+        folder = EVIDENCE_DIR / str(rule["camera_id"]) / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{now:%H%M%S}_{rule['id']}_{int(time.time() * 1000)}.jpg"
         if cv2.imwrite(str(path), frame):
-            return str(path.relative_to(ROOT))
+            return storage_path(path)
     except Exception:
         return None
     return None

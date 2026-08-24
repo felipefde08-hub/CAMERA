@@ -11,7 +11,7 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
-from app.config import ROOT
+from app.config import EVIDENCE_DIR, ROOT
 from app.database import connect, init_db
 from app.models import (
     alert_delivery_public_dict,
@@ -448,7 +448,7 @@ def build_email_message(
     message.set_content("\n".join(lines))
     if event and event.get("midia_path"):
         path = (ROOT / str(event["midia_path"])).resolve()
-        evidence_root = (ROOT / "data" / "evidence").resolve()
+        evidence_root = EVIDENCE_DIR.resolve()
         if evidence_root in path.parents and path.exists():
             message.add_attachment(path.read_bytes(), maintype="image", subtype="jpeg", filename="evidencia.jpg")
     return message

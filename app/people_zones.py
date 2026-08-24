@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from app.alerts import enqueue_event_alert
-from app.config import ROOT
+from app.config import EVIDENCE_DIR, ROOT, storage_path
 from app.database import connect, init_db
 from app.models import (
     atualizar_ocorrencia_area,
@@ -84,7 +84,7 @@ class OperationalAbsenceContext:
 class PeopleZonesEngine:
     def __init__(self, camera_id: str, evidence_root: Path | None = None) -> None:
         self.camera_id = camera_id
-        self.evidence_root = evidence_root or (ROOT / "data" / "evidence")
+        self.evidence_root = evidence_root or EVIDENCE_DIR
         self._trackers: dict[str, AreaPresenceTracker] = {}
         self._true_since: dict[tuple[str, str], float] = {}
         self._cooldown_until: dict[tuple[str, str], float] = {}
@@ -532,7 +532,7 @@ class PeopleZonesEngine:
             if not cv2.imwrite(str(path), annotated):
                 return None, "Falha ao gravar imagem de evidencia."
             try:
-                return str(path.relative_to(ROOT)), None
+                return storage_path(path), None
             except ValueError:
                 return str(path), None
         except Exception as exc:

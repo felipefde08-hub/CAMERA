@@ -14,7 +14,7 @@ import cv2
 import numpy as np
 
 from app.alerts import enqueue_event_alert
-from app.config import ROOT
+from app.config import EVIDENCE_DIR, ROOT, storage_path
 from app.database import connect, init_db
 from app.models import (
     atualizar_evento_machine_stoppage,
@@ -961,13 +961,13 @@ def merge_event_metadata(connection, event_id: str, values: dict[str, Any]) -> N
 def save_machine_evidence(frame: np.ndarray, config: MachineMonitorConfig, state: MachineMonitorState) -> tuple[str | None, str | None]:
     try:
         now = datetime.now(timezone.utc).astimezone()
-        folder = ROOT / "data" / "evidence" / config.camera_id / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
+        folder = EVIDENCE_DIR / config.camera_id / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
         folder.mkdir(parents=True, exist_ok=True)
         path = folder / f"{now:%H%M%S}_{config.id}_machine.jpg"
         annotated = draw_machine_overlay(frame, config, state)
         if not cv2.imwrite(str(path), annotated):
             return None, "Falha ao gravar evidencia da parada."
-        relative_path = str(path.relative_to(ROOT))
+        relative_path = storage_path(path)
         return relative_path, None
     except Exception as exc:
         return None, mask_sensitive_error(str(exc))
@@ -991,7 +991,7 @@ def write_replay(event_id: str, config: MachineMonitorConfig, frames: list[tuple
         writer.release()
         with connect() as connection:
             init_db(connection)
-            atualizar_evento_replay(connection, event_id, replay_path=str(path.relative_to(ROOT)), replay_error=None)
+            atualizar_evento_replay(connection, event_id, replay_path=storage_path(path), replay_error=None)
     except Exception as exc:
         with connect() as connection:
             init_db(connection)

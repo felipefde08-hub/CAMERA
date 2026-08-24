@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from app.config import ROOT
+from app.config import EVIDENCE_DIR, storage_path
 from app.alerts import enqueue_event_alert
 from app.database import connect, init_db
 from app.models import (
@@ -58,7 +58,7 @@ class IncidentManager:
         self.exit_grace_seconds = exit_grace_seconds if exit_grace_seconds is not None else env_float("CAMPEX_EVENT_EXIT_GRACE_SECONDS", 2.0)
         self.cooldown_seconds = cooldown_seconds if cooldown_seconds is not None else env_float("CAMPEX_EVENT_COOLDOWN_SECONDS", 3.0)
         self.severity = severity or os.getenv("CAMPEX_EVENT_SEVERITY", "high")
-        self.evidence_root = evidence_root or (ROOT / "data" / "evidence")
+        self.evidence_root = evidence_root or EVIDENCE_DIR
         self.active: ActiveIncident | None = None
         self._occupied_since: float | None = None
         self._cooldown_until = 0.0
@@ -231,7 +231,7 @@ class IncidentManager:
             cv2.putText(annotated, f"{area.nome} | {presence.pessoas_dentro} pessoa(s) | {now:%Y-%m-%d %H:%M:%S}", (16, 58), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2, cv2.LINE_AA)
             if not cv2.imwrite(str(path), annotated):
                 return None, "Falha ao gravar imagem de evidencia."
-            return str(path.relative_to(ROOT)), None
+            return storage_path(path), None
         except Exception as exc:
             return None, str(exc)
 

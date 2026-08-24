@@ -12,7 +12,7 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
-from app.config import ROOT
+from app.config import EVIDENCE_DIR, ROOT, storage_path
 from app.database import connect, init_db
 from edge_agent.camera_connector import CameraSource, UniversalCameraConnector, now_iso
 from app.person_detection import Detection, PersonAnalysisEngine
@@ -240,7 +240,7 @@ class LiveCameraStream:
 
     def _persist_visual_evidence_bundle(self, candidate: dict[str, Any]) -> list[dict[str, Any]]:
         now = datetime.now(timezone.utc).astimezone()
-        folder = ROOT / "data" / "evidence" / self.camera_id / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
+        folder = EVIDENCE_DIR / self.camera_id / f"{now:%Y}" / f"{now:%m}" / f"{now:%d}"
         folder.mkdir(parents=True, exist_ok=True)
 
         before = candidate.get("before") or []
@@ -267,7 +267,7 @@ class LiveCameraStream:
                 path.write_bytes(sample["jpeg"])
 
                 try:
-                    relative_path = str(path.relative_to(ROOT))
+                    relative_path = storage_path(path)
                 except ValueError:
                     relative_path = str(path)
 

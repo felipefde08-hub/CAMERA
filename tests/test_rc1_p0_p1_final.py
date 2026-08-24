@@ -132,6 +132,7 @@ def test_manage_loads_dotenv_before_parser_defaults(tmp_path: Path, monkeypatch)
     env_file = tmp_path / ".env"
     env_file.write_text("CAMPEX_EDGE_ID=edge_dotenv\nDATABASE_PATH=data/from_dotenv.sqlite3\nAPI_PORT=8012\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CAMPEX_ENV_FILE", str(env_file))
     monkeypatch.delenv("CAMPEX_EDGE_ID", raising=False)
     monkeypatch.delenv("DATABASE_PATH", raising=False)
     monkeypatch.delenv("API_PORT", raising=False)

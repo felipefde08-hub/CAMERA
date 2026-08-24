@@ -21,7 +21,7 @@ from app.camera_rtsp import build_rtsp_url, test_rtsp_connection
 from app.alerts import email_configuration_status, enqueue_alert_decisions_with_connection, enqueue_event_alert, resume_pending_deliveries, retry_delivery, send_test_alert, stream_events
 from app.analytics import aggregate_period, compute_summary, current_period_range, data_quality, generate_insights, parse_dt, timeline
 from app.auth import ADMIN_ROLES, authenticate, create_session, create_user, delete_session, find_active_user_by_email, get_request_user, require_role, require_user, tenant_filter, update_user_password, users_exist
-from app.config import ROOT
+from app.config import EVIDENCE_DIR, ROOT, storage_path
 from app.database import connect, init_db
 from app.event_workflow import acknowledge_event, event_detail, resolve_event, update_human_context, update_operational_memory
 from app.context_engine import ContextPackAccessError, ContextPackNotFoundError, build_context_pack
@@ -2739,7 +2739,7 @@ def create_test_evidence(camera_id: str, area_id: str, event_type: str) -> str:
     import cv2
     import numpy as np
 
-    folder = ROOT / "data" / "evidence" / "test" / camera_id
+    folder = EVIDENCE_DIR / "test" / camera_id
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{int(time.time() * 1000)}_{event_type}_{area_id}.jpg"
     image = np.zeros((360, 640, 3), dtype=np.uint8)
@@ -2747,7 +2747,7 @@ def create_test_evidence(camera_id: str, area_id: str, event_type: str) -> str:
     cv2.putText(image, event_type, (24, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (80, 170, 255), 2, cv2.LINE_AA)
     if not cv2.imwrite(str(path), image):
         raise HTTPException(status_code=500, detail="Nao foi possivel salvar evidencia de teste.")
-    return str(path.relative_to(ROOT))
+    return storage_path(path)
 
 
 @api.post("/dev/test-event")
@@ -3700,7 +3700,7 @@ def get_evento_evidence(evento_id: str, request: Request) -> FileResponse:
     if not midia_path:
         raise HTTPException(status_code=404, detail="Evidencia nao encontrada.")
     path = (ROOT / str(midia_path)).resolve()
-    evidence_root = (ROOT / "data" / "evidence").resolve()
+    evidence_root = EVIDENCE_DIR.resolve()
     if evidence_root not in path.parents:
         raise HTTPException(status_code=403, detail="Caminho de evidencia invalido.")
     if not path.exists():
@@ -3739,7 +3739,7 @@ def get_evento_evidence_item(
         raise HTTPException(status_code=404, detail="Evidencia nao encontrada.")
 
     path = (ROOT / str(evidence["path"])).resolve()
-    evidence_root = (ROOT / "data" / "evidence").resolve()
+    evidence_root = EVIDENCE_DIR.resolve()
 
     if evidence_root not in path.parents:
         raise HTTPException(status_code=403, detail="Caminho de evidencia invalido.")
