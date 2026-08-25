@@ -784,7 +784,7 @@ async function startLiveView() {
   const auth = await authStatus();
   if (!auth.authenticated) {
     setStatus("offline", "Entre para acessar a câmera ao vivo.");
-    liveViewHint.innerHTML = '<a class="button-link" href="/settings/cameras?next=%2Flive-view#login">Entrar</a>';
+    liveViewHint.innerHTML = '<a class="button-link" href="/login?next=%2Flive-view">Entrar</a>';
     if (liveStreamSummary) liveStreamSummary.textContent = "Live protegida por sessão.";
     return;
   }

@@ -338,7 +338,8 @@ def test_setup_frontend_shows_single_auth_path_during_first_run() -> None:
     script = Path("frontend/app.js").read_text(encoding="utf-8")
 
     assert 'id="loginHeader"' in html
-    assert 'id="loginForm" class="form compact-form" method="post"' in html
+    assert 'id="loginForm" class="form cx-login-form" method="post"' in html
+    assert 'id="googleOAuthButton"' in html
     assert 'id="firstRunPanel"' in html
     assert 'id="firstRunForm" class="form" method="post" action="/first-run/complete" autocomplete="off"' in html
     assert "function setFirstRunMode" in script

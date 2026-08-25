@@ -42,7 +42,7 @@ function renderAuthGate() {
       <span>Acesso protegido</span>
       <strong>Entre para visualizar câmeras em tempo real.</strong>
       <p>A Campex só carrega streams, status operacional e contexto de câmeras para usuários autenticados.</p>
-      <a class="button-link" href="/settings/cameras?next=%2Flive-grid#login">Entrar</a>
+      <a class="button-link" href="/login?next=%2Flive-grid">Entrar</a>
     </section>
   `;
   message.textContent = "Sessão necessária para carregar a Live.";
@@ -51,6 +51,13 @@ function renderAuthGate() {
 
 function statusLabel(status) {
   if (status === "online") return "Online";
+  if (status === "conectando") return "Conectando";
+  if (status === "reconectando") return "Reconectando";
+  return "Offline";
+}
+
+function humanConnectionLabel(status) {
+  if (status === "online") return "Conectado";
   if (status === "conectando") return "Conectando";
   if (status === "reconectando") return "Reconectando";
   return "Offline";
@@ -107,7 +114,22 @@ function displayCameraName(camera) {
 }
 
 function displayCameraPath(camera) {
-  return camera.context?.path_label || "Contexto operacional pendente";
+  return camera.context?.path_label || "Área não identificada";
+}
+
+function lastFrameLabel(value) {
+  return value ? "Recente" : "Sem frame";
+}
+
+function inferenceLabel(value) {
+  if (value === "ativa") return "Ativa";
+  if (value === "iniciando") return "Iniciando";
+  return "Inativa";
+}
+
+function activeEventDuration(event) {
+  if (!event) return "—";
+  return secondsLabel(event.duration_seconds);
 }
 
 function renderPicker() {
@@ -122,21 +144,23 @@ function renderPicker() {
   if (!operationalRows.length) {
     picker.innerHTML = `
       <section class="cx-live-config-note">
-        <strong>Nenhum setor monitorado configurado.</strong>
-        <span>Associe câmera, área, processo e ativo no Setup para a Live priorizar a operação.</span>
-        <a class="button-link" href="/settings/cameras">Abrir Setup</a>
+        <strong>Nenhuma câmera operacional configurada.</strong>
+        <span>Associe câmera, área, processo e ativo para acompanhar a operação ao vivo.</span>
+        <a class="button-link" href="/settings/cameras">Configurar câmeras →</a>
       </section>
-      ${technicalRows.length ? `<details class="cx-live-technical-list"><summary>Câmeras sem contexto operacional (${technicalRows.length})</summary>${technicalRows.map((camera) => `<span>${camera.nome || camera.id}</span>`).join("")}</details>` : ""}
+      ${technicalRows.length ? `<details class="cx-live-technical-list"><summary>${technicalRows.length} câmeras aguardam configuração</summary>${technicalRows.map((camera) => `<span>${camera.nome || "Câmera sem nome"}</span>`).join("")}<a href="/settings/cameras">Configurar câmeras →</a></details>` : ""}
     `;
     grid.innerHTML = "";
-    message.textContent = "A Live oficial mostra setores monitorados, não câmeras técnicas soltas.";
+    message.textContent = "A Live mostra câmeras vinculadas a contexto operacional.";
     return;
   }
   picker.innerHTML = operationalRows.map((camera) => {
     const checked = selected.has(camera.id) ? "checked" : "";
+    const status = selected.get(camera.id)?.status?.status;
     return `
       <label class="cx-grid-picker-item">
         <input type="checkbox" data-camera-id="${camera.id}" ${checked} />
+        <i class="${connectionClass(status)}" aria-hidden="true"></i>
         <span>
           <strong>${displayCameraName(camera)}</strong>
           <small>${displayCameraPath(camera)}</small>
@@ -145,53 +169,84 @@ function renderPicker() {
     `;
   }).join("") + (technicalRows.length ? `
     <details class="cx-live-technical-list">
-      <summary>${technicalRows.length} câmera(s) aguardando Setup</summary>
-      ${technicalRows.map((camera) => `<span>${camera.nome || camera.id}</span>`).join("")}
+      <summary>${technicalRows.length} câmeras aguardam configuração</summary>
+      ${technicalRows.map((camera) => `<span>${camera.nome || "Câmera sem nome"}</span>`).join("")}
+      <a href="/settings/cameras">Configurar câmeras →</a>
     </details>
   ` : "");
   message.textContent = selected.size
-    ? `${selected.size} setor(es) em monitoramento.`
-    : "Selecione setores configurados para acompanhar a operação.";
+    ? `${selected.size} câmera(s) selecionada(s).`
+    : "Selecione uma câmera para acompanhar agora.";
 }
 
 function renderGrid() {
   if (!selected.size) {
-    grid.innerHTML = "";
+    grid.innerHTML = `
+      <section class="cx-live-empty-stage">
+        <strong>Selecione uma câmera.</strong>
+        <p>As câmeras configuradas aparecem acima como atalhos compactos.</p>
+      </section>
+    `;
     return;
   }
-  grid.innerHTML = Array.from(selected.values()).map((item) => `
-    <article class="cx-live-grid-card" data-camera-id="${item.camera.id}">
-      <header>
-        <div>
-          <h3>${item.status?.context?.primary_label || displayCameraName(item.camera)}</h3>
-          <p>${item.status?.context?.path_label || displayCameraPath(item.camera)}</p>
+  const item = Array.from(selected.values())[0];
+  const context = item.status?.context || {};
+  const currentEvent = context.current_event;
+  const cameraName = context.primary_label || displayCameraName(item.camera);
+  const cameraPath = context.path_label || displayCameraPath(item.camera);
+  const statusText = operationalStatusLabel(context.operational_status, currentEvent);
+  grid.innerHTML = `
+    <article class="cx-live-monitor" data-camera-id="${item.camera.id}">
+      <section class="cx-live-stage">
+        <div class="cx-live-grid-frame">
+          <img src="${item.streamUrl}" alt="Transmissão ${cameraName}" />
+          <a class="cx-live-grid-hit" href="/live-view?camera_id=${encodeURIComponent(item.camera.id)}&nome=${encodeURIComponent(item.camera.nome)}" aria-label="Abrir ${cameraName}"></a>
+          <div class="cx-live-grid-overlay">
+            <strong>${cameraName}</strong>
+            <span>${item.status?.status === "online" ? "Ao vivo" : humanConnectionLabel(item.status?.status)}</span>
+          </div>
         </div>
-        <span class="badge ${item.status?.context?.current_event ? "danger" : connectionClass(item.status?.status)}">${operationalStatusLabel(item.status?.context?.operational_status, item.status?.context?.current_event)}</span>
-      </header>
-      <div class="cx-live-grid-frame">
-        <img src="${item.streamUrl}" alt="Transmissão ${displayCameraName(item.camera)}" />
-        <a class="cx-live-grid-hit" href="/live-view?camera_id=${encodeURIComponent(item.camera.id)}&nome=${encodeURIComponent(item.camera.nome)}" aria-label="Abrir ${item.status?.context?.primary_label || displayCameraName(item.camera)}"></a>
-        <span class="cx-live-grid-overlay">${item.status?.status === "reconectando" ? "Tentando reconectar" : item.status?.context?.current_event ? eventLabel(item.status.context.current_event) : ""}</span>
-      </div>
-      <section class="cx-live-operational-summary">
-        <strong>${item.status?.context?.current_event ? "Evento físico em andamento" : item.status?.context?.operational_status === "sem_evento" ? "Sem evento aberto" : "Estado atual"}</strong>
-        <span>${operationalStatusLabel(item.status?.context?.operational_status, item.status?.context?.current_event)}</span>
-        ${item.status?.context?.current_event ? `<a href="/events?event_uuid=${encodeURIComponent(item.status.context.current_event.event_uuid || "")}">Ver evento</a>` : ""}
+        ${item.status?.error ? `
+          <div class="cx-live-frame-error">
+            <strong>Sem imagem disponível</strong>
+            <p>A câmera está conectando ou ainda não enviou um frame.</p>
+            <button type="button" data-action="restart" data-camera-id="${item.camera.id}">Tentar novamente</button>
+            <details><summary>Detalhes técnicos</summary><span>${friendlyGridError(item.status.error)}</span></details>
+          </div>
+        ` : ""}
       </section>
-      <dl>
-        <div><dt>Conexão</dt><dd>${statusLabel(item.status?.status)}</dd></div>
-        <div><dt>Inferência</dt><dd>${item.status?.ai_status || "inativa"}</dd></div>
-        <div><dt>Pessoas</dt><dd>${item.status?.people_count ?? 0}</dd></div>
-        <div><dt>Último frame</dt><dd>${item.status?.last_frame_at ? "recente" : "sem frame"}</dd></div>
-      </dl>
-      <footer>
-        <button type="button" data-action="ai-start" data-camera-id="${item.camera.id}" ${item.status?.ai_status === "ativa" ? "hidden" : ""}>Ativar IA</button>
-        <button type="button" data-action="ai-stop" data-camera-id="${item.camera.id}" ${item.status?.ai_status !== "ativa" ? "hidden" : ""}>Desativar IA</button>
-        <a class="button-link" href="/live-view?camera_id=${encodeURIComponent(item.camera.id)}&nome=${encodeURIComponent(item.camera.nome)}">Abrir setor</a>
-        <button type="button" data-action="stop" data-camera-id="${item.camera.id}">Parar esta câmera</button>
-      </footer>
+      <aside class="cx-live-now">
+        <span>Agora</span>
+        <h2>${cameraName}</h2>
+        <p>${cameraPath}</p>
+        <dl>
+          <div><dt>Estado atual</dt><dd>${statusText}</dd></div>
+          <div><dt>Duração</dt><dd>${activeEventDuration(currentEvent)}</dd></div>
+          <div><dt>Pessoas</dt><dd>${item.status?.people_count ?? "Indisponível"}</dd></div>
+          <div><dt>Conexão</dt><dd>${humanConnectionLabel(item.status?.status)}</dd></div>
+          <div><dt>Inferência</dt><dd>${inferenceLabel(item.status?.ai_status)}</dd></div>
+          <div><dt>Último frame</dt><dd>${lastFrameLabel(item.status?.last_frame_at)}</dd></div>
+        </dl>
+        ${currentEvent ? `
+          <section class="cx-live-active-event">
+            <span>Evento ativo</span>
+            <strong>${eventLabel(currentEvent)}</strong>
+            <p>${secondsLabel(currentEvent.duration_seconds)}</p>
+            <a href="/events?event_uuid=${encodeURIComponent(currentEvent.event_uuid || "")}">Ver evento →</a>
+          </section>
+        ` : ""}
+        <details class="cx-live-grid-technical">
+          <summary>Detalhes técnicos</summary>
+          <footer>
+            <button type="button" data-action="ai-start" data-camera-id="${item.camera.id}" ${item.status?.ai_status === "ativa" ? "hidden" : ""}>Ativar IA</button>
+            <button type="button" data-action="ai-stop" data-camera-id="${item.camera.id}" ${item.status?.ai_status !== "ativa" ? "hidden" : ""}>Desativar IA</button>
+            <a class="button-link" href="/live-view?camera_id=${encodeURIComponent(item.camera.id)}&nome=${encodeURIComponent(item.camera.nome)}">Abrir câmera</a>
+            <button type="button" data-action="stop" data-camera-id="${item.camera.id}">Parar</button>
+          </footer>
+        </details>
+      </aside>
     </article>
-  `).join("");
+  `;
 }
 
 async function startCamera(cameraId) {
@@ -230,8 +285,7 @@ async function refreshStatuses() {
         item.status = entry.status;
       }
     });
-    const resource = overview.resources || {};
-    resources.textContent = `${rowsWithContextLabel()} · diagnóstico técnico no Setup`;
+    resources.textContent = rowsWithContextLabel();
   } catch (error) {
     resources.textContent = "Recursos indisponíveis";
     await Promise.all(Array.from(selected.keys()).map(async (cameraId) => {
@@ -271,6 +325,11 @@ grid.addEventListener("click", (event) => {
   const cameraId = target.dataset.cameraId;
   const action = target.dataset.action;
   if (action === "stop") stopCamera(cameraId);
+  if (action === "restart") {
+    stopCamera(cameraId)
+      .then(() => startCamera(cameraId))
+      .catch((error) => { message.textContent = friendlyGridError(error); });
+  }
   if (action === "ai-start") toggleAnalysis(cameraId, true).catch((error) => { message.textContent = error.message; });
   if (action === "ai-stop") toggleAnalysis(cameraId, false).catch((error) => { message.textContent = error.message; });
 });

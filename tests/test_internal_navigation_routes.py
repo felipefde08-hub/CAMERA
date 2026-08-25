@@ -4,12 +4,17 @@ import socket
 import subprocess
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+import app.api as api_module
+from app.auth import create_user
 from app.api import api
 from app.config import ROOT
+from app.database import connect, init_db
+from app.models import criar_cliente, criar_unidade
 
 
 INTERNAL_ROUTES = [
@@ -58,7 +63,12 @@ def test_internal_navigation_routes_return_html() -> None:
     client = TestClient(api)
 
     for route in INTERNAL_ROUTES:
-        response = client.get(route, follow_redirects=True)
+        logged_out = client.get(route, follow_redirects=False)
+        assert logged_out.status_code == 303, route
+        assert logged_out.headers["location"].startswith("/login?next="), route
+
+        with patch.object(api_module, "_request_has_valid_session", return_value=True):
+            response = client.get(route)
 
         assert_shell_response(route, response)
 
@@ -144,7 +154,12 @@ def test_direct_refresh_routes_return_correct_shell() -> None:
     client = TestClient(api)
 
     for route in ["/events", "/cameras", "/settings"]:
-        response = client.get(route)
+        logged_out = client.get(route, follow_redirects=False)
+        assert logged_out.status_code == 303, route
+        assert logged_out.headers["location"].startswith("/login?next="), route
+
+        with patch.object(api_module, "_request_has_valid_session", return_value=True):
+            response = client.get(route)
         assert_shell_response(route, response)
 
 
@@ -158,6 +173,11 @@ def _free_port() -> int:
 def browser_base_url(tmp_path_factory):
     port = _free_port()
     db_path = tmp_path_factory.mktemp("campex_nav") / "nav.sqlite3"
+    with connect(db_path) as connection:
+        init_db(connection)
+        cliente_id = criar_cliente(connection, "Cliente Playwright")
+        criar_unidade(connection, cliente_id, "Unidade principal")
+        create_user(connection, "nav@example.com", "senha-segura", "admin_cliente", cliente_id, "Navegador")
     env = {
         **os.environ,
         "API_HOST": "127.0.0.1",
@@ -211,6 +231,11 @@ def _open_page(browser, base_url: str, path: str, width: int = 1366, height: int
     page = browser.new_page(viewport={"width": width, "height": height})
     js_errors: list[str] = []
     page.on("pageerror", lambda error: js_errors.append(str(error)))
+    login = page.request.post(
+        f"{base_url}/auth/login",
+        data={"email": "nav@example.com", "senha": "senha-segura"},
+    )
+    assert login.ok
     response = page.goto(f"{base_url}{path}", wait_until="domcontentloaded")
     page.locator(".cx-sidebar").wait_for(state="visible")
     assert response is not None
@@ -225,33 +250,36 @@ def _assert_active(page, label: str) -> None:
     assert active.first.get_attribute("title")
 
 
+def _assert_page_top(page) -> None:
+    assert page.locator(".cx-main").is_visible()
+
+
 def test_browser_sidebar_navigation_back_forward_refresh_and_new_tab(browser, browser_base_url) -> None:
     page, response, js_errors = _open_page(browser, browser_base_url, "/operations-view")
     assert response.status == 200
     assert page.locator(".cx-sidebar").is_visible()
-    assert page.locator(".cx-header").is_visible()
-    _assert_active(page, "Operations")
+    _assert_page_top(page)
+    _assert_active(page, "Operação")
 
     route_labels = [
-        ("/events", "Events"),
+        ("/events", "Eventos"),
         ("/insights", "Intelligence"),
-        ("/live-grid", "Live"),
-        ("/settings/cameras", "Setup"),
+        ("/live-grid", "Ao vivo"),
+        ("/settings/cameras", "Configurações"),
     ]
     for route, label in route_labels:
         page.locator(f'.cx-nav a[href="{route}"]').first.click()
         page.wait_for_url(re.compile(re.escape(route) + r"$"))
-        page.locator(".cx-header").wait_for(state="visible")
         assert page.url.endswith(route)
         assert page.locator(".cx-sidebar").is_visible()
-        assert page.locator(".cx-header").is_visible()
+        _assert_page_top(page)
         _assert_active(page, label)
         assert "Not Found" not in page.content()
 
-    for route, label in [("/operations-view", "Operations"), ("/events", "Events"), ("/settings/cameras", "Setup")]:
+    for route, label in [("/operations-view", "Operação"), ("/events", "Eventos"), ("/settings/cameras", "Configurações")]:
         response = page.goto(f"{browser_base_url}{route}", wait_until="domcontentloaded")
         assert response.status == 200
-        page.locator(".cx-header").wait_for(state="visible")
+        _assert_page_top(page)
         _assert_active(page, label)
 
     page.goto(f"{browser_base_url}/operations-view", wait_until="domcontentloaded")
@@ -261,7 +289,7 @@ def test_browser_sidebar_navigation_back_forward_refresh_and_new_tab(browser, br
     page.wait_for_url(re.compile(r".*/insights$"))
     page.go_back(wait_until="domcontentloaded")
     assert page.url.endswith("/events")
-    _assert_active(page, "Events")
+    _assert_active(page, "Eventos")
     page.go_forward(wait_until="domcontentloaded")
     assert page.url.endswith("/insights")
     _assert_active(page, "Intelligence")
@@ -281,9 +309,9 @@ def test_browser_invalid_internal_route_shows_shell_404(browser, browser_base_ur
 
     assert response.status == 404
     assert page.locator(".cx-sidebar").is_visible()
-    assert page.locator(".cx-header").is_visible()
+    _assert_page_top(page)
     assert page.get_by_text("Página não encontrada").first.is_visible()
-    assert page.get_by_text("Voltar para Operations").first.is_visible()
+    assert page.get_by_text("Voltar para Operação").first.is_visible()
     assert page.locator(".cx-nav a.active").count() == 0
     assert not js_errors
     page.close()
@@ -300,7 +328,7 @@ def test_browser_mobile_drawer_and_collapsed_sidebar(browser, browser_base_url) 
     page.wait_for_url(re.compile(r".*/events$"))
     assert page.url.endswith("/events")
     assert not page.locator(".cx-mobile-overlay").is_visible()
-    _assert_active(page, "Events")
+    _assert_active(page, "Eventos")
     page.close()
 
     desktop, response, desktop_errors = _open_page(browser, browser_base_url, "/operations-view")
@@ -309,7 +337,7 @@ def test_browser_mobile_drawer_and_collapsed_sidebar(browser, browser_base_url) 
     assert "sidebar-collapsed" in (desktop.locator("body").get_attribute("class") or "")
     for link in desktop.locator(".cx-nav a").all():
         assert link.get_attribute("title")
-    _assert_active(desktop, "Operations")
+    _assert_active(desktop, "Operação")
     assert not js_errors
     assert not desktop_errors
     desktop.close()

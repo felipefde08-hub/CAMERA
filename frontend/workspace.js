@@ -42,23 +42,23 @@ const routes = {
     customRender: renderHomePage,
   },
   "/dashboard": {
-    title: "Home",
+    title: "Operação",
     section: "operation",
-    breadcrumb: "Operação / Home",
+    breadcrumb: "Operação",
     external: true,
   },
   "/overview": {
-    title: "Visão geral",
+    title: "Operação",
     section: "operation",
-    breadcrumb: "Operação / Visão geral",
+    breadcrumb: "Operação",
     external: true,
   },
   "/operations-view": {
-    title: "Operations",
+    title: "Operação",
     section: "operation",
-    breadcrumb: "Operação / Operations",
+    breadcrumb: "Operação",
     permissions: [],
-    heading: "Operations",
+    heading: "Operação",
     subtitle: "O que merece atenção na operação.",
     action: "Atualizar",
     tabs: ["Hoje", "Turno", "Semana", "Mês", "Personalizado"],
@@ -92,11 +92,11 @@ const routes = {
     card: cameraCard,
   },
   "/events": {
-    title: "Events",
+    title: "Eventos",
     section: "operation",
-    breadcrumb: "Operations / Events",
+    breadcrumb: "Operação / Eventos",
     permissions: [],
-    heading: "Events",
+    heading: "Eventos",
     subtitle: "Ocorrências e incidentes registrados pela operação.",
     endpoint: "/eventos",
     action: "Atualizar",
@@ -247,7 +247,7 @@ const routes = {
     permissions: [],
     heading: "Usuários",
     subtitle: "Equipe, convites e permissões vinculadas ao cliente.",
-    endpoint: "/auth/users",
+    endpoint: "/users",
     action: "Convidar usuário",
     actionHref: "/settings/cameras#usuarios",
     emptyTitle: "Nenhum usuário cadastrado.",
@@ -688,6 +688,7 @@ function humanStatus(value) {
     PRESENT: "Presença confirmada",
     ABSENT: "Ausência confirmada",
     LOW_ACTIVITY: "Baixa atividade",
+    NORMAL_ACTIVITY: "Operação normal",
     NO_ACTIVITY: "Sem atividade",
     ONLINE: "Online",
     OFFLINE: "Offline",
@@ -699,7 +700,7 @@ function humanStatus(value) {
 function homeContextName(value, fallback = "Ativo sem nome") {
   const text = String(value || "").trim();
   if (!text) return fallback;
-  if (/^(evt|cam|opasset|area|proc|mach|compat|live|cli|uni)_/i.test(text) || /^[a-f0-9-]{16,}$/i.test(text)) return fallback;
+  if (/^(evt|cam|opasset|oparea|opproc|area|proc|mach|compat|live|cli|uni)_/i.test(text) || /^[a-f0-9-]{16,}$/i.test(text)) return fallback;
   return text;
 }
 
@@ -793,10 +794,12 @@ function homeSectionStatus(result, availableLabel = "Dados reais") {
   return `<small>Indisponível: ${sanitize(result?.error || "falha de carregamento")}</small>`;
 }
 
-function homeMetric(label, value, detail) {
+function homeMetric(label, value, detail, icon = "info", tone = "") {
+  const toneClass = tone ? ` cx-home-kpi-${sanitize(tone)}` : "";
   return `
-    <article>
-      <span>${label}</span>
+    <article class="cx-home-kpi${toneClass}">
+      <span class="cx-home-kpi-icon" data-icon="${sanitize(icon)}"></span>
+      <span class="cx-home-kpi-label">${label}</span>
       <strong>${value}</strong>
       <small>${detail}</small>
     </article>
@@ -870,13 +873,13 @@ function renderHomeMetrics(currentPayload, summary, briefing, impact) {
   const incidents = impact.operational_impact?.incident_count ?? summary.total_events;
   const monitoredAssets = impact.machine_metrics?.length ?? 0;
   const metrics = [
-    homeMetric("Incidentes ativos", openEvents, "Eventos físicos abertos"),
-    homeMetric("Downtime observado", homeDataValue(downtime, secondsLabel), incidents ? `${incidents} incidente(s) no período` : "Sem incidentes de downtime"),
-    homeMetric("Ativos", monitoredAssets || "Indisponível", monitoredAssets ? "Com dados operacionais" : "Aguardando dados de ativos"),
-    homeMetric("Cobertura", coverage.label, summary.coverage?.sample_count ? `${summary.coverage.sample_count} amostras` : "Amostras insuficientes ou indisponíveis"),
+    homeMetric("Incidentes ativos", openEvents, "Eventos físicos abertos", "alert"),
+    homeMetric("Downtime observado", homeDataValue(downtime, secondsLabel), incidents ? `${incidents} incidente(s) no período` : "Sem incidentes de downtime", "clock"),
+    homeMetric("Ativos", monitoredAssets || "Indisponível", monitoredAssets ? "Com dados operacionais" : "Aguardando dados de ativos", "asset"),
+    homeMetric("Cobertura", coverage.label, summary.coverage?.sample_count ? `${summary.coverage.sample_count} amostras` : "Amostras insuficientes ou indisponíveis", "signal"),
   ];
   return `
-    <section class="cx-home-metrics" aria-label="Operação agora">
+    <section class="cx-home-kpi-grid" aria-label="Indicadores principais">
       ${metrics.join("")}
     </section>
   `;
@@ -884,25 +887,38 @@ function renderHomeMetrics(currentPayload, summary, briefing, impact) {
 
 function renderHomeProtectedMetrics() {
   return `
-    <section class="cx-home-metrics" aria-label="Operação agora">
+    <section class="cx-home-kpi-grid" aria-label="Indicadores principais">
       ${[
-        homeMetric("Ativos monitorados", "Não disponível", "Entre para carregar ativos reais"),
-        homeMetric("Downtime observado", "Não disponível", "Entre para carregar o período"),
-        homeMetric("Incidentes ativos", "Não disponível", "Entre para carregar eventos"),
-        homeMetric("Cobertura dos dados", "Não disponível", "Entre para carregar amostras"),
+        homeMetric("Ativos monitorados", "Não disponível", "Entre para carregar ativos reais", "asset"),
+        homeMetric("Downtime observado", "Não disponível", "Entre para carregar o período", "clock"),
+        homeMetric("Incidentes ativos", "Não disponível", "Entre para carregar eventos", "alert"),
+        homeMetric("Cobertura dos dados", "Não disponível", "Entre para carregar amostras", "signal"),
       ].join("")}
     </section>
   `;
 }
 
 function renderHomeActivity(timelinePayload) {
-  const items = (timelinePayload.items || []).filter((item) => ["machine_activity", "person_presence", "zone_occupancy", "operational_activity", "event_started", "event_closed"].includes(item.type)).slice(-8);
+  const items = (timelinePayload.items || []).filter((item) => ["machine_activity", "person_presence", "zone_occupancy", "operational_activity", "event_started", "event_closed"].includes(item.type)).slice(-8).reverse();
   if (!items.length) {
     return `<div class="cx-home-empty"><strong>Aguardando dados da operação.</strong><p>A atividade recente aparecerá quando houver amostras ou eventos reais.</p></div>`;
   }
   return `
-    <div class="cx-home-activity-strip">
-      ${items.map((item) => `<span class="${String(item.new_state || "").toLowerCase()}"><i></i>${humanStatus(item.new_state)}<small>${new Date(item.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</small></span>`).join("")}
+    <div class="cx-home-timeline-list">
+      ${items.map((item) => {
+        const state = String(item.new_state || item.state || "unknown").toLowerCase();
+        const context = homeContextName(item.asset_name || item.asset_id || item.area_name || item.camera_name || item.camera_id, "Contexto operacional");
+        return `
+          <article class="cx-home-timeline-item ${sanitize(state)}">
+            <time>${item.timestamp ? new Date(item.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "—"}</time>
+            <i aria-hidden="true"></i>
+            <div>
+              <strong>${humanStatus(item.new_state || item.state || item.type)}</strong>
+              <small>${context}</small>
+            </div>
+          </article>
+        `;
+      }).join("")}
     </div>
   `;
 }
@@ -920,7 +936,7 @@ function renderHomeActivityLegend() {
 
 function renderHomeAssets(setupPayload, currentPayload) {
   const assets = setupPayload.assets || [];
-  if (!assets.length) return `<div class="cx-home-empty"><strong>Nenhum ativo configurado.</strong><p>Configure a hierarquia operacional no Setup para a Campex contextualizar a operação.</p><a class="cx-secondary-action" href="/settings/cameras">Abrir Setup</a></div>`;
+  if (!assets.length) return `<div class="cx-home-empty"><strong>Nenhum ativo configurado.</strong><p>Configure a hierarquia operacional em Configurações para a Campex contextualizar a operação.</p><a class="cx-secondary-action" href="/settings/cameras">Abrir Configurações</a></div>`;
   const openEvents = classifiedOpenEvents(currentPayload);
   return assets.slice(0, 6).map((asset) => {
     const activeEvent = openEvents.find((event) => event.asset_id === asset.id);
@@ -967,7 +983,7 @@ function renderHomeImpact(impact) {
     ? `${financial.currency || ""} ${Number(financial.estimated_amount || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
     : "Impacto financeiro não configurado";
   return `
-    <section class="cx-home-impact">
+    <section class="cx-home-impact-list">
       <article>
         <span>Impacto operacional</span>
         <strong>${homeDataValue(downtime, secondsLabel)}</strong>
@@ -979,6 +995,31 @@ function renderHomeImpact(impact) {
         <small>${homeBusinessLabel(financial.status || "not_available")}</small>
       </article>
     </section>
+  `;
+}
+
+function renderHomeOperationalSummary(currentPayload, summary, operationalData, setupPayload, failedSections) {
+  const coverage = homeCoverageState(summary.coverage);
+  const openEvents = classifiedOpenEvents(currentPayload).length;
+  const downtime = operationalData.operational_impact?.downtime_seconds ?? operationalData.machine_metrics?.downtime_seconds;
+  const assetsCount = (setupPayload.assets || []).length;
+  return `
+    <div class="cx-home-summary-list">
+      <div><span>Downtime</span><strong>${homeDataValue(downtime, secondsLabel)}</strong></div>
+      <div><span>Incidentes</span><strong>${summary.total_events ?? openEvents ?? "Indisponível"}</strong></div>
+      <div><span>Cobertura</span><strong>${coverage.label}</strong></div>
+      <div><span>Ativos</span><strong>${assetsCount || "Indisponível"}</strong></div>
+    </div>
+    <div class="cx-home-summary-note">
+      <strong>${coverage.tone === "good" ? "Leitura operacional disponível." : "Leitura operacional limitada."}</strong>
+      <p>${summary.coverage?.reason || "A Campex apresenta somente dados sustentados por eventos e amostras reais."}</p>
+    </div>
+    <details class="cx-home-data-details">
+      <summary>Detalhes dos dados</summary>
+      <p>Gaps: ${(summary.coverage?.gaps || []).length}</p>
+      <p>Dados insuficientes: ${operationalData.quality?.reasons?.includes("unknown_period_present") ? "presente" : "não informado"}</p>
+      ${failedSections.length ? `<p>Seções indisponíveis: ${failedSections.map((item) => sanitize(item.url.split("?")[0])).join(", ")}</p>` : "<p>Sem falhas de carregamento informadas pelo frontend.</p>"}
+    </details>
   `;
 }
 
@@ -1026,6 +1067,14 @@ function operationsEventAssetId(event) {
   return event.asset_id || event.machine_id || event.machine_monitor_id || event.context?.asset_id;
 }
 
+function operationsAreaLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "Área não identificada";
+  const technicalId = /^(oparea|area|opproc|process|asset|camera|cam)[_-][a-z0-9_-]{6,}$/i.test(text);
+  if (technicalId) return "Área não identificada";
+  return homeContextName(text, "Área não identificada");
+}
+
 function operationsAssetRows(setupPayload, currentPayload, timelinePayload, eventsPayload) {
   const latest = operationsLatestByAsset(timelinePayload);
   const sourceEvents = Array.isArray(eventsPayload) ? eventsPayload : (eventsPayload.events || []);
@@ -1041,7 +1090,7 @@ function operationsAssetRows(setupPayload, currentPayload, timelinePayload, even
     return {
       id: asset.id,
       name: homeContextName(asset.nome || asset.name, "Ativo operacional"),
-      area: homeContextName(asset.area_name || asset.area || asset.area_id || asset.area_context_id, "Área não informada"),
+      area: operationsAreaLabel(asset.area_name || asset.area || asset.area_id || asset.area_context_id),
       state,
       stateLabel: operationsStateLabel(state),
       tone: operationsStateTone(state),
@@ -1059,7 +1108,7 @@ function operationsAssetRows(setupPayload, currentPayload, timelinePayload, even
     return {
       id: operationsEventAssetId(event) || event.event_uuid,
       name: homeContextName(context.primary, "Ativo operacional"),
-      area: homeContextName(context.path, "Área não informada"),
+      area: operationsAreaLabel(context.path),
       state,
       stateLabel: operationsStateLabel(state),
       tone: operationsStateTone(state),
@@ -1092,12 +1141,12 @@ function renderOperationsMetrics(rows, summary) {
   const stopped = knownRows.filter((row) => row.tone === "stopped").length;
   const coverage = homeCoverageState(summary.coverage);
   const metrics = [
-    homeMetric("Ativos monitorados", operationsMetricValue(rows.length || null), rows.length ? "Ativos/áreas com contexto operacional" : "Aguardando Setup"),
-    homeMetric("Em operação", operationsMetricValue(knownRows.length ? running : null), "Estados confirmados pelos dados atuais"),
-    homeMetric("Parados", operationsMetricValue(knownRows.length ? stopped : null), "Paradas ou ausência de atividade"),
-    homeMetric("Cobertura dos dados", coverage.label, summary.coverage?.sample_count ? `${summary.coverage.sample_count} amostras` : "Amostras insuficientes ou indisponíveis"),
+    homeMetric("Ativos monitorados", operationsMetricValue(rows.length || null), rows.length ? "Ativos/áreas com contexto operacional" : "Aguardando Configurações", "asset", "assets"),
+    homeMetric("Em operação", operationsMetricValue(knownRows.length ? running : null), "Estados confirmados pelos dados atuais", "signal", "running"),
+    homeMetric("Parados", operationsMetricValue(knownRows.length ? stopped : null), "Paradas ou ausência de atividade", "pause", "stopped"),
+    homeMetric("Cobertura dos dados", coverage.label, summary.coverage?.sample_count ? `${summary.coverage.sample_count} amostras` : "Amostras insuficientes ou indisponíveis", "coverage", "coverage"),
   ];
-  return `<section class="cx-home-metrics cx-ops-v1-metrics" aria-label="Resumo operacional">${metrics.join("")}</section>`;
+  return `<section class="cx-home-kpi-grid cx-ops-v1-metrics" aria-label="Resumo operacional">${metrics.join("")}</section>`;
 }
 
 function renderOperationsFilters(rows) {
@@ -1129,28 +1178,34 @@ function renderOperationsFilters(rows) {
 function renderOperationsAssetList(rows) {
   const filtered = operationsFilterRows(rows);
   if (!filtered.length) {
-    return `<div class="cx-home-empty"><strong>Nenhum ativo encontrado para esta seleção.</strong><p>Ajuste o filtro ou configure ativos e áreas no Setup.</p></div>`;
+    return `<div class="cx-home-empty"><strong>Nenhum ativo encontrado para esta seleção.</strong><p>Ajuste o filtro ou configure ativos e áreas em Configurações.</p></div>`;
   }
   return `
-    <div class="cx-ops-asset-list" role="table" aria-label="Ativos monitorados">
-      <div class="cx-ops-asset-row cx-ops-asset-head" role="row">
+    <div class="cx-ops-asset-list" aria-label="Ativos monitorados">
+      <div class="cx-ops-asset-head" aria-hidden="true">
         <span>Ativo</span>
-        <span>Área</span>
-        <span>Estado atual</span>
-        <span>Tempo no estado</span>
-        <span>Atividade</span>
-        <span>Incidente ativo</span>
-        <span>Última atualização</span>
+        <span>Status</span>
+        <span>Leitura operacional</span>
+        <span>Atualização</span>
       </div>
       ${filtered.map((row) => `
-        <button class="cx-ops-asset-row" type="button" data-event-uuids="${row.eventUuid || ""}" ${row.eventUuid ? "" : "disabled"} role="row">
-          <span><strong>${row.name}</strong><small>${row.eventUuid ? "Ver detalhes →" : "Sem detalhe vinculado"}</small></span>
-          <span>${row.area}</span>
-          <span>${operationsStateDot(row.state)}</span>
-          <span>${row.durationSeconds === null || row.durationSeconds === undefined ? "Indisponível" : `${secondsLabel(row.durationSeconds)} no estado`}</span>
-          <span>${row.activity}</span>
-          <span class="cx-ops-incident ${row.incident === "Sem incidente ativo" ? "clear" : "active"}">${row.incident}</span>
-          <span>${row.updatedAt ? new Date(row.updatedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "Indisponível"}</span>
+        <button class="cx-ops-asset-row" type="button" data-event-uuids="${row.eventUuid || ""}" ${row.eventUuid ? "" : "disabled"}>
+          <span class="cx-ops-asset-primary">
+            <i class="cx-ops-asset-icon" aria-hidden="true"><span class="cx-nav-icon" data-icon="operations"></span></i>
+            <span>
+              <strong>${row.name}</strong>
+              <small>${row.area}</small>
+            </span>
+          </span>
+          <span class="cx-ops-asset-status">
+            ${operationsStateDot(row.state)}
+            <small>${row.durationSeconds === null || row.durationSeconds === undefined ? "Tempo indisponível" : `${secondsLabel(row.durationSeconds)} no estado`}</small>
+          </span>
+          <span class="cx-ops-asset-reading">
+            <small>Atividade: ${row.activity}</small>
+            <small>Incidente: <b class="cx-ops-incident ${row.incident === "Sem incidente ativo" ? "clear" : "active"}">${row.incident}</b></small>
+          </span>
+          <span class="cx-ops-updated">${row.updatedAt ? new Date(row.updatedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "Indisponível"}${row.eventUuid ? "<i>›</i>" : ""}</span>
         </button>
       `).join("")}
     </div>
@@ -1165,7 +1220,8 @@ function renderOperationsRecentActivity(timelinePayload) {
   return `<div class="cx-ops-recent-activity">${items.map((item) => {
     const context = homeContextName(item.asset_name || item.asset_id || item.camera_name || item.camera_id, "Contexto operacional");
     const time = item.timestamp ? new Date(item.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "Horário indisponível";
-    return `<div><time>${time}</time><strong>${context}</strong><span>passou para ${humanStatus(item.new_state || item.state)}</span></div>`;
+    const state = String(item.new_state || item.state || "unknown").toLowerCase();
+    return `<article class="cx-ops-activity-row ${sanitize(state)}"><time>${time}</time><i aria-hidden="true"></i><div><strong>${humanStatus(item.new_state || item.state)}</strong><span>${context}</span></div></article>`;
   }).join("")}</div>`;
 }
 
@@ -1187,11 +1243,13 @@ async function renderHomePage(config) {
   const operationalData = operationalDataResult.data;
   const setupPayload = setupResult.data;
   const eventsPayload = eventsResult.data;
+  const sourceEvents = Array.isArray(eventsPayload) ? eventsPayload : (eventsPayload.events || []);
   const alertPayload = { decisions: [] };
   const attention = homeAttention(alertPayload, summary);
   const classifiedCount = officialEventCount(summary);
   const briefingLine = insightsPayload.briefing?.[0] || insightsPayload.headline || "A Campex está aguardando dados suficientes para montar uma leitura operacional.";
   const failedSections = [currentResult, summaryResult, timelineResult, insightsResult, operationalDataResult, setupResult, eventsResult].filter((item) => !item.ok);
+  const coverage = homeCoverageState(summary.coverage);
 
   title.textContent = "Início";
   heading.textContent = "Visão atual da sua operação.";
@@ -1218,46 +1276,57 @@ async function renderHomePage(config) {
           <span>${homeTopbarStatus(summary)}</span>
         </div>
       </div>
-      <header class="cx-home-header">
+      <header class="cx-home-hero">
         <div>
           <span>Início</span>
-          <h2>Visão em tempo real da operação, incidentes e atividade.</h2>
+          <h2>Visão atual da sua operação.</h2>
           <p>${briefingLine}</p>
         </div>
-        <div class="cx-home-period">
-          <small>Período</small>
-          <strong>${formatOperationsPeriod(summary.period)}</strong>
+        <div class="cx-home-hero-meta" aria-label="Contexto do período">
+          <div>
+            <small>Período</small>
+            <strong>${formatOperationsPeriod(summary.period)}</strong>
+          </div>
+          <div>
+            <small>Cobertura</small>
+            <strong>${coverage.label}</strong>
+          </div>
         </div>
       </header>
 
-      <section class="cx-home-now">
-        <div class="cx-home-section-head">
-          <span>Operação agora</span>
-          ${homeSectionStatus(currentResult, homeCoverageState(summary.coverage).label)}
+      ${renderHomeMetrics(currentPayload, summary, insightsPayload, operationalData)}
+
+      <section class="cx-home-main-grid">
+        <div class="cx-home-main-column">
+          <section class="cx-home-attention">
+            <div class="cx-home-section-head">
+              <span>O que merece atenção</span>
+              <small>${attention.hasAlert ? "Decisão crítica real" : coverage.tone !== "good" ? coverage.label : "Sem alerta crítico ativo"}</small>
+            </div>
+            ${attention.html}
+          </section>
+
+          <section class="cx-home-activity">
+            <div class="cx-home-section-head">
+              <span>Atividade recente</span>
+              ${homeSectionStatus(timelineResult, `${(timelinePayload.items || []).length} mudança(s) no período`)}
+            </div>
+            ${renderHomeActivity(timelinePayload)}
+          </section>
         </div>
-        ${renderHomeMetrics(currentPayload, summary, insightsPayload, operationalData)}
+
+        <aside class="cx-home-side-column">
+          <section class="cx-home-summary">
+            <div class="cx-home-section-head">
+              <span>Resumo operacional</span>
+              ${homeSectionStatus(currentResult, coverage.label)}
+            </div>
+            ${renderHomeOperationalSummary(currentPayload, summary, operationalData, setupPayload, failedSections)}
+          </section>
+        </aside>
       </section>
 
-      <section class="cx-home-primary-grid">
-        <section class="cx-home-attention">
-          <div class="cx-home-section-head">
-            <span>O que merece atenção</span>
-            <small>${attention.hasAlert ? "Decisão crítica real" : "Sem alerta crítico ativo"}</small>
-          </div>
-          ${attention.html}
-        </section>
-
-        <section class="cx-home-activity">
-          <div class="cx-home-section-head">
-            <span>Atividade operacional</span>
-            ${homeSectionStatus(timelineResult, `${(timelinePayload.items || []).length} mudança(s) no período`)}
-          </div>
-          ${renderHomeActivityLegend()}
-          ${renderHomeActivity(timelinePayload)}
-        </section>
-      </section>
-
-      <section class="cx-home-balanced-grid">
+      <section class="cx-home-list-grid">
         <section class="cx-home-section">
           <div class="cx-home-section-head">
             <span>Ativos / áreas</span>
@@ -1275,39 +1344,24 @@ async function renderHomePage(config) {
         </section>
       </section>
 
-      <section class="cx-home-balanced-grid">
-        <section class="cx-home-section">
-          <div class="cx-home-section-head">
-            <span>Resumo do período</span>
-            ${homeSectionStatus(insightsResult, humanStatus(insightsPayload.overall_status || "UNKNOWN"))}
-          </div>
-          <article class="cx-home-briefing">
-            <strong>${classifiedCount ? briefingLine : "Sem dados operacionais suficientes neste período."}</strong>
-            <p>${(insightsPayload.insights || []).slice(0, 2).map((item) => item.statement || item.text).join(" ") || "Aguardando eventos e amostras reais para formar destaques."}</p>
-          </article>
-        </section>
-
-        <section class="cx-home-section">
+      <section class="cx-home-secondary-row">
+        <section class="cx-home-secondary-panel">
           <div class="cx-home-section-head">
             <span>Impacto operacional</span>
             ${homeSectionStatus(operationalDataResult, "Dados do período")}
           </div>
           ${renderHomeImpact(operationalData)}
         </section>
-      </section>
 
-      <section class="cx-home-final-grid">
-        <section class="cx-home-quality-section">
+        <section class="cx-home-secondary-panel">
           <div class="cx-home-section-head">
-            <span>Qualidade dos dados</span>
-            <small>${homeCoverageState(summary.coverage).label}</small>
+            <span>Resumo do período</span>
+            ${homeSectionStatus(insightsResult, humanStatus(insightsPayload.overall_status || "UNKNOWN"))}
           </div>
-          <div class="cx-home-quality">
-            <p>${summary.coverage?.reason || "Cobertura informada pelo backend."}</p>
-            <p>Dados insuficientes: ${operationalData.quality?.reasons?.includes("unknown_period_present") ? "presente" : "não informado"}</p>
-            <p>Gaps: ${(summary.coverage?.gaps || []).length}</p>
-            ${failedSections.length ? `<p>Seções indisponíveis: ${failedSections.map((item) => sanitize(item.url.split("?")[0])).join(", ")}</p>` : ""}
-          </div>
+          <article class="cx-home-period-briefing">
+            <strong>${classifiedCount ? briefingLine : "Sem dados operacionais suficientes neste período."}</strong>
+            <p>${(insightsPayload.insights || []).slice(0, 2).map((item) => item.statement || item.text).join(" ") || "Aguardando eventos e amostras reais para formar destaques."}</p>
+          </article>
         </section>
       </section>
     </section>
@@ -1333,8 +1387,8 @@ async function renderOperationsReadModelPage(config) {
   const coverage = homeCoverageState(summary.coverage);
   const failedSections = [currentResult, summaryResult, timelineResult, setupResult, eventsResult].filter((item) => !item.ok);
   rowsCache = operationsFilterRows(assetRows);
-  title.textContent = "Operations";
-  heading.textContent = "Acompanhe o estado operacional dos ativos e áreas monitoradas.";
+  title.textContent = "Operação";
+  heading.textContent = "Estado operacional da sua planta.";
   subtitle.textContent = "Estados, incidentes e qualidade de dados vindos do runtime e dos eventos reais da Campex.";
   tableTitle.textContent = "";
   tableHint.textContent = "";
@@ -1356,25 +1410,21 @@ async function renderOperationsReadModelPage(config) {
           <span>${coverage.label}</span>
         </div>
       </div>
-      <header class="cx-home-header">
+      <header class="cx-ops-hero">
+        <span class="cx-ops-hero-icon" aria-hidden="true"><span class="cx-nav-icon" data-icon="operations"></span></span>
         <div>
-          <span>Operations</span>
-          <h2>Acompanhe o estado operacional dos ativos e áreas monitoradas.</h2>
-          <p>Veja rapidamente o que está em operação, parado, com baixa atividade ou sem dados suficientes.</p>
+          <span>Operação</span>
+          <h2>Estado operacional da sua planta.</h2>
+          <p>Veja o que está em operação, parado ou exigindo atenção agora.</p>
         </div>
-        <div class="cx-home-period">
-          <small>Período</small>
-          <strong>${formatOperationsPeriod(summary.period)}</strong>
+        <div class="cx-ops-context">
+          <div><small>Período</small><strong>${formatOperationsPeriod(summary.period)}</strong></div>
+          <div><small>Unidade</small><strong>${homeContextName(summary.filters?.site_id || "Unidade principal", "Unidade principal")}</strong></div>
+          <div><small>Cobertura</small><strong>${coverage.label}</strong></div>
         </div>
       </header>
 
-      <section class="cx-home-now cx-ops-v1-summary">
-        <div class="cx-home-section-head">
-          <span>Resumo operacional</span>
-          <small>Última atualização ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</small>
-        </div>
-        ${renderOperationsMetrics(assetRows, summary)}
-      </section>
+      ${renderOperationsMetrics(assetRows, summary)}
 
       ${coverage.status === "partial" || coverage.status === "unknown" ? `<div class="cx-home-quality-note"><strong>${coverage.label}</strong><span>${summary.coverage?.reason || "A Campex ainda não recebeu amostras suficientes para afirmar normalidade operacional."}</span></div>` : ""}
 
@@ -1387,7 +1437,7 @@ async function renderOperationsReadModelPage(config) {
         ${renderOperationsAssetList(assetRows)}
       </section>
 
-      <section class="cx-home-balanced-grid">
+      <section class="cx-ops-bottom-grid">
         <section class="cx-home-section">
           <div class="cx-home-section-head">
             <span>Atividade recente</span>
@@ -1401,10 +1451,19 @@ async function renderOperationsReadModelPage(config) {
             <small>${coverage.label}</small>
           </div>
           <div class="cx-home-quality">
-            <p>${summary.coverage?.reason || "Qualidade informada pelo Operational Read Model."}</p>
-            <p>Eventos abertos: ${classifiedOpenEvents(currentPayload).length}</p>
-            <p>Dados insuficientes: ${coverage.status === "unknown" ? "sim" : "não informado"}</p>
-            ${failedSections.length ? `<p>Seções indisponíveis: ${failedSections.map((item) => sanitize(item.url.split("?")[0])).join(", ")}</p>` : ""}
+            <div class="cx-ops-quality-radial" data-tone="${sanitize(coverage.tone)}">
+              <strong>${coverage.label}</strong>
+            </div>
+            <strong>${coverage.label}</strong>
+            <p>${summary.coverage?.sample_count ? `${summary.coverage.sample_count} amostras. ` : ""}${summary.coverage?.reason || "Qualidade informada pelos dados operacionais da Campex."}</p>
+            <details class="cx-home-data-details">
+              <summary>Detalhes dos dados</summary>
+              <p>Eventos abertos: ${classifiedOpenEvents(currentPayload).length}</p>
+              <p>Confiança: ${coverage.status === "unknown" ? "dados insuficientes" : coverage.label}</p>
+              <p>Amostras: ${summary.coverage?.sample_count ?? "não informado"}</p>
+              <p>Dados insuficientes: ${coverage.status === "unknown" ? "sim" : "não informado"}</p>
+              ${failedSections.length ? `<p>Seções indisponíveis: ${failedSections.map((item) => sanitize(item.url.split("?")[0])).join(", ")}</p>` : "<p>Sem falhas de carregamento informadas pelo frontend.</p>"}
+            </details>
           </div>
         </section>
       </section>
@@ -1471,12 +1530,13 @@ function insightTraceAction(item, label = "Investigar") {
 function renderInsightCard(item) {
   return `
     <article class="cx-intel-card">
-      <div class="cx-intel-card-top">
+      <i aria-hidden="true"></i>
+      <div>
         <strong>${humanInsightText(item.statement)}</strong>
-        <span>${humanInsightText(item.number || "Verificável")}</span>
+        <p><b>Por que a Campex está destacando isso?</b> ${humanInsightText(item.why || "Insight gerado por regra determinística a partir dos eventos do período.")}</p>
+        <div class="cx-intel-trace">${insightTraceAction(item, "Ver eventos relacionados")}</div>
       </div>
-      <p><b>Por que a Campex está destacando isso?</b> ${humanInsightText(item.why || "Insight gerado por regra determinística a partir dos eventos do período.")}</p>
-      <div class="cx-intel-trace">${insightTraceAction(item)}</div>
+      <span>${humanInsightText(item.number || "Verificável")}</span>
     </article>
   `;
 }
@@ -1526,6 +1586,43 @@ function renderIntelligenceSummary(payload, allInsights) {
   `;
 }
 
+function renderIntelligenceNotices(payload, unknownCount) {
+  const coverage = payload.coverage || {};
+  if ((!coverage || coverage.status === "observed") && !unknownCount) return "";
+  const label = coverage.status === "partial" ? "Cobertura parcial dos dados" : "Cobertura dos dados em avaliação";
+  const detail = coverage.reason || "Algumas leituras podem mudar conforme novos dados forem classificados.";
+  const unknownDetail = unknownCount ? ` ${unknownCount} evento(s) ainda aguardam classificação operacional.` : "";
+  return `
+    <section class="cx-intel-notices" aria-label="Avisos de qualidade">
+      <article>
+        <i aria-hidden="true"></i>
+        <div>
+          <strong>${sanitize(label)}</strong>
+          <span>${sanitize(detail + unknownDetail)}</span>
+        </div>
+        <label for="intelTabQuality">Ver qualidade dos dados</label>
+      </article>
+    </section>
+  `;
+}
+
+function renderIntelligenceKpiDetails(kpis = []) {
+  if (!kpis.length) {
+    return `<div class="cx-empty-state"><strong>Sem indicadores analíticos suficientes.</strong><p>A Campex aguarda eventos classificados para calcular estes detalhes.</p></div>`;
+  }
+  return `
+    <div class="cx-intel-kpi-details">
+      ${kpis.map((kpi) => `
+        <div>
+          <span>${humanKpiLabel(kpi.label)}</span>
+          <strong>${intelligenceKpiValue(kpi)}</strong>
+          ${traceButton("Ver eventos relacionados", kpi.event_uuids)}
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
 function intelligenceAssetLabel(item) {
   const metrics = item?.metrics || {};
   return humanTechnicalLabel(
@@ -1568,6 +1665,59 @@ function renderIntelligenceComparison(payload) {
   }).join("");
 }
 
+function renderIntelligencePrimaryInsight(payload, allInsights) {
+  const primary = (payload.attention || [])[0] || (payload.patterns || [])[0] || allInsights[0];
+  if (!primary) {
+    return `
+      <section class="cx-intel-primary">
+        <span>Leitura principal</span>
+        <strong>Ainda não há leitura principal sustentada pelos dados.</strong>
+        <p>A Campex aguarda eventos classificados e cobertura suficiente para destacar uma mudança operacional.</p>
+      </section>
+    `;
+  }
+  const eventCount = (primary.event_uuids || []).filter(Boolean).length;
+  const context = intelligenceAssetLabel(primary);
+  return `
+    <section class="cx-intel-primary">
+      <span>Leitura principal</span>
+      <strong>${humanInsightText(primary.statement)}</strong>
+      <p>${humanInsightText(primary.why || "Leitura gerada por regra determinística a partir dos dados observados.")}</p>
+      <div class="cx-intel-primary-meta">
+        <span>${humanInsightText(primary.number || "Impacto verificável")}</span>
+        <span>${eventCount ? `${eventCount} evento(s) relacionado(s)` : "Sem eventos relacionados informados"}</span>
+        <span>${context}</span>
+      </div>
+      ${insightTraceAction(primary, "Ver eventos relacionados")}
+    </section>
+  `;
+}
+
+function renderIntelligenceQuality(payload, unknownCount) {
+  const coverage = homeCoverageState(payload.coverage);
+  return `
+    <section class="cx-intel-module">
+      <h3>Qualidade dos dados</h3>
+      <div class="cx-intel-quality-panel">
+        <strong>${coverage.label}</strong>
+        <p>${sanitize(payload.coverage?.reason || "Qualidade calculada a partir das amostras e eventos disponíveis no período.")}</p>
+        <div>
+          <span>Eventos classificados</span>
+          <b>${payload.data_quality?.classified_events ?? "Sem dados suficientes"}</b>
+        </div>
+        <div>
+          <span>Eventos aguardando classificação</span>
+          <b>${unknownCount || "Nenhum informado"}</b>
+        </div>
+        <div>
+          <span>Período</span>
+          <b>${formatOperationsPeriod(payload.period)}</b>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 async function renderReportsPage(config) {
   const tenantsPayload = await requestJson("/reports/tenants");
   const tenants = tenantsPayload.tenants || [];
@@ -1579,6 +1729,10 @@ async function renderReportsPage(config) {
   tableHint.textContent = "Cada empresa recebe somente os dados da própria operação.";
   filters.innerHTML = "";
   grid.style.display = "none";
+  head.innerHTML = "";
+  body.innerHTML = "";
+  body.closest("table")?.setAttribute("aria-hidden", "true");
+  document.querySelector(".cx-panel")?.classList.add("cx-ops-hide-panel");
 
   if (!tenants.length) {
     primaryAction.textContent = "Atualizar";
@@ -1690,222 +1844,286 @@ async function renderReportsPage(config) {
     `;
 
   const importantEvents = events.slice(0, 5);
+  const nextSend = enabled ? nextSendLabel(sendTime) : "Desativado";
+  const lastDeliveryStatus = schedule.last_status === "sent"
+    ? "Enviado"
+    : schedule.last_status === "failed"
+      ? "Falha"
+      : "Aguardando";
 
   primaryAction.textContent = "Enviar agora";
 
   cards.innerHTML = `
     <section class="cx-reports-page">
+      <div class="cx-home-topbar">
+        <div class="cx-home-search">Buscar relatórios, empresas, entregas...</div>
+        <div class="cx-home-topbar-actions">
+          <span>Relatórios</span>
+          <span class="${enabled ? "is-online" : ""}">${enabled ? "Entrega ativa" : "Entrega desativada"}</span>
+        </div>
+      </div>
 
-      <section class="cx-report-hero">
+      <header class="cx-report-hero">
         <div>
-          <span class="cx-report-eyebrow">Entrega automática</span>
-          <h2>Seu resumo operacional, todos os dias.</h2>
-          <p>
-            A Campex consolida os acontecimentos, indicadores e evidências
-            da operação e entrega o relatório automaticamente no horário
-            definido pela empresa.
-          </p>
+          <span class="cx-report-eyebrow">Relatórios</span>
+          <h2>Leituras da sua operação, entregues automaticamente.</h2>
+          <p>Configure quando receber e acompanhe os relatórios gerados pela Campex.</p>
         </div>
 
-        <div class="cx-report-next">
-          <span>Próximo envio</span>
-          <strong>${enabled ? nextSendLabel(sendTime) : "Desativado"}</strong>
-          <small>${sanitize(selectedTenant.nome)}</small>
+        <aside class="cx-report-next">
+          <div>
+            <span>Próximo envio</span>
+            <strong>${nextSend}</strong>
+          </div>
+          <div>
+            <span>Entrega</span>
+            <strong class="cx-report-status ${enabled ? "active" : "pending"}">${enabled ? "Ativa" : "Entrega desativada"}</strong>
+          </div>
+          <div>
+            <span>Empresa</span>
+            <strong>${sanitize(selectedTenant.nome)}</strong>
+          </div>
+        </aside>
+      </header>
+
+      <section class="cx-report-tabs-shell">
+        <div class="cir-tabs" role="tablist" aria-label="Seções de relatórios">
+          <input class="cir-tabs__r" type="radio" name="reportTabs" id="reportTabReport" checked />
+          <label class="cir-tabs__t" for="reportTabReport">Relatório</label>
+          <input class="cir-tabs__r" type="radio" name="reportTabs" id="reportTabHistory" />
+          <label class="cir-tabs__t" for="reportTabHistory">Histórico de envios</label>
         </div>
-      </section>
 
-      <section class="cx-report-layout">
+        <div class="cx-report-tab-content cx-report-tab-report">
+          <section class="cx-report-layout">
 
-        <section class="cx-report-settings">
-          <div class="cx-report-section-heading">
-            <div>
-              <span class="cx-report-eyebrow">Configuração</span>
-              <h3>Relatório diário</h3>
-            </div>
-
-            <label class="cx-report-switch">
-              <input
-                type="checkbox"
-                name="enabled"
-                form="reportScheduleForm"
-                ${enabled ? "checked" : ""}
-              />
-              <span>Ativo</span>
-            </label>
-          </div>
-
-          <form id="reportScheduleForm" data-report-schedule-form>
-
-            ${tenantSelector}
-
-            <label>
-              Horário de envio
-              <input
-                type="time"
-                name="send_time"
-                value="${sanitize(sendTime)}"
-                required
-              />
-              <small>
-                Pode ser qualquer horário, como 08:00, 11:55 ou 18:37.
-              </small>
-            </label>
-
-            <label>
-              Canal
-              <select name="channel">
-                <option value="email" selected>Email</option>
-                <option value="whatsapp" disabled>
-                  WhatsApp — requer integração
-                </option>
-              </select>
-            </label>
-
-            <label>
-              Destinatário
-              <input
-                type="email"
-                name="email"
-                value="${sanitize(destination)}"
-                placeholder="diretoria@empresa.com"
-                required
-              />
-            </label>
-
-            <input
-              type="hidden"
-              name="timezone"
-              value="${sanitize(schedule.timezone || "America/Sao_Paulo")}"
-            />
-
-            <div class="cx-report-form-actions">
-              <button type="submit">
-                Salvar configuração
-              </button>
-
-              <button
-                type="button"
-                class="secondary"
-                data-report-send-now
-              >
-                Enviar agora
-              </button>
-            </div>
-
-            <p
-              class="cx-report-form-status"
-              data-report-status
-            ></p>
-          </form>
-
-          <div class="cx-report-delivery-status">
-            <div>
-              <span>Último envio</span>
-              <strong>
-                ${schedule.last_sent_at
-                  ? eventDateLabel(schedule.last_sent_at)
-                  : "Ainda não enviado"}
-              </strong>
-            </div>
-
-            <div>
-              <span>Status</span>
-              <strong>
-                ${schedule.last_status === "sent"
-                  ? "Enviado"
-                  : schedule.last_status === "failed"
-                    ? "Falha no último envio"
-                    : "Aguardando"}
-              </strong>
-            </div>
-          </div>
-        </section>
-
-        <section class="cx-report-preview">
-          <div class="cx-report-section-heading">
-            <div>
-              <span class="cx-report-eyebrow">Prévia</span>
-              <h3>Relatório Operacional Campex</h3>
-            </div>
-
-            <span class="cx-report-preview-badge">
-              Modelo diário
-            </span>
-          </div>
-
-          <p class="cx-report-preview-period">
-            Últimas 24 horas · ${sanitize(selectedTenant.nome)}
-          </p>
-
-          <div class="cx-report-metrics">
-            <article>
-              <span>Acontecimentos</span>
-              <strong>${events.length}</strong>
-            </article>
-
-            <article>
-              <span>Tempo ativo</span>
-              <strong>${secondsLabel(machines.active_seconds || 0)}</strong>
-            </article>
-
-            <article>
-              <span>Tempo parado</span>
-              <strong>${secondsLabel(machines.stopped_seconds || 0)}</strong>
-            </article>
-
-            <article>
-              <span>Sem leitura</span>
-              <strong>${secondsLabel(machines.unknown_seconds || 0)}</strong>
-            </article>
-          </div>
-
-          <section class="cx-report-events-preview">
-            <div class="cx-report-preview-title">
-              <h4>Principais acontecimentos</h4>
-              <a href="/events">Ver todos</a>
-            </div>
-
-            ${importantEvents.length
-              ? importantEvents.map((event) => `
-                  <article>
-                    <div class="cx-report-event-time">
-                      ${eventDateLabel(event.started_at)}
-                    </div>
-
-                    <div>
-                      <strong>${eventTitle(event)}</strong>
-                      <span>
-                        ${event.duration_seconds
-                          ? secondsLabel(event.duration_seconds)
-                          : "Ocorrência registrada"}
-                      </span>
-                    </div>
-
-                    <span class="cx-report-event-family">
-                      ${familyLabel(event.event_family)}
-                    </span>
-                  </article>
-                `).join("")
-              : `
-                <div class="cx-empty-state">
-                  <strong>Nenhum acontecimento relevante.</strong>
-                  <p>
-                    Os acontecimentos reais desta empresa aparecerão aqui.
-                  </p>
+            <section class="cx-report-settings marque-checkset">
+              <div class="cx-report-section-heading">
+                <div>
+                  <span class="cx-report-eyebrow">Configuração de entrega</span>
+                  <h3 class="marque-checkset__legend">Entrega automática</h3>
+                  <p class="marque-checkset__hint">A Campex envia o relatório no horário configurado.</p>
                 </div>
-              `
-            }
+
+                <label class="cx-report-switch marque-check">
+                  <input
+                    type="checkbox"
+                    name="enabled"
+                    form="reportScheduleForm"
+                    ${enabled ? "checked" : ""}
+                  />
+                  <span class="marque-check__box" aria-hidden="true">
+                    <svg viewBox="0 0 14 14" fill="none">
+                      <path d="M3 7.1 5.7 10 11 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+                    </svg>
+                  </span>
+                  <span class="marque-check__copy">
+                    <span class="marque-check__title">Entrega automática</span>
+                    <span class="marque-check__meta">${enabled ? "Ativa" : "Desativada"} · ${nextSend}</span>
+                  </span>
+                </label>
+              </div>
+
+              <form id="reportScheduleForm" data-report-schedule-form>
+
+                ${tenantSelector}
+
+                <label>
+                  Horário de envio
+                  <input
+                    type="time"
+                    name="send_time"
+                    value="${sanitize(sendTime)}"
+                    required
+                  />
+                  <small>
+                    Pode ser qualquer horário, como 08:00, 11:55 ou 18:37.
+                  </small>
+                </label>
+
+                <label>
+                  Canal
+                  <select name="channel">
+                    <option value="email" selected>Email</option>
+                    <option value="whatsapp" disabled>
+                      WhatsApp — requer integração
+                    </option>
+                  </select>
+                </label>
+
+                <label>
+                  Destinatário
+                  <input
+                    type="email"
+                    name="email"
+                    value="${sanitize(destination)}"
+                    placeholder="diretoria@empresa.com"
+                    required
+                  />
+                </label>
+
+                <input
+                  type="hidden"
+                  name="timezone"
+                  value="${sanitize(schedule.timezone || "America/Sao_Paulo")}"
+                />
+
+                <div class="cx-report-form-actions">
+                  <button type="submit">
+                    Salvar configuração
+                  </button>
+
+                  <button
+                    type="button"
+                    class="secondary"
+                    data-report-send-now
+                  >
+                    Enviar agora
+                  </button>
+                </div>
+
+                <p
+                  class="cx-report-form-status"
+                  data-report-status
+                ></p>
+              </form>
+
+              <div class="cx-report-delivery-status">
+                <div>
+                  <span>Último envio</span>
+                  <strong>
+                    ${schedule.last_sent_at
+                      ? eventDateLabel(schedule.last_sent_at)
+                      : "Ainda não enviado"}
+                  </strong>
+                </div>
+
+                <div>
+                  <span>Status</span>
+                  <strong class="cx-report-status ${schedule.last_status || "pending"}">${lastDeliveryStatus}</strong>
+                </div>
+              </div>
+            </section>
+
+            <section class="cx-report-preview">
+              <div class="cx-report-section-heading">
+                <div>
+                  <span class="cx-report-eyebrow">Prévia do relatório</span>
+                  <h3>Relatório Operacional Campex</h3>
+                </div>
+
+                <span class="cx-report-preview-badge">
+                  Modelo diário
+                </span>
+              </div>
+
+              <p class="cx-report-preview-period">
+                Últimas 24 horas · ${sanitize(selectedTenant.nome)}
+              </p>
+
+              <div class="cx-report-preview-meta">
+                <span>Período: últimas 24 horas</span>
+                <span>Modelo: diário</span>
+                <span>Atualizado ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</span>
+              </div>
+
+              <div class="cx-report-metrics">
+                <article>
+                  <span>Acontecimentos</span>
+                  <strong>${events.length}</strong>
+                </article>
+
+                <article>
+                  <span>Tempo ativo</span>
+                  <strong>${secondsLabel(machines.active_seconds || 0)}</strong>
+                </article>
+
+                <article>
+                  <span>Tempo parado</span>
+                  <strong>${secondsLabel(machines.stopped_seconds || 0)}</strong>
+                </article>
+
+                <article>
+                  <span>Sem leitura</span>
+                  <strong>${secondsLabel(machines.unknown_seconds || 0)}</strong>
+                </article>
+              </div>
+
+              <section class="cx-report-events-preview">
+                <div class="cx-report-preview-title">
+                  <h4>Principais acontecimentos</h4>
+                  <a href="/events">Ver todos</a>
+                </div>
+
+                ${importantEvents.length
+                  ? importantEvents.map((event) => `
+                      <article>
+                        <div class="cx-report-event-time">
+                          ${eventDateLabel(event.started_at)}
+                        </div>
+
+                        <div>
+                          <strong>${eventTitle(event)}</strong>
+                          <span>
+                            ${event.duration_seconds
+                              ? secondsLabel(event.duration_seconds)
+                              : "Ocorrência registrada"}
+                          </span>
+                        </div>
+
+                        <span class="cx-report-event-family">
+                          ${familyLabel(event.event_family)}
+                        </span>
+                      </article>
+                    `).join("")
+                  : `
+                    <div class="cx-empty-state">
+                      <strong>Nenhum acontecimento relevante.</strong>
+                      <p>
+                        Os acontecimentos reais desta empresa aparecerão aqui.
+                      </p>
+                    </div>
+                  `
+                }
+              </section>
+
+              <div class="cx-report-fixed-model-note">
+                <strong>Dados isolados por empresa.</strong>
+                <span>
+                  Este relatório é gerado usando exclusivamente os dados
+                  operacionais da empresa selecionada.
+                </span>
+              </div>
+            </section>
           </section>
+        </div>
 
-          <div class="cx-report-fixed-model-note">
-            <strong>Dados isolados por empresa.</strong>
-            <span>
-              Este relatório é gerado usando exclusivamente os dados
-              operacionais da empresa selecionada.
-            </span>
-          </div>
-        </section>
-
+        <div class="cx-report-tab-content cx-report-tab-history">
+          <section class="cx-report-history">
+            <div class="cx-report-section-heading">
+              <div>
+                <span class="cx-report-eyebrow">Histórico de envios</span>
+                <h3>Últimas entregas</h3>
+              </div>
+            </div>
+            ${schedule.last_sent_at ? `
+              <div class="cx-report-history-list">
+                <div>
+                  <span>${eventDateLabel(schedule.last_sent_at)}</span>
+                  <strong>${sanitize(selectedTenant.nome)}</strong>
+                  <span>Email</span>
+                  <strong class="cx-report-status ${schedule.last_status || "pending"}">${lastDeliveryStatus}</strong>
+                  <span>${sanitize(destination || "Destinatário não configurado")}</span>
+                </div>
+              </div>
+            ` : `
+              <div class="cx-empty-state">
+                <strong>Nenhuma entrega registrada ainda.</strong>
+                <p>Quando houver envio real de relatório, o histórico desta empresa aparecerá aqui.</p>
+              </div>
+            `}
+          </section>
+        </div>
       </section>
     </section>
   `;
@@ -2042,44 +2260,69 @@ async function renderIntelligencePage(config) {
     </label>
   `;
   const unknownCount = Number(payload.data_quality?.unknown_events || 0);
+  const classifiedEvents = payload.data_quality?.classified_events ?? "Indisponível";
   cards.innerHTML = `
     <section class="cx-intel-page">
-      <section class="cx-intel-topline">
-        <div>
-          <small>Período</small>
-          <strong>${formatOperationsPeriod(payload.period)}</strong>
+      <div class="cx-home-topbar">
+        <div class="cx-home-search">Buscar padrões, ativos, causas...</div>
+        <div class="cx-home-topbar-actions">
+          <span>${classifiedEvents} evento(s) classificados</span>
+          <span>Atualizado ${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</span>
         </div>
+      </div>
+
+      <header class="cx-intel-hero">
         <div>
-          <small>Cobertura</small>
-          <strong>${payload.coverage?.status || "unknown"}</strong>
+          <span>INTELLIGENCE</span>
+          <h2>Entenda o que está mudando na sua operação.</h2>
+          <p>Padrões, comparações e leituras verificáveis a partir dos dados observados.</p>
         </div>
-        <div>
-          <small>Eventos classificados</small>
-          <strong>${payload.data_quality?.classified_events || 0}</strong>
+        <aside class="cx-intel-context">
+          <div>
+            <small>Período</small>
+            <strong>${formatOperationsPeriod(payload.period)}</strong>
+          </div>
+          <div>
+            <small>Cobertura</small>
+            <strong>${homeCoverageState(payload.coverage).label}</strong>
+          </div>
+        </aside>
+      </header>
+
+      ${renderIntelligenceNotices(payload, unknownCount)}
+
+      <section class="cx-intel-tabs-shell">
+        <div class="cir-tabs" role="tablist" aria-label="Seções da Intelligence">
+          <input class="cir-tabs__r" type="radio" name="intelTabs" id="intelTabOverview" checked />
+          <label class="cir-tabs__t" for="intelTabOverview">Visão geral</label>
+          <input class="cir-tabs__r" type="radio" name="intelTabs" id="intelTabInsights" />
+          <label class="cir-tabs__t" for="intelTabInsights">Insights</label>
+          <input class="cir-tabs__r" type="radio" name="intelTabs" id="intelTabCompare" />
+          <label class="cir-tabs__t" for="intelTabCompare">Comparações</label>
+          <input class="cir-tabs__r" type="radio" name="intelTabs" id="intelTabQuality" />
+          <label class="cir-tabs__t" for="intelTabQuality">Qualidade dos dados</label>
         </div>
-        <div>
-          <small>Última atualização</small>
-          <strong>${new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}</strong>
+
+        <div class="cx-intel-tab-content cx-intel-tab-overview">
+          ${renderIntelligencePrimaryInsight(payload, allInsights)}
+          ${renderIntelligenceSummary(payload, allInsights)}
+          <section class="cx-intel-layout">
+            <div class="cx-intel-column">
+              <section class="cx-intel-module">
+                <h3>O que merece atenção</h3>
+                ${renderInsightList(payload.attention, "Sem destaques sustentados pelos dados do período.")}
+              </section>
+            </div>
+            <aside class="cx-intel-column">
+              <section class="cx-intel-module">
+                <h3>Ativos mais impactados</h3>
+                ${renderImpactedAssets(payload, allInsights)}
+              </section>
+            </aside>
+          </section>
         </div>
-      </section>
-      ${coverageWarning(payload.coverage)}
-      ${unknownCount ? `<div class="cx-ops-quality"><strong>${unknownCount} evento(s) sem classificação operacional.</strong><span>Preservados para auditoria, fora dos insights oficiais.</span></div>` : ""}
-      <section class="cx-intel-briefing">
-        <small>Leitura verificável do período</small>
-        <strong>${intelligenceBriefingText(payload)}</strong>
-      </section>
-      ${renderIntelligenceSummary(payload, allInsights)}
-      <section class="cx-intel-kpis" aria-label="Indicadores analíticos">
-        ${(payload.kpis || []).map((kpi) => `
-          <article>
-            <span>${humanKpiLabel(kpi.label)}</span>
-            <strong>${intelligenceKpiValue(kpi)}</strong>
-            ${traceButton("Ver eventos", kpi.event_uuids)}
-          </article>
-        `).join("")}
-      </section>
-      <section class="cx-intel-layout">
-        <div class="cx-intel-column">
+
+        <div class="cx-intel-tab-content cx-intel-tab-insights">
           <section class="cx-intel-module">
             <h3>O que merece atenção</h3>
             ${renderInsightList(payload.attention, "Sem destaques sustentados pelos dados do período.")}
@@ -2091,29 +2334,40 @@ async function renderIntelligencePage(config) {
           <section class="cx-intel-module">
             <h3>Rastreabilidade dos insights</h3>
             <p class="muted">Cada número exibido aqui aponta para eventos reais. A Campex mostra a evidência do cálculo, não uma conclusão solta.</p>
-            ${allInsights.length ? `<div class="cx-intel-investigation">${allInsights.slice(0, 5).map((item) => `
+            ${allInsights.length ? `<div class="cx-intel-investigation">${allInsights.slice(0, 8).map((item) => `
               <div>
                 <span>${humanInsightText(item.statement)}</span>
-                ${insightTraceAction(item, "Investigar")}
+                ${insightTraceAction(item, "Ver eventos relacionados")}
               </div>
             `).join("")}</div>` : `<div class="cx-empty-state"><strong>Sem rastreabilidade disponível.</strong><p>Aguardando eventos classificados neste período.</p></div>`}
           </section>
         </div>
-        <aside class="cx-intel-column">
-          <section class="cx-intel-module">
-            <h3>Ativos mais impactados</h3>
-            ${renderImpactedAssets(payload, allInsights)}
+
+        <div class="cx-intel-tab-content cx-intel-tab-compare">
+          <section class="cx-intel-layout">
+            <div class="cx-intel-column">
+              <section class="cx-intel-module">
+                <h3>Comparação com período anterior</h3>
+                ${renderIntelligenceComparison(payload)}
+              </section>
+              <section class="cx-intel-module">
+                <h3>Indicadores analíticos</h3>
+                ${renderIntelligenceKpiDetails(payload.kpis || [])}
+              </section>
+            </div>
+            <aside class="cx-intel-column">
+              <section class="cx-intel-module">
+                <h3>Causas confirmadas</h3>
+                <p class="muted">Somente informações registradas por pessoas entram aqui. Observações da câmera não viram causa automaticamente.</p>
+                ${renderCauseRows(payload.confirmed_causes)}
+              </section>
+            </aside>
           </section>
-          <section class="cx-intel-module">
-            <h3>Causas confirmadas</h3>
-            <p class="muted">Somente informações registradas por pessoas entram aqui. Observações da câmera não viram causa automaticamente.</p>
-            ${renderCauseRows(payload.confirmed_causes)}
-          </section>
-          <section class="cx-intel-module">
-            <h3>Comparação com período anterior</h3>
-            ${renderIntelligenceComparison(payload)}
-          </section>
-        </aside>
+        </div>
+
+        <div class="cx-intel-tab-content cx-intel-tab-quality">
+          ${renderIntelligenceQuality(payload, unknownCount)}
+        </div>
       </section>
     </section>
   `;
@@ -2373,6 +2627,20 @@ function eventContext(event) {
   return { primary, location, asset, process, area, camera, unit };
 }
 
+function eventDisplayContext(event) {
+  const context = eventContext(event);
+  const primary = homeContextName(context.primary, "");
+  const area = operationsAreaLabel(context.area || context.location);
+  const process = homeContextName(context.process, "");
+  const camera = homeContextName(context.camera, "");
+  const title = primary || area || process || camera || "Evento operacional";
+  const location = [area, process].filter((item) => item && item !== title && item !== "Área não identificada").join(" · ");
+  return {
+    title,
+    location: location || (area !== title ? area : ""),
+  };
+}
+
 function eventTimeRange(event) {
   const start = eventStart(event);
   const end = eventEnd(event);
@@ -2463,10 +2731,10 @@ function eventMatchesCompactFilters(event) {
 function eventsSummaryMetrics(events) {
   const filtered = events.filter((event) => eventsSelectedFamily === "all" || eventFamily(event) !== "unknown");
   return [
-    homeMetric("Em andamento", filtered.filter((event) => eventPhysicalStatus(event) === "open").length, "Ocorrências físicas abertas"),
-    homeMetric("Alta prioridade", filtered.filter((event) => ["critical", "high"].includes(eventSeverityTone(eventSeverity(event)))).length, "Severidade alta ou crítica"),
-    homeMetric("Encerrados", filtered.filter((event) => eventPhysicalStatus(event) === "closed").length, "Ocorrências finalizadas"),
-    homeMetric("Com evidência", filtered.filter(eventHasEvidence).length, "Registros visuais disponíveis"),
+    homeMetric("Em andamento", filtered.filter((event) => eventPhysicalStatus(event) === "open").length, "Ocorrências físicas abertas", "clock"),
+    homeMetric("Alta prioridade", filtered.filter((event) => ["critical", "high"].includes(eventSeverityTone(eventSeverity(event)))).length, "Severidade alta ou crítica", "alert"),
+    homeMetric("Encerrados", filtered.filter((event) => eventPhysicalStatus(event) === "closed").length, "Ocorrências finalizadas", "signal"),
+    homeMetric("Com evidência", filtered.filter(eventHasEvidence).length, "Registros visuais disponíveis", "camera"),
   ].join("");
 }
 
@@ -2539,27 +2807,31 @@ function renderEventsList(events) {
     `;
   }
   return `
-    <div class="cx-events-list" role="table" aria-label="Ocorrências operacionais">
-      <div class="cx-events-row cx-events-head" role="row">
+    <div class="cx-events-list" aria-label="Ocorrências operacionais">
+      <div class="cx-events-row cx-events-head" aria-hidden="true">
         <span>Evento</span>
-        <span>Ativo / Área</span>
-        <span>Severidade</span>
+        <span>Prioridade</span>
         <span>Estado</span>
-        <span>Início</span>
-        <span>Duração</span>
+        <span>Quando</span>
         <span>Evidência</span>
       </div>
       ${filtered.map((event, index) => {
-        const context = eventContext(event);
+        const context = eventDisplayContext(event);
+        const hasEvidence = eventHasEvidence(event);
         return `
-          <button class="cx-events-row" type="button" data-row-index="${index}" role="row">
-            <span><strong>${eventTitle(event)}</strong><small>${familyLabel(eventFamily(event))}</small></span>
-            <span><strong>${homeContextName(context.primary, "Contexto não informado")}</strong><small>${homeContextName(context.location, "Local não informado")}</small></span>
+          <button class="cx-events-row" type="button" data-row-index="${index}">
+            <span class="cx-events-primary">
+              <i class="${eventPhysicalStatus(event)}" aria-hidden="true"></i>
+              <span>
+                <strong>${eventTitle(event)}</strong>
+                <small>${context.location ? `${context.title} · ${context.location}` : context.title}</small>
+              </span>
+            </span>
             <span>${eventSeverityPill(event)}</span>
-            <span><strong>${eventPhysicalStatusLabel(event)}</strong><small>Tratamento: ${workflowLabel(eventWorkflow(event))}</small></span>
-            <span>${eventDateLabel(eventStart(event))}</span>
-            <span>${eventDisplayDuration(event)}</span>
-            <span>${eventHasEvidence(event) ? "Disponível →" : "Sem evidência"}</span>
+            <span class="cx-events-state"><strong>${eventPhysicalStatusLabel(event)}</strong><small>${workflowLabel(eventWorkflow(event))}</small></span>
+            <span class="cx-events-time"><strong>${eventDateLabel(eventStart(event))}</strong><small>${eventDisplayDuration(event)}</small></span>
+            <span class="cx-events-evidence ${hasEvidence ? "available" : "missing"}">${hasEvidence ? "<i></i>Evidência" : "Sem evidência"}</span>
+            <span class="cx-events-arrow">›</span>
           </button>
         `;
       }).join("")}
@@ -2571,7 +2843,7 @@ async function renderEventsPage(config) {
   const payload = await requestJson(config.endpoint);
   const sourceEvents = Array.isArray(payload) ? payload : (payload.events || []);
   const events = sourceEvents.filter((event) => eventsSelectedFamily === "all" || eventFamily(event) !== "unknown" || eventsSelectedFamily === "unknown");
-  title.textContent = "Events";
+  title.textContent = "Eventos";
   heading.textContent = "Ocorrências e incidentes registrados pela operação.";
   subtitle.textContent = "Memória operacional verificável, com evidência, contexto e tratamento.";
   tableTitle.textContent = "";
@@ -2590,27 +2862,21 @@ async function renderEventsPage(config) {
       <div class="cx-home-topbar">
         <div class="cx-home-search">Buscar ocorrências, ativos, áreas...</div>
         <div class="cx-home-topbar-actions">
-          <span>Memória operacional</span>
           <span>${events.length} ocorrência(s)</span>
+          <span>${eventsSelectedPeriod === "all" ? "Todo histórico" : eventsSelectedPeriod}</span>
         </div>
       </div>
-      <header class="cx-home-header">
+      <header class="cx-events-hero">
         <div>
-          <span>Events</span>
-          <h2>Ocorrências e incidentes registrados pela operação.</h2>
-          <p>Investigue o que aconteceu, onde aconteceu, qual evidência existe e como o evento foi tratado.</p>
+          <span>Eventos</span>
+          <h2>Memória operacional da sua operação.</h2>
+          <p>Veja ocorrências, evidências e o estado de cada evento registrado.</p>
         </div>
       </header>
-      <section class="cx-home-now cx-events-summary">
-        <div class="cx-home-section-head">
-          <span>Resumo de ocorrências</span>
-          <small>Dados reais de /eventos</small>
-        </div>
-        <section class="cx-home-metrics">${eventsSummaryMetrics(sourceEvents)}</section>
-      </section>
+      <section class="cx-home-kpi-grid cx-events-summary">${eventsSummaryMetrics(sourceEvents)}</section>
       <section class="cx-home-section cx-events-main">
         <div class="cx-home-section-head">
-          <span>Lista operacional</span>
+          <span>Memória operacional</span>
           <small>${rowsCache.length || events.length} ocorrência(s) na seleção</small>
         </div>
         ${renderEventsFilters()}
@@ -3029,7 +3295,7 @@ function renderTabs(config) {
 }
 
 function renderFilters(config) {
-  if (config.title === "Events") {
+  if (config.title === "Eventos") {
     filters.innerHTML = `
       <label>Período inicial<input type="date" data-filter="period_start" /></label>
       <label>Período final<input type="date" data-filter="period_end" /></label>
@@ -3103,7 +3369,7 @@ function loginState(config) {
     <div class="cx-empty-state">
       <strong>Login necessário</strong>
       <p>Entre para carregar ${String(config.title || "esta área").toLowerCase()} e proteger os dados do cliente.</p>
-      <a class="cx-primary-action" href="/settings/cameras?next=${next}#login">Entrar</a>
+      <a class="cx-primary-action" href="/login?next=${next}">Entrar</a>
     </div>
   `;
 }
@@ -3112,7 +3378,7 @@ function usesProductMemoryShell(path) {
   return path === "/home-view" || path === "/operations-view" || path === "/events" || path === "/insights" || path === "/reports";
 }
 
-function renderOperationsAuthState(area = "Operations") {
+function renderOperationsAuthState(area = "Operação") {
   const target = area === "Início"
     ? "%2Foperations-view%3Fview%3Dhome"
     : area === "Relatórios"
@@ -3125,7 +3391,7 @@ function renderOperationsAuthState(area = "Operations") {
   tableHint.textContent = "";
   primaryAction.textContent = "Entrar";
   primaryAction.onclick = () => {
-    window.location.href = `/settings/cameras?next=${target}#login`;
+    window.location.href = `/login?next=${target}`;
   };
   cards.innerHTML = `
     <section class="cx-ops-v1-page">
@@ -3136,18 +3402,19 @@ function renderOperationsAuthState(area = "Operations") {
           <span>Login necessário</span>
         </div>
       </div>
-      <header class="cx-home-header">
+      <header class="${area === "Operação" ? "cx-ops-hero" : "cx-home-header"}">
+        ${area === "Operação" ? `<span class="cx-ops-hero-icon" aria-hidden="true"><span class="cx-nav-icon" data-icon="operations"></span></span>` : ""}
         <div>
           <span>${area}</span>
-          <h2>${area === "Início" ? "Visão atual da sua operação." : "Acompanhe o estado operacional dos ativos e áreas monitoradas."}</h2>
-          <p>${area === "Início" ? "Dados reais da instalação Campex, sem preenchimento demonstrativo." : "Estados, incidentes e qualidade de dados vindos do runtime e dos eventos reais da Campex."}</p>
+          <h2>${area === "Início" ? "Visão atual da sua operação." : "Estado operacional da sua planta."}</h2>
+          <p>${area === "Início" ? "Dados reais da instalação Campex, sem preenchimento demonstrativo." : "Veja o que está em operação, parado ou exigindo atenção agora."}</p>
         </div>
       </header>
       <section class="cx-home-section cx-ops-auth">
         <span>${area}</span>
         <strong>Entre para acessar os dados da operação.</strong>
         <p>A Campex protege os dados operacionais do cliente. Faça login para carregar esta instalação.</p>
-        <a class="cx-primary-action" href="/settings/cameras?next=${target}#login">Entrar</a>
+        <a class="cx-primary-action" href="/login?next=${target}">Entrar</a>
       </section>
     </section>
   `;
@@ -3161,14 +3428,14 @@ function renderOperationsAuthState(area = "Operations") {
 }
 
 function renderEventsAuthState() {
-  title.textContent = "Events";
+  title.textContent = "Eventos";
   heading.textContent = "Ocorrências e incidentes registrados pela operação.";
   subtitle.textContent = "Entre para carregar a memória operacional real.";
   tableTitle.textContent = "";
   tableHint.textContent = "";
   primaryAction.textContent = "Entrar";
   primaryAction.onclick = () => {
-    window.location.href = "/settings/cameras?next=%2Fevents#login";
+    window.location.href = "/login?next=%2Fevents";
   };
   renderTabs({ tabs: [] });
   renderFilters({ filters: [] });
@@ -3183,21 +3450,21 @@ function renderEventsAuthState() {
       <div class="cx-home-topbar">
         <div class="cx-home-search">Buscar ocorrências, ativos, áreas...</div>
         <div class="cx-home-topbar-actions">
-          <span>Memória operacional</span>
-          <span>Login necessário</span>
+          <span>Eventos</span>
+          <span>Protegido</span>
         </div>
       </div>
-      <header class="cx-home-header">
+      <header class="cx-events-hero">
         <div>
-          <span>Events</span>
-          <h2>Ocorrências e incidentes registrados pela operação.</h2>
-          <p>A Campex protege os dados operacionais do cliente. Faça login para investigar ocorrências, evidências e tratamento.</p>
+          <span>Eventos</span>
+          <h2>Memória operacional da sua operação.</h2>
+          <p>A Campex protege ocorrências, evidências, workflow e contexto operacional. Entre para investigar os dados reais da instalação.</p>
         </div>
       </header>
       <section class="cx-home-section cx-events-auth">
         <strong>Entre para acessar os eventos da operação.</strong>
         <p>Sem autenticação, a Campex não carrega ocorrências, evidências, workflow ou contexto operacional.</p>
-        <a class="cx-primary-action" href="/settings/cameras?next=%2Fevents#login">Entrar</a>
+        <a class="cx-primary-action" href="/login?next=%2Fevents">Entrar</a>
       </section>
     </section>
   `;
@@ -3211,7 +3478,7 @@ function renderIntelligenceAuthState() {
   tableHint.textContent = "";
   primaryAction.textContent = "Entrar";
   primaryAction.onclick = () => {
-    window.location.href = "/settings/cameras?next=%2Finsights#login";
+    window.location.href = "/login?next=%2Finsights";
   };
   renderTabs({ tabs: [] });
   renderFilters({ filters: [] });
@@ -3223,26 +3490,84 @@ function renderIntelligenceAuthState() {
   document.querySelector(".cx-panel")?.classList.add("cx-ops-hide-panel");
   cards.innerHTML = `
     <section class="cx-intel-page">
-      <section class="cx-intel-topline">
-        <div><small>Período</small><strong>Protegido</strong></div>
-        <div><small>Cobertura</small><strong>Indisponível</strong></div>
-        <div><small>Eventos analisados</small><strong>Indisponível</strong></div>
-        <div><small>Última atualização</small><strong>Sessão necessária</strong></div>
-      </section>
+      <div class="cx-home-topbar">
+        <div class="cx-home-search">Buscar padrões, ativos, causas...</div>
+        <div class="cx-home-topbar-actions">
+          <span>Intelligence</span>
+          <span>Protegido</span>
+        </div>
+      </div>
+      <header class="cx-intel-hero">
+        <div>
+          <span>Intelligence</span>
+          <h2>Entenda o que está mudando na sua operação.</h2>
+          <p>Padrões, comparações e leituras verificáveis a partir dos dados observados.</p>
+        </div>
+        <aside class="cx-intel-context">
+          <div><small>Período</small><strong>Protegido</strong></div>
+          <div><small>Cobertura</small><strong>Indisponível</strong></div>
+        </aside>
+      </header>
       <section class="cx-intel-briefing">
-        <small>Intelligence</small>
+        <small>Leitura do período</small>
         <strong>Entre para acessar padrões, comparações e resumos verificáveis da operação.</strong>
-      </section>
-      <section class="cx-intel-summary">
-        <article><span>Insights relevantes</span><strong>Protegido</strong></article>
-        <article><span>Ativos afetados</span><strong>Protegido</strong></article>
-        <article><span>Eventos analisados</span><strong>Protegido</strong></article>
-        <article><span>Comparação</span><strong>Protegido</strong></article>
       </section>
       <section class="cx-intel-module">
         <h3>Dados protegidos</h3>
         <p>A Campex não carrega insights, causas, rastreabilidade ou eventos do cliente sem autenticação.</p>
-        <a class="cx-primary-action" href="/settings/cameras?next=%2Finsights#login">Entrar</a>
+        <a class="cx-primary-action" href="/login?next=%2Finsights">Entrar</a>
+      </section>
+    </section>
+  `;
+}
+
+function renderReportsAuthState() {
+  title.textContent = "Relatórios";
+  heading.textContent = "Relatórios";
+  subtitle.textContent = "Configure quando receber e acompanhe os relatórios gerados pela Campex.";
+  tableTitle.textContent = "";
+  tableHint.textContent = "";
+  primaryAction.textContent = "Entrar";
+  primaryAction.onclick = () => {
+    window.location.href = "/login?next=%2Freports";
+  };
+  renderTabs({ tabs: [] });
+  renderFilters({ filters: [] });
+  rowsCache = [];
+  grid.style.display = "none";
+  head.innerHTML = "";
+  body.innerHTML = "";
+  body.closest("table")?.setAttribute("aria-hidden", "true");
+  document.querySelector(".cx-panel")?.classList.add("cx-ops-hide-panel");
+  cards.innerHTML = `
+    <section class="cx-reports-page">
+      <div class="cx-home-topbar">
+        <div class="cx-home-search">Buscar relatórios, empresas, entregas...</div>
+        <div class="cx-home-topbar-actions">
+          <span>Relatórios</span>
+          <span>Protegido</span>
+        </div>
+      </div>
+      <header class="cx-report-hero">
+        <div>
+          <span class="cx-report-eyebrow">Relatórios</span>
+          <h2>Leituras da sua operação, entregues automaticamente.</h2>
+          <p>Configure quando receber e acompanhe os relatórios gerados pela Campex.</p>
+        </div>
+        <aside class="cx-report-next">
+          <div><span>Próximo envio</span><strong>Protegido</strong></div>
+          <div><span>Empresa</span><strong>Indisponível</strong></div>
+        </aside>
+      </header>
+      <section class="cx-report-history">
+        <div class="cx-report-section-heading">
+          <div>
+            <span class="cx-report-eyebrow">Acesso</span>
+            <h3>Login necessário</h3>
+          </div>
+        </div>
+        <p class="muted">Entre para carregar configuração, prévia e histórico de entregas da operação.</p>
+        <a class="cx-primary-action" href="/login?next=%2Freports">Entrar</a>
       </section>
     </section>
   `;
@@ -3256,7 +3581,7 @@ function renderHomeAuthState() {
   tableHint.textContent = "";
   primaryAction.textContent = "Entrar";
   primaryAction.onclick = () => {
-    window.location.href = "/settings/cameras?next=%2Foperations-view%3Fview%3Dhome#login";
+    window.location.href = "/login?next=%2Foperations-view%3Fview%3Dhome";
   };
   renderTabs({ tabs: [] });
   renderFilters({ filters: [] });
@@ -3292,7 +3617,7 @@ function renderHomeAuthState() {
           <strong>Entre para carregar a leitura operacional real.</strong>
           <p>Sem autenticação, a Campex não carrega tenant, ativos, incidentes, briefing, impacto ou cobertura.</p>
         </div>
-        <a class="cx-primary-action" href="/settings/cameras?next=%2Foperations-view%3Fview%3Dhome#login">Entrar</a>
+        <a class="cx-primary-action" href="/login?next=%2Foperations-view%3Fview%3Dhome">Entrar</a>
       </section>
     </section>
   `;
@@ -3314,7 +3639,7 @@ function renderRows(config) {
 }
 
 function openEventFromQuery(config, rows) {
-  if (config.title !== "Events") return;
+  if (config.title !== "Eventos") return;
   const params = new URLSearchParams(window.location.search);
   const eventUuid = params.get("event_uuid");
   const eventId = params.get("event_id") || params.get("id");
@@ -3332,7 +3657,7 @@ function renderNotFound(path = window.location.pathname) {
     heading: "Página não encontrada",
     subtitle: "O endereço acessado não corresponde a nenhuma área da plataforma.",
     columns: ["Mensagem"],
-    action: "Voltar para Operations",
+    action: "Voltar para Operação",
     actionHref: "/operations-view",
     emptyTitle: "Página não encontrada",
     emptyDescription: "O endereço acessado não corresponde a nenhuma área da plataforma.",
@@ -3354,7 +3679,7 @@ function renderNotFound(path = window.location.pathname) {
   grid.style.display = "none";
   head.innerHTML = "<tr><th>Mensagem</th></tr>";
   body.innerHTML = `<tr><td>${emptyState(config)}</td></tr>`;
-  primaryAction.textContent = "Voltar para Operations";
+  primaryAction.textContent = "Voltar para Operação";
   primaryAction.onclick = () => { window.location.href = "/operations-view"; };
   document.querySelectorAll("[data-route], .cx-nav a").forEach((link) => {
     link.classList.remove("active");
@@ -3367,7 +3692,7 @@ async function openDrawer(row, config) {
   drawer.setAttribute("aria-hidden", "false");
   drawerContent.innerHTML = "<p>Carregando detalhe...</p>";
   let detailRow = row;
-  if (config.title === "Events" && row?.id) {
+  if (config.title === "Eventos" && row?.id) {
     detailRow = await requestJson(`/eventos/${row.id}/detail`).catch(() => row);
   }
   drawerContent.innerHTML = config.detail ? config.detail(detailRow) : `<h2>${config.title}</h2><pre>${JSON.stringify(detailRow, null, 2)}</pre>`;
@@ -3386,7 +3711,8 @@ async function loadPage(path = window.location.pathname) {
   document.body.classList.toggle("cx-operations-mode", key === "/operations-view");
   document.body.classList.toggle("cx-events-mode", path === "/events");
   document.body.classList.toggle("cx-intelligence-mode", path === "/insights");
-  if (key !== "/home-view" && key !== "/operations-view" && path !== "/insights") {
+  document.body.classList.toggle("cx-reports-mode", path === "/reports");
+  if (key !== "/home-view" && key !== "/operations-view" && path !== "/insights" && path !== "/reports") {
     document.querySelector(".cx-panel")?.classList.remove("cx-ops-hide-panel");
   }
   if (config.external) {
@@ -3437,11 +3763,12 @@ async function loadPage(path = window.location.pathname) {
   try {
     const auth = await authStatus();
     if (!auth.authenticated && !auth.bootstrap && config.endpoint !== "/health") {
-      if (key === "/home-view" || key === "/operations-view" || key === "/events" || key === "/insights") {
+      if (key === "/home-view" || key === "/operations-view" || key === "/events" || key === "/insights" || key === "/reports") {
         if (key === "/home-view") renderHomeAuthState();
         else if (key === "/events") renderEventsAuthState();
         else if (key === "/insights") renderIntelligenceAuthState();
-        else renderOperationsAuthState("Operations");
+        else if (key === "/reports") renderReportsAuthState();
+        else renderOperationsAuthState("Operação");
         document.querySelector(".cx-main")?.scrollTo({ top: 0, behavior: "smooth" });
         return;
       }

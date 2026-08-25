@@ -31,13 +31,13 @@
       </button>
       <nav class="cx-nav cx-nav-grouped" aria-label="Navegação principal">
         <a href="/operations-view?view=home"><span class="cx-nav-icon" data-icon="home"></span>Início</a>
-        <a href="/operations-view"><span class="cx-nav-icon" data-icon="operations"></span>Operations</a>
-        <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Events</a>
+        <a href="/operations-view"><span class="cx-nav-icon" data-icon="operations"></span>Visão geral</a>
+        <a href="/events"><span class="cx-nav-icon" data-icon="events"></span>Eventos</a>
         <a href="/insights"><span class="cx-nav-icon" data-icon="insights"></span>Intelligence</a>
         <a data-route="/reports" href="/reports"><span class="cx-nav-icon" data-icon="insights"></span>Relatórios</a>
-        <a class="active" aria-current="page" title="Live" href="/live-grid"><span class="cx-nav-icon" data-icon="camera"></span>Live</a>
+        <a class="active" aria-current="page" title="Ao vivo" href="/live-grid"><span class="cx-nav-icon" data-icon="camera"></span>Ao vivo</a>
         <hr />
-        <a href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Setup</a>
+        <a href="/settings/cameras"><span class="cx-nav-icon" data-icon="settings"></span>Configurações</a>
       </nav>
       <div class="cx-account">
         <a href="/help" class="cx-footer-link"><span class="cx-nav-icon" data-icon="help"></span>Ajuda</a>
@@ -52,24 +52,23 @@
       </div>
     </aside>
     <main class="cx-main app-content live-grid-shell">
-      <header class="cx-header cx-topbar">
-        <div>
-          <p>Campex Operations</p>
-          <h1>Live</h1>
-        </div>
-        <div class="cx-header-tools">
-          <span id="gridResources" class="badge">Carregando setores</span>
-          <a class="button-link" href="/settings/cameras">Abrir Setup</a>
-        </div>
-      </header>
-
       <section class="cx-live-grid-page">
-        <div class="cx-panel-head">
-          <div>
-            <h2>Setores monitorados</h2>
-            <p>Veja o que a Campex está observando agora, com foco no ativo, processo e evento físico atual.</p>
+        <div class="cx-home-topbar">
+          <div class="cx-home-search">Buscar câmeras, ativos, áreas...</div>
+          <div class="cx-home-topbar-actions">
+            <span>Ao vivo</span>
+            <span id="gridResources">Carregando câmeras</span>
           </div>
         </div>
+
+        <header class="cx-live-grid-hero">
+          <div>
+            <span>Ao vivo</span>
+            <h1>Veja sua operação em tempo real.</h1>
+            <p>Acompanhe câmeras, estados e eventos ativos.</p>
+          </div>
+        </header>
+
         <div id="gridCameraPicker" class="cx-grid-picker"></div>
         <div id="gridMessage" class="muted">Carregando câmeras cadastradas...</div>
         <section id="liveGrid" class="cx-live-grid"></section>

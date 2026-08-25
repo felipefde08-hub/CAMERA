@@ -97,8 +97,8 @@ def test_live_v0_frontend_uses_context_and_hides_technical_priority() -> None:
     assert "Ver evento" in grid_script
     assert "Camera ID" not in grid_script
     assert "hasOperationalContext" in grid_script
-    assert "A Live oficial mostra setores monitorados" in grid_script
-    assert "diagnóstico técnico no Setup" in grid_script
+    assert "A Live mostra câmeras vinculadas a contexto operacional." in grid_script
+    assert "Verifique a configuração no Setup." in grid_script
     assert "liveViewAsset" in view_script
     assert "liveCurrentEventLink" in view_script
     assert "Modo configuração" in view_html
@@ -120,7 +120,12 @@ def test_live_v0_frontend_uses_context_and_hides_technical_priority() -> None:
 def test_live_grid_page_uses_live_v0_language() -> None:
     client = TestClient(api)
 
-    response = client.get("/live-grid")
+    logged_out = client.get("/live-grid", follow_redirects=False)
+    assert logged_out.status_code == 303
+    assert logged_out.headers["location"].startswith("/login?next=")
+
+    with patch("app.api._request_has_valid_session", return_value=True):
+        response = client.get("/live-grid")
 
     assert response.status_code == 200
     assert "text/html" in response.headers.get("content-type", "")

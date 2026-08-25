@@ -5,16 +5,24 @@ const shellState = {
   authenticated: false,
 };
 
+function normalizeCampexLocalHost() {
+  if (window.location.hostname !== "0.0.0.0") return;
+  const next = new URL(window.location.href);
+  next.hostname = "127.0.0.1";
+  window.location.replace(next.toString());
+}
 
-/* CAMPEX GLOBAL SHELL V2 */
+normalizeCampexLocalHost();
+
+/* CAMPEX PRODUCT SHELL V1 */
 
 const SHELL_DESTINATIONS = [
   { label: "Início", href: "/operations-view?view=home", icon: "home" },
-  { label: "Operations", href: "/operations-view", icon: "operations" },
-  { label: "Events", href: "/events", icon: "events" },
+  { label: "Operação", href: "/operations-view", icon: "operations" },
+  { label: "Eventos", href: "/events", icon: "events" },
   { label: "Intelligence", href: "/insights", icon: "insights" },
   { label: "Relatórios", href: "/reports", icon: "insights" },
-  { label: "Live", href: "/live-grid", icon: "camera" },
+  { label: "Ao vivo", href: "/live-grid", icon: "camera" },
 ];
 
 function normalizePrimaryNavigation() {
@@ -29,7 +37,7 @@ function normalizePrimaryNavigation() {
       <hr />
       <a href="/settings/cameras">
         <span class="cx-nav-icon" data-icon="settings"></span>
-        Setup
+        Configurações
       </a>
     `;
   });
@@ -110,7 +118,7 @@ function shellSearchResults(query = "") {
 
   return SHELL_DESTINATIONS
     .concat([
-      { label: "Setup", href: "/settings/cameras", icon: "settings" },
+      { label: "Configurações", href: "/settings/cameras", icon: "settings" },
       { label: "Ajuda", href: "/help", icon: "help" },
       { label: "Status do sistema", href: "/local-diagnostics-view", icon: "status" },
     ])
@@ -246,7 +254,7 @@ function openAccountPanel() {
       <nav class="cx-account-actions">
         <a href="/settings/cameras">
           <span class="cx-nav-icon" data-icon="settings"></span>
-          Setup
+          Configurações
         </a>
         <a href="/settings/cameras#destinatarios">
           <span class="cx-nav-icon" data-icon="alert"></span>
@@ -320,8 +328,43 @@ function initialsFrom(name, fallback = "C") {
   return words.slice(0, 2).map((word) => word[0]).join("").toUpperCase();
 }
 
+function roleLabel(role) {
+  const labels = {
+    admin_campex: "Administrador Campex",
+    admin_cliente: "Administrador",
+    operador: "Operador",
+    visualizador: "Visualizador",
+  };
+  return labels[role] || role || "Usuário";
+}
+
+function organizationName(user = shellState.user || {}) {
+  return user.cliente_nome || user.empresa_nome || user.organizacao_nome || user.organization_name || "Indústria Alpha";
+}
+
+function avatarMarkup(name, photoUrl, className = "cx-avatar") {
+  const safeName = sanitize(name || "Usuário Campex");
+  if (photoUrl) {
+    return `<span class="${className}"><img src="${sanitize(photoUrl)}" alt="${safeName}" /></span>`;
+  }
+  return `<span class="${className}" aria-hidden="true">${sanitize(initialsFrom(name))}</span>`;
+}
+
 function popoverItem(item) {
   if (typeof item === "string") return `<span class="cx-popover-note">${sanitize(item)}</span>`;
+  if (item.type === "divider") return `<hr class="cx-popover-divider" />`;
+  if (item.type === "account-header") {
+    return `
+      <div class="cx-popover-account-head">
+        ${avatarMarkup(item.name, item.photoUrl, "cx-popover-avatar")}
+        <div>
+          <strong>${sanitize(item.name)}</strong>
+          <span>${sanitize(item.email)}</span>
+          <small>${sanitize(item.company)}</small>
+        </div>
+      </div>
+    `;
+  }
   const label = sanitize(item.label);
   const icon = item.icon ? `<span class="cx-nav-icon" data-icon="${sanitize(item.icon)}"></span>` : "";
   const attrs = [
@@ -343,10 +386,25 @@ function openPopover(anchor, title, items) {
   popover.className = "cx-popover";
   popover.setAttribute("role", "menu");
   popover.tabIndex = -1;
-  popover.style.top = `${rect.bottom + window.scrollY + 8}px`;
-  popover.style.left = `${Math.max(12, rect.right + window.scrollX - 220)}px`;
-  popover.innerHTML = `<strong>${sanitize(title)}</strong>${items.map(popoverItem).join("")}`;
+  popover.innerHTML = `<span class="cx-popover-title">${sanitize(title)}</span>${items.map(popoverItem).join("")}`;
   document.body.appendChild(popover);
+
+  const popoverRect = popover.getBoundingClientRect();
+  const margin = 12;
+  const width = popoverRect.width || 280;
+  const height = popoverRect.height || 360;
+  const left = Math.min(
+    Math.max(margin, rect.right - width),
+    window.innerWidth - width - margin
+  );
+  const preferredTop = rect.top - height - 10;
+  const fallbackTop = rect.bottom + 10;
+  const top = preferredTop >= margin
+    ? preferredTop
+    : Math.min(Math.max(margin, fallbackTop), window.innerHeight - height - margin);
+
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
   shellState.popover = popover;
   popover.focus();
 }
@@ -366,12 +424,22 @@ function updateIdentity(auth) {
   shellState.user = auth?.user || null;
   const user = shellState.user || {};
   const displayName = shellState.authenticated ? (user.nome || user.email || "Usuário Campex") : "Entrar";
-  const role = shellState.authenticated ? (user.role || user.funcao || "Usuário") : "Sessão necessária";
+  const company = shellState.authenticated ? organizationName(user) : "Sessão necessária";
+  const role = shellState.authenticated ? roleLabel(user.role || user.funcao) : "Sessão necessária";
   const initials = shellState.authenticated ? initialsFrom(displayName) : "C";
+  const photoUrl = user.avatar_url || user.foto_url || user.photo_url || user.profile_photo_url;
 
   document.querySelectorAll(".cx-profile-name").forEach((node) => { node.textContent = displayName; });
-  document.querySelectorAll(".cx-profile-role").forEach((node) => { node.textContent = role; });
-  document.querySelectorAll(".cx-avatar, .cx-top-avatar").forEach((node) => { node.textContent = initials; });
+  document.querySelectorAll(".cx-profile-role").forEach((node) => {
+    node.textContent = company;
+    node.title = `${company} · ${role}`;
+  });
+  document.querySelectorAll(".cx-avatar, .cx-top-avatar").forEach((node) => {
+    node.textContent = "";
+    node.style.backgroundImage = photoUrl ? `url("${photoUrl}")` : "";
+    node.classList.toggle("has-image", Boolean(photoUrl));
+    if (!photoUrl) node.textContent = initials;
+  });
   document.querySelectorAll(".cx-profile-trigger").forEach((node) => {
     node.setAttribute("aria-label", shellState.authenticated ? `Conta de ${displayName}` : "Entrar na Campex");
   });
@@ -454,7 +522,7 @@ function setupGlobalButtons() {
       const action = popoverAction.dataset.popoverAction;
       if (action === "logout") {
         fetch("/auth/logout", { method: "POST" })
-          .finally(() => { window.location.href = "/settings/cameras#login"; });
+          .finally(() => { window.location.href = "/login?next=%2Foperations-view%3Fview%3Dhome"; });
       }
 
       if (action === "account") {
@@ -470,20 +538,25 @@ function setupGlobalButtons() {
     const profile = event.target.closest(".cx-profile-trigger, .cx-top-avatar");
     if (profile) {
       const user = shellState.user || {};
-      const userLine = shellState.authenticated
-        ? `${user.email || user.nome || "Usuário autenticado"}`
-        : "Entre para acessar dados protegidos.";
+      const name = user.nome || user.email || "Usuário Campex";
+      const email = user.email || "E-mail não informado";
+      const company = organizationName(user);
+      const photoUrl = user.avatar_url || user.foto_url || user.photo_url || user.profile_photo_url;
       const profileItems = shellState.authenticated ? [
-        userLine,
-        { label: "Minha conta", action: "account", icon: "users" },
-        { label: "Setup", href: "/settings/cameras", icon: "settings" },
-        { label: "Preferências de notificações", href: "/settings/cameras#destinatarios", icon: "alert" },
+        { type: "account-header", name, email, company, photoUrl },
+        { type: "divider" },
+        { label: "Minha conta", href: "/settings/cameras#minha-conta", icon: "users" },
+        { label: "Organização", href: "/settings/cameras#cliente", icon: "integrations" },
+        { label: "Usuários e permissões", href: "/settings/cameras#usuarios", icon: "users" },
+        { label: "Preferências", href: "/settings/cameras#minha-conta", icon: "settings" },
+        { type: "divider" },
         { label: "Status do sistema", href: "/local-diagnostics-view", icon: "status" },
         { label: "Ajuda e suporte", href: "/help", icon: "help" },
+        { type: "divider" },
         { label: "Sair", action: "logout", icon: "logout" },
       ] : [
-        userLine,
-        { label: "Entrar", href: "/settings/cameras#login", icon: "users" },
+        "Entre para acessar dados protegidos.",
+        { label: "Entrar", href: `/login?next=${encodeURIComponent(`${window.location.pathname}${window.location.search}${window.location.hash}`)}`, icon: "users" },
       ];
       openPopover(profile, shellState.authenticated ? "Conta" : "Sessão", profileItems);
       return;
@@ -507,7 +580,7 @@ function setupGlobalButtons() {
 
     const rowMenu = event.target.closest(".cx-row-menu:not([data-open-detail])");
     if (rowMenu) {
-      openPopover(rowMenu, "Ações", [{ label: "Copiar referência", action: "copy-location" }, { label: "Ir para Events", href: "/events", icon: "events" }]);
+      openPopover(rowMenu, "Ações", [{ label: "Copiar referência", action: "copy-location" }, { label: "Ir para Eventos", href: "/events", icon: "events" }]);
       return;
     }
 

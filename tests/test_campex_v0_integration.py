@@ -13,11 +13,11 @@ from app.operational_context import criar_operational_area, criar_operational_as
 
 
 OFFICIAL_AREAS = {
-    "/operations-view": "Operations",
-    "/events": "Events",
+    "/operations-view": "Visão geral",
+    "/events": "Eventos",
     "/insights": "Intelligence",
-    "/live-grid": "Live",
-    "/settings/cameras": "Setup",
+    "/live-grid": "Ao vivo",
+    "/settings/cameras": "Configurações",
 }
 
 
@@ -60,7 +60,12 @@ def test_campex_v0_official_areas_are_navigable_without_legacy_primary_nav() -> 
     client = TestClient(api)
 
     for route, label in OFFICIAL_AREAS.items():
-        response = client.get(route)
+        logged_out = client.get(route, follow_redirects=False)
+        assert logged_out.status_code == 303, route
+        assert logged_out.headers["location"].startswith("/login?next="), route
+
+        with patch("app.api._request_has_valid_session", return_value=True):
+            response = client.get(route)
         assert response.status_code == 200, route
         assert "text/html" in response.headers.get("content-type", "")
         assert label in response.text
@@ -71,9 +76,10 @@ def test_campex_v0_official_areas_are_navigable_without_legacy_primary_nav() -> 
         assert 'href="/live-grid"' in response.text
         assert 'href="/settings/cameras"' in response.text
 
-    shell = client.get("/operations-view").text
+    with patch("app.api._request_has_valid_session", return_value=True):
+        shell = client.get("/operations-view").text
     primary_nav = shell[shell.index('<nav class="cx-nav') : shell.index('<div class="cx-account">')]
-    for legacy in ["Home", "Visão geral", "Câmeras", "Alertas", "Evidências", "Regras"]:
+    for legacy in ["Home", "Câmeras", "Alertas", "Evidências", "Regras"]:
         assert legacy not in primary_nav
 
 

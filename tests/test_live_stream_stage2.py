@@ -151,11 +151,16 @@ class LiveStreamStage2Test(unittest.TestCase):
 
     def test_live_grid_page_is_served(self) -> None:
         client = TestClient(api)
-        response = client.get("/live-grid")
+        logged_out = client.get("/live-grid", follow_redirects=False)
+        self.assertEqual(logged_out.status_code, 303)
+        self.assertTrue(logged_out.headers["location"].startswith("/login?next="))
+
+        with patch("app.api._request_has_valid_session", return_value=True):
+            response = client.get("/live-grid")
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/html", response.headers.get("content-type", ""))
-        self.assertIn("Setores monitorados", response.text)
+        self.assertIn("Veja sua operação em tempo real.", response.text)
 
     def test_live_streams_status_returns_resource_snapshot_without_credentials(self) -> None:
         original_manager = api_module.live_streams

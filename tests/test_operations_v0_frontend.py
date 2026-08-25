@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app import api as api_module
 from app.api import api
 from app.config import ROOT
 
@@ -11,7 +13,8 @@ from app.config import ROOT
 def test_operations_view_route_serves_workspace_shell() -> None:
     client = TestClient(api)
 
-    response = client.get("/operations-view")
+    with patch.object(api_module, "_request_has_valid_session", return_value=True):
+        response = client.get("/operations-view")
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
@@ -46,9 +49,9 @@ def test_operations_view_replaces_legacy_dashboard_content() -> None:
     operations_block = script[start:end]
 
     for expected in [
-        "Operations",
-        "Acompanhe o estado operacional dos ativos e áreas monitoradas.",
-        "Resumo operacional",
+        "Operação",
+        "Estado operacional da sua planta.",
+        "Veja o que está em operação, parado ou exigindo atenção agora.",
         "Ativos monitorados",
         "Atividade recente",
         "Qualidade dos dados",
@@ -56,7 +59,7 @@ def test_operations_view_replaces_legacy_dashboard_content() -> None:
     ]:
         assert expected in operations_block
 
-    for table_label in ["Estado atual", "Tempo no estado", "Incidente ativo"]:
+    for table_label in ["Status", "Leitura operacional", "Atualização"]:
         assert table_label in script[
             script.index("function renderOperationsAssetList"):
             script.index("function renderOperationsRecentActivity")
@@ -155,7 +158,7 @@ def test_operations_load_page_does_not_inject_legacy_shell_cards() -> None:
     assert "cards.innerHTML = usesProductMemoryShell(path) ? \"\"" in script
     assert "renderOperationsAuthState" in script
     assert "Entre para acessar os dados da operação." in script
-    assert "/settings/cameras?next=${target}#login" in script
+    assert "/login?next=${target}" in script
 
     for legacy_label in [
         "Registros",
@@ -182,7 +185,8 @@ def test_login_redirect_can_return_to_operations_view() -> None:
 def test_operations_view_is_not_rendered_from_dashboard_html() -> None:
     client = TestClient(api)
 
-    response = client.get("/operations-view")
+    with patch.object(api_module, "_request_has_valid_session", return_value=True):
+        response = client.get("/operations-view")
 
     assert response.status_code == 200
     assert "workspace.js" in response.text

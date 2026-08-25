@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -15,7 +16,12 @@ def _workspace_script() -> str:
 def test_events_route_serves_product_shell() -> None:
     client = TestClient(api)
 
-    response = client.get("/events")
+    logged_out = client.get("/events", follow_redirects=False)
+    assert logged_out.status_code == 303
+    assert logged_out.headers["location"].startswith("/login?next=")
+
+    with patch("app.api._request_has_valid_session", return_value=True):
+        response = client.get("/events")
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
@@ -29,7 +35,7 @@ def test_events_v0_uses_canonical_events_and_detail_endpoint() -> None:
     route_block = script[start:end]
 
     assert 'endpoint: "/eventos"' in route_block
-    assert 'title: "Events"' in route_block
+    assert 'title: "Eventos"' in route_block
     assert "Ocorrências e incidentes registrados pela operação." in route_block
     assert "Não classificados" in route_block
     assert "camera_id" not in route_block.lower()
@@ -100,14 +106,12 @@ def test_events_v1_renders_operational_list_and_human_mappers() -> None:
     events_block = script[start:end]
 
     for expected in [
-        "Resumo de ocorrências",
-        "Lista operacional",
+        "Veja ocorrências, evidências e o estado de cada evento registrado.",
+        "Buscar ocorrências, ativos, áreas...",
         "Evento",
-        "Ativo / Área",
-        "Severidade",
+        "Prioridade",
         "Estado",
-        "Início",
-        "Duração",
+        "Quando",
         "Evidência",
         "Nenhuma ocorrência encontrada neste período.",
     ]:
@@ -115,6 +119,7 @@ def test_events_v1_renders_operational_list_and_human_mappers() -> None:
 
     assert "function eventSeverityLabel" in script
     assert "function eventDateLabel" in script
+    assert "Ativo/área" in script
     assert "machine_stoppage" in script
     assert "Parada operacional" in script
     assert "workstation_unattended" in script

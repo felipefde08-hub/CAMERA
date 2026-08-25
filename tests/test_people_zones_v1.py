@@ -209,9 +209,13 @@ class PeopleZonesV1Test(unittest.TestCase):
                 )
             with patch("app.api.connect", test_connect):
                 client = TestClient(api)
-                page = client.get("/people-zones")
+                logged_out = client.get("/people-zones", follow_redirects=False)
+                with patch("app.api._request_has_valid_session", return_value=True):
+                    page = client.get("/people-zones")
                 summary = client.get("/people-zones/summary")
 
+        self.assertEqual(logged_out.status_code, 303)
+        self.assertTrue(logged_out.headers["location"].startswith("/login?next="))
         self.assertEqual(page.status_code, 200)
         self.assertIn("Pessoas e Zonas", page.text)
         self.assertEqual(summary.status_code, 200)

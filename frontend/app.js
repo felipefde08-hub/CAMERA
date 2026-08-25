@@ -2,6 +2,30 @@ const form = document.querySelector("#cameraForm");
 const loginForm = document.querySelector("#loginForm");
 const loginHeader = document.querySelector("#loginHeader");
 const loginStatus = document.querySelector("#loginStatus");
+const signupForm = document.querySelector("#signupForm");
+const signupStatus = document.querySelector("#signupStatus");
+const showSignupButton = document.querySelector("#showSignupButton");
+const showLoginButton = document.querySelector("#showLoginButton");
+const loginPasswordInput = document.querySelector("#loginPasswordInput");
+const loginPasswordToggle = document.querySelector("#loginPasswordToggle");
+const googleOAuthButton = document.querySelector("#googleOAuthButton");
+const connectedAccountPanel = document.querySelector("#connectedAccountPanel");
+const connectedAccountName = document.querySelector("#connectedAccountName");
+const connectedAccountEmail = document.querySelector("#connectedAccountEmail");
+const connectedAccountRole = document.querySelector("#connectedAccountRole");
+const loginPanel = document.querySelector("#login");
+const logoutButton = document.querySelector("#logoutButton");
+const sidebarLogoutButton = document.querySelector("#sidebarLogoutButton");
+const accountSettingsLogoutButton = document.querySelector("#accountSettingsLogoutButton");
+const accountSettingsName = document.querySelector("#accountSettingsName");
+const accountSettingsEmail = document.querySelector("#accountSettingsEmail");
+const accountSettingsRole = document.querySelector("#accountSettingsRole");
+const accountSettingsPhoto = document.querySelector(".cx-account-photo:not(.cx-org-logo)");
+const profileName = document.querySelector(".cx-profile-name");
+const profileRole = document.querySelector(".cx-profile-role");
+const profileAvatar = document.querySelector(".cx-avatar");
+const workspaceName = document.querySelector(".cx-workspace-copy strong");
+const workspaceUnit = document.querySelector(".cx-workspace-copy small");
 const testButton = document.querySelector("#testButton");
 const liveViewButton = document.querySelector("#liveViewButton");
 const result = document.querySelector("#result");
@@ -48,6 +72,9 @@ const saveMachineButton = document.querySelector("#saveMachineButton");
 const machineList = document.querySelector("#machineList");
 const operationsList = document.querySelector("#operationsList");
 const clientForm = document.querySelector("#clientForm");
+const organizationDialog = document.querySelector("#organizationDialog");
+const organizationEditorButtons = Array.from(document.querySelectorAll("[data-open-organization-editor]"));
+const organizationEditorCloseButtons = Array.from(document.querySelectorAll("[data-close-organization-editor]"));
 const unitForm = document.querySelector("#unitForm");
 const userForm = document.querySelector("#userForm");
 const machineConfigForm = document.querySelector("#machineConfigForm");
@@ -85,6 +112,29 @@ const setupOperationSummary = document.querySelector("#setupOperationSummary");
 const setupCameraGate = document.querySelector("#setupCameraGate");
 const setupReadinessConclusion = document.querySelector("#setupReadinessConclusion");
 const setupHeroStatus = document.querySelector("#setupHeroStatus");
+const settingsOrgName = document.querySelector("#settingsOrgName");
+const settingsOrgLogos = Array.from(document.querySelectorAll(".cx-org-logo"));
+const settingsOrgStatus = document.querySelector("#settingsOrgStatus");
+const settingsUnitName = document.querySelector("#settingsUnitName");
+const settingsUnitMeta = document.querySelector("#settingsUnitMeta");
+const settingsUsersCount = document.querySelector("#settingsUsersCount");
+const settingsUsersMeta = document.querySelector("#settingsUsersMeta");
+const settingsReportSchedule = document.querySelector("#settingsReportSchedule");
+const settingsReportRecipient = document.querySelector("#settingsReportRecipient");
+const settingsOperationCount = document.querySelector("#settingsOperationCount");
+const settingsOperationMeta = document.querySelector("#settingsOperationMeta");
+const settingsReadinessTitle = document.querySelector("#settingsReadinessTitle");
+const settingsReadinessText = document.querySelector("#settingsReadinessText");
+const settingsReadinessAction = document.querySelector("#settingsReadinessAction");
+const settingsSystemBadge = document.querySelector("#settingsSystemBadge");
+const settingsPlatformStatus = document.querySelector("#settingsPlatformStatus");
+const settingsDataStatus = document.querySelector("#settingsDataStatus");
+const settingsProcessingStatus = document.querySelector("#settingsProcessingStatus");
+const settingsStorageStatus = document.querySelector("#settingsStorageStatus");
+const settingsReportsStatus = document.querySelector("#settingsReportsStatus");
+const settingsLastAccess = document.querySelector("#settingsLastAccess");
+const settingsActiveSessions = document.querySelector("#settingsActiveSessions");
+const settingsSecurityAuth = document.querySelector("#settingsSecurityAuth");
 const firstRunPanel = document.querySelector("#firstRunPanel");
 const firstRunForm = document.querySelector("#firstRunForm");
 const firstRunStatus = document.querySelector("#firstRunStatus");
@@ -113,6 +163,9 @@ let knownClients = [];
 let knownUnits = [];
 let knownCameras = [];
 let knownRecipients = [];
+let knownUsers = [];
+let currentAuthUser = null;
+let latestSystemHealth = null;
 let setupOperation = {
   areas: [],
   processes: [],
@@ -143,6 +196,15 @@ function stripSensitiveQueryString() {
   const clean = `${url.pathname}${url.search}${url.hash}`;
   window.history.replaceState({}, document.title, clean);
 }
+
+function normalizeLocalHost() {
+  if (window.location.hostname !== "0.0.0.0") return;
+  const next = new URL(window.location.href);
+  next.hostname = "127.0.0.1";
+  window.location.replace(next.toString());
+}
+
+normalizeLocalHost();
 
 function formPayload(targetForm) {
   const data = new FormData(targetForm);
@@ -236,6 +298,14 @@ function currentSetupSection() {
   return known.has(key) ? key : "cliente";
 }
 
+function currentReturnPath() {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+function redirectToLogin() {
+  window.location.href = `/login?next=${encodeURIComponent(currentReturnPath())}`;
+}
+
 function applySetupSection() {
   const active = currentSetupSection();
   setupNavLinks.forEach((link) => {
@@ -246,6 +316,9 @@ function applySetupSection() {
   setupSections.forEach((section) => {
     section.hidden = section.dataset.setupSection !== active;
   });
+  if (document.body.classList.contains("cx-authenticated") && loginPanel) {
+    loginPanel.hidden = true;
+  }
 }
 
 function setSetupStatus(message, offline = false) {
@@ -255,8 +328,107 @@ function setSetupStatus(message, offline = false) {
   if (setupHeroStatus) setupHeroStatus.textContent = offline ? "Configuração requer atenção" : message;
 }
 
+function setText(node, value) {
+  if (node) node.textContent = value;
+}
+
+function setSetupBadge(node, label, tone = "neutral") {
+  if (!node) return;
+  node.textContent = label;
+  node.className = `cx-setup-pill ${tone}`;
+}
+
+function initialsFromText(value) {
+  const words = String(value || "Campex")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  return (words.length > 1 ? `${words[0][0]}${words[1][0]}` : words[0]?.slice(0, 2) || "C").toUpperCase();
+}
+
+function renderSettingsOverview() {
+  const client = knownClients[0];
+  const unit = knownUnits[0];
+  const activeUsers = knownUsers.filter((user) => user.ativo !== false);
+  const activeRecipients = knownRecipients.filter((recipient) => recipient.ativo !== false);
+  const activeCameras = knownCameras.filter((camera) => camera.ativa !== false);
+  const assetsCount = setupOperation.assets?.length || 0;
+  const areasCount = setupOperation.areas?.length || 0;
+  const readinessChecks = setupOperation.readiness?.checks || [];
+  const missingChecks = readinessChecks.filter((item) => item.status !== "PASS");
+  const organizationName = client?.nome || currentAuthUser?.cliente_nome || "Indisponível";
+  const unitName = unit?.nome || "Indisponível";
+
+  setText(settingsOrgName, organizationName);
+  settingsOrgLogos.forEach((node) => setText(node, initialsFromText(organizationName || "Campex")));
+  setSetupBadge(
+    settingsOrgStatus,
+    client ? safeText(client.status || "Ativa") : currentAuthUser ? "Ativa" : "Sessão necessária",
+    client || currentAuthUser ? "online" : "neutral",
+  );
+  setText(settingsUnitName, unitName);
+  setText(settingsUnitMeta, unit ? safeText(unit.localizacao || unit.timezone || "Unidade principal") : "Entre para carregar unidade");
+  setText(settingsUsersCount, activeUsers.length ? `${activeUsers.length} membro${activeUsers.length === 1 ? "" : "s"}` : currentAuthUser ? "1 membro" : "Indisponível");
+  setText(settingsUsersMeta, activeUsers.length ? "Usuários ativos na organização" : currentAuthUser ? "Sessão atual conectada" : "Membros da organização");
+  setText(settingsReportSchedule, activeRecipients.length ? "Configurado" : "Não configurado");
+  setText(settingsReportRecipient, activeRecipients[0]?.email || "Nenhum destinatário ativo");
+  setText(settingsOperationCount, `${activeCameras.length} câmera${activeCameras.length === 1 ? "" : "s"}`);
+  setText(settingsOperationMeta, `${assetsCount} ativo${assetsCount === 1 ? "" : "s"} · ${areasCount} área${areasCount === 1 ? "" : "s"} monitorada${areasCount === 1 ? "" : "s"}`);
+
+  if (!currentAuthUser) {
+    setText(settingsReadinessTitle, "Sessão necessária");
+    setText(settingsReadinessText, "Entre para carregar organização, operação, alertas e saúde do sistema.");
+    if (settingsReadinessAction) {
+      settingsReadinessAction.textContent = "Entrar";
+      settingsReadinessAction.href = `/login?next=${encodeURIComponent(currentReturnPath())}`;
+    }
+  } else if (!readinessChecks.length) {
+    setText(settingsReadinessTitle, "Configuração em validação");
+    setText(settingsReadinessText, "A Campex está aguardando os dados reais de setup e saúde.");
+    if (settingsReadinessAction) {
+      settingsReadinessAction.textContent = "Ver histórico";
+      settingsReadinessAction.href = "#entregas";
+    }
+  } else if (!missingChecks.length) {
+    setText(settingsReadinessTitle, "Pronto para operar");
+    setText(settingsReadinessText, "Os itens obrigatórios do checklist carregado estão aprovados.");
+    if (settingsReadinessAction) {
+      settingsReadinessAction.textContent = "Ver histórico";
+      settingsReadinessAction.href = "#entregas";
+    }
+  } else {
+    const firstMissing = missingChecks[0]?.label || "configuração";
+    const nextAction = /c[aâ]mera|camera/i.test(firstMissing) ? "Conecte uma câmera para começar a monitorar a operação." : `Revise ${firstMissing.toLowerCase()} para concluir a configuração.`;
+    setText(settingsReadinessTitle, /c[aâ]mera|camera/i.test(firstMissing) ? "Próximo passo: conectar sua primeira câmera" : "Próximo passo: concluir a configuração");
+    setText(settingsReadinessText, nextAction);
+    if (settingsReadinessAction) {
+      settingsReadinessAction.textContent = /c[aâ]mera|camera/i.test(firstMissing) ? "Conectar câmera →" : "Abrir configuração →";
+      settingsReadinessAction.href = /c[aâ]mera|camera/i.test(firstMissing) ? "#cameras" : "#maquinas";
+    }
+  }
+
+  const humanHealth = (ok) => (currentAuthUser ? (ok ? "Operacional" : "Requer atenção") : "Indisponível");
+  const onlineCameras = Number(latestSystemHealth?.cameras_online ?? 0);
+  const aiActive = Number(latestSystemHealth?.ai_active ?? 0);
+  const diskValue = latestSystemHealth?.disk_free_gb != null ? `${latestSystemHealth.disk_free_gb} GB livres` : "Indisponível";
+  const reportsOk = activeRecipients.length ? "Configurado" : "Não configurado";
+
+  setSetupBadge(settingsSystemBadge, currentAuthUser ? "Dados carregados" : "Sessão necessária", currentAuthUser ? "online" : "neutral");
+  setText(settingsPlatformStatus, humanHealth(Boolean(latestSystemHealth?.api || currentAuthUser)));
+  setText(settingsDataStatus, currentAuthUser ? (onlineCameras > 0 ? "Operacional" : "Requer atenção") : "Indisponível");
+  setText(settingsProcessingStatus, currentAuthUser ? (aiActive > 0 ? "Operacional" : "Requer atenção") : "Indisponível");
+  setText(settingsStorageStatus, currentAuthUser ? (latestSystemHealth?.disk_free_gb != null ? "Operacional" : "Indisponível") : diskValue);
+  setText(settingsReportsStatus, reportsOk);
+  setText(settingsLastAccess, currentAuthUser ? "Sessão atual" : "Sessão necessária");
+  setText(settingsActiveSessions, currentAuthUser ? "1 sessão" : "Indisponível");
+  setText(settingsSecurityAuth, currentAuthUser ? "Conta autenticada" : "Sessão necessária");
+
+  if (workspaceName) workspaceName.textContent = client?.nome || "Cliente piloto";
+  if (workspaceUnit) workspaceUnit.textContent = unit?.nome || "Unidade principal";
+}
+
 function fillSetupSelects() {
-  fillSelect(setupUnitClientSelect, knownClients, "Cliente padrão ou selecione");
+  fillSelect(setupUnitClientSelect, knownClients, "Organização padrão ou selecione");
   fillSelect(setupAreaUnitSelect, knownUnits, "Selecione a unidade");
   fillSelect(setupContextCameraSelect, knownCameras, "Selecione a câmera");
   fillSelect(setupMonitorCameraSelect, knownCameras, "Selecione a câmera");
@@ -419,6 +591,7 @@ function renderSetupJourney() {
       : '<div class="muted">Crie um ativo antes de cadastrar câmera na jornada principal.</div>';
   }
   document.body.dataset.setupHasAsset = setupOperation.assets.length ? "true" : "false";
+  renderSettingsOverview();
 }
 
 async function loadSetupOperation() {
@@ -435,6 +608,7 @@ async function loadSetupOperation() {
     renderSetupReadiness();
     renderInstallChecklist(setupOperation.readiness);
     renderSetupJourney();
+    renderSettingsOverview();
     setSetupStatus("Configuração carregada");
   } catch (error) {
     setSetupStatus(`Setup indisponível: ${error.message}`, true);
@@ -463,12 +637,151 @@ async function checkFirstRun() {
 
 function setFirstRunMode(enabled) {
   firstRunPanel.hidden = !enabled;
+  if (connectedAccountPanel) connectedAccountPanel.hidden = true;
+  if (signupForm) signupForm.hidden = true;
   if (loginHeader) loginHeader.hidden = enabled;
   if (loginForm) {
     loginForm.hidden = enabled;
     loginForm.querySelectorAll("input, button").forEach((control) => {
       control.disabled = enabled;
     });
+  }
+}
+
+function setupRoleLabel(role) {
+  const labels = {
+    admin_campex: "Administrador Campex",
+    admin_cliente: "Administrador",
+    operador: "Operador",
+    visualizador: "Visualizador",
+  };
+  return labels[role] || role || "Usuário";
+}
+
+function renderConnectedAccount(user) {
+  const authenticated = Boolean(user);
+  currentAuthUser = user || null;
+  document.body.classList.toggle("cx-authenticated", authenticated);
+  if (loginPanel) loginPanel.hidden = authenticated;
+  if (loginHeader) loginHeader.hidden = authenticated;
+  if (loginForm) loginForm.hidden = authenticated;
+  if (signupForm) signupForm.hidden = true;
+  if (connectedAccountPanel) connectedAccountPanel.hidden = !authenticated;
+  if (!authenticated) {
+    setText(profileName, "Entrar");
+    setText(profileRole, "Sessão necessária");
+    setText(profileAvatar, "C");
+    setText(accountSettingsPhoto, "C");
+    setText(accountSettingsName, "Sessão necessária");
+    setText(accountSettingsEmail, "Entre para acessar sua conta.");
+    setText(accountSettingsRole, "Sem autenticação");
+    renderSettingsOverview();
+    return;
+  }
+  const name = user.nome || user.email || "Usuário Campex";
+  const email = user.email || "-";
+  const role = setupRoleLabel(user.role || user.funcao);
+  if (connectedAccountName) connectedAccountName.textContent = name;
+  if (connectedAccountEmail) connectedAccountEmail.textContent = email;
+  if (connectedAccountRole) connectedAccountRole.textContent = role;
+  setText(accountSettingsName, name);
+  setText(accountSettingsEmail, email);
+  setText(accountSettingsRole, role);
+  setText(profileName, name);
+  setText(profileRole, user.cliente_nome || user.empresa_nome || "Indústria Alpha");
+  setText(profileAvatar, initialsFromText(name));
+  setText(accountSettingsPhoto, initialsFromText(name));
+  if (loginStatus) loginStatus.textContent = "";
+  renderSettingsOverview();
+}
+
+function showSignupMode() {
+  if (loginHeader) loginHeader.hidden = true;
+  if (loginForm) loginForm.hidden = true;
+  if (signupForm) signupForm.hidden = false;
+  if (signupStatus) signupStatus.textContent = "";
+  signupForm?.querySelector("input[name='nome']")?.focus();
+}
+
+function showLoginMode() {
+  if (loginHeader) loginHeader.hidden = false;
+  if (loginForm) loginForm.hidden = false;
+  if (signupForm) signupForm.hidden = true;
+  if (loginStatus) loginStatus.textContent = "Entre para acessar as configurações da operação.";
+  loginForm?.querySelector("input[name='email']")?.focus();
+}
+
+function configureGoogleOAuthButton() {
+  if (!googleOAuthButton) return;
+  const next = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  googleOAuthButton.href = `/auth/oauth/google/start?next=${encodeURIComponent(next)}`;
+}
+
+function applyOAuthErrorMessage() {
+  if (!loginStatus) return;
+  const params = new URLSearchParams(window.location.search);
+  const error = params.get("oauth_error");
+  if (!error) return;
+  const messages = {
+    access_not_provisioned: "Este e-mail ainda não possui acesso à Campex. Solicite acesso ao administrador da sua organização.",
+    google_failed: "Não foi possível entrar com o Google. Tente novamente.",
+    invalid_state: "Não foi possível validar a entrada com Google. Tente novamente.",
+  };
+  loginStatus.textContent = messages[error] || "Não foi possível entrar com o Google. Tente novamente.";
+}
+
+function toggleLoginPassword() {
+  if (!loginPasswordInput || !loginPasswordToggle) return;
+  const visible = loginPasswordInput.type === "text";
+  loginPasswordInput.type = visible ? "password" : "text";
+  loginPasswordToggle.setAttribute("aria-pressed", String(!visible));
+  loginPasswordToggle.setAttribute("aria-label", visible ? "Mostrar senha" : "Ocultar senha");
+}
+
+function openOrganizationEditor() {
+  if (!organizationDialog) return;
+  if (typeof organizationDialog.showModal === "function") {
+    organizationDialog.showModal();
+  } else {
+    organizationDialog.setAttribute("open", "");
+  }
+  clientForm?.querySelector("input[name='nome']")?.focus();
+}
+
+function closeOrganizationEditor() {
+  if (!organizationDialog) return;
+  if (typeof organizationDialog.close === "function") {
+    organizationDialog.close();
+  } else {
+    organizationDialog.removeAttribute("open");
+  }
+}
+
+async function logout() {
+  await requestJson("/auth/logout", { method: "POST" }).catch(() => ({ ok: false }));
+  window.location.href = "/login";
+}
+
+async function signup(event) {
+  event.preventDefault();
+  if (!signupForm || !signupStatus) return;
+  signupStatus.textContent = "Criando conta...";
+  try {
+    const data = new FormData(signupForm);
+    const payload = await requestJson("/auth/signup", {
+      method: "POST",
+      body: JSON.stringify({
+        nome: String(data.get("nome") || ""),
+        email: String(data.get("email") || ""),
+        senha: String(data.get("senha") || ""),
+        empresa_nome: String(data.get("empresa_nome") || ""),
+      }),
+    });
+    renderConnectedAccount(payload.user);
+    signupForm.reset();
+    window.location.href = payload.next || "/operations-view?view=home";
+  } catch (error) {
+    signupStatus.textContent = `Não foi possível criar a conta: ${error.message}`;
   }
 }
 
@@ -483,7 +796,7 @@ async function completeFirstRun(event) {
     });
     firstRunStatus.textContent = `Instalação criada. Administrador: ${payload.user?.email || "criado"}.`;
     setFirstRunMode(false);
-    loginStatus.textContent = `Logado como ${payload.user?.email || "primeiro administrador"}`;
+    renderConnectedAccount(payload.user || null);
     window.history.replaceState({}, document.title, window.location.pathname);
     firstRunForm.reset();
     await Promise.all([loadConfigData(), loadCameras(), loadSetupOperation(), loadRecipients(), loadDeliveries()]);
@@ -747,6 +1060,7 @@ async function loadCameras() {
   fillSelect(machineCameraSelect, cameras, "Selecione uma câmera");
   fillSetupSelects();
   renderSetupJourney();
+  renderSettingsOverview();
   if (cameras.length === 1 && !currentCameraId) {
     openCamera(cameras[0].id, cameras[0].nome).catch(() => {});
   }
@@ -756,12 +1070,13 @@ async function loadConfigData() {
   const [clients, units, users] = await Promise.all([
     requestJson("/clientes").catch(() => []),
     requestJson("/unidades").catch(() => []),
-    requestJson("/auth/users").catch(() => []),
+    requestJson("/users").catch(() => []),
   ]);
   knownClients = clients;
   knownUnits = units;
-  fillSelect(unitClientSelect, clients, "Cliente padrão ou selecione");
-  fillSelect(userClientSelect, clients, "Cliente padrão ou selecione");
+  knownUsers = users;
+  fillSelect(unitClientSelect, clients, "Organização padrão ou selecione");
+  fillSelect(userClientSelect, clients, "Organização padrão ou selecione");
   fillSelect(cameraUnitSelect, units, "Usar unidade padrão");
   fillSetupSelects();
   clientList.innerHTML = clients.length ? clients.map((client) => `
@@ -783,6 +1098,7 @@ async function loadConfigData() {
     </article>
   `).join("") : '<div class="muted">Nenhum usuário cadastrado.</div>';
   renderSetupJourney();
+  renderSettingsOverview();
 }
 
 function setViewerMessage(text, status = "offline") {
@@ -1031,6 +1347,7 @@ async function saveClient(event) {
   });
   clientForm.reset();
   await loadConfigData();
+  closeOrganizationEditor();
 }
 
 async function saveUnit(event) {
@@ -1045,7 +1362,7 @@ async function saveUnit(event) {
 
 async function saveUser(event) {
   event.preventDefault();
-  await requestJson("/auth/users", {
+  await requestJson("/users", {
     method: "POST",
     body: JSON.stringify(formPayload(userForm)),
   });
@@ -1196,6 +1513,7 @@ async function loadRecipients() {
     return;
   }
   knownRecipients = recipients;
+  renderSettingsOverview();
   if (!recipients.length) {
     recipientList.innerHTML = '<div class="cx-setup-empty"><strong>Nenhum responsável cadastrado.</strong><p>Cadastre quem deve receber alertas reais da operação.</p></div>';
     return;
@@ -1395,18 +1713,18 @@ function renderSignedOutSetupState() {
   pilotChecklist.className = "cx-setup-empty";
   pilotChecklist.innerHTML = '<strong>Checklist protegido pela sessão.</strong><p>O status do piloto aparece após login.</p>';
   setSetupStatus("Entre para concluir a configuração", true);
+  renderSettingsOverview();
 }
 
 async function bootstrapProtectedSetup() {
   const auth = await requestJson("/auth/status");
   if (!auth.authenticated) {
-    if (loginStatus && !loginForm.hidden) loginStatus.textContent = "Entre para acessar as configurações da operação.";
+    renderConnectedAccount(null);
     renderSignedOutSetupState();
+    redirectToLogin();
     return false;
   }
-  if (loginStatus && auth.user) {
-    loginStatus.textContent = `Logado como ${auth.user.email} (${auth.user.role})`;
-  }
+  renderConnectedAccount(auth.user);
   await Promise.allSettled([
     loadConfigData().then(loadSetupOperation),
     loadCameras().then(() => Promise.all([loadMachineConfigList(), loadSetupOperation()])),
@@ -1432,7 +1750,7 @@ async function login(event) {
         senha: String(data.get("senha") || ""),
       }),
     });
-    loginStatus.textContent = `Logado como ${payload.user.email} (${payload.user.role})`;
+    renderConnectedAccount(payload.user);
     await Promise.all([loadConfigData(), loadCameras(), loadEvents(), loadRecipients(), loadDeliveries(), loadSystemHealth()]);
     await loadMachineConfigList();
     const next = new URLSearchParams(window.location.search).get("next");
@@ -1447,6 +1765,7 @@ async function login(event) {
 async function loadSystemHealth() {
   try {
     const health = await requestJson("/system/health");
+    latestSystemHealth = health;
     systemHealth.className = "cx-setup-health-grid";
     systemHealth.innerHTML = [
       ["API", health.api],
@@ -1475,17 +1794,29 @@ async function loadSystemHealth() {
         </article>
       `)
       .join("");
+    renderSettingsOverview();
   } catch (error) {
+    latestSystemHealth = null;
     systemHealth.className = "result offline";
     systemHealth.innerHTML = setupErrorState("Não foi possível carregar saúde", error);
     pilotChecklist.className = "result muted";
     pilotChecklist.innerHTML = setupErrorState("Checklist indisponível", error);
+    renderSettingsOverview();
   }
 }
 
 testButton.addEventListener("click", testConnection);
 liveViewButton.addEventListener("click", openLiveView);
 loginForm.addEventListener("submit", login);
+signupForm?.addEventListener("submit", signup);
+showSignupButton?.addEventListener("click", showSignupMode);
+showLoginButton?.addEventListener("click", showLoginMode);
+loginPasswordToggle?.addEventListener("click", toggleLoginPassword);
+logoutButton?.addEventListener("click", logout);
+sidebarLogoutButton?.addEventListener("click", logout);
+accountSettingsLogoutButton?.addEventListener("click", logout);
+organizationEditorButtons.forEach((button) => button.addEventListener("click", openOrganizationEditor));
+organizationEditorCloseButtons.forEach((button) => button.addEventListener("click", closeOrganizationEditor));
 firstRunForm?.addEventListener("submit", completeFirstRun);
 clientForm.addEventListener("submit", (event) => {
   saveClient(event).catch((error) => {
@@ -1763,5 +2094,7 @@ window.addEventListener("hashchange", () => {
 checkApi();
 checkFirstRun();
 applySetupSection();
+configureGoogleOAuthButton();
+applyOAuthErrorMessage();
 bootstrapProtectedSetup().catch(() => renderSignedOutSetupState());
 focusLoginFromHash();

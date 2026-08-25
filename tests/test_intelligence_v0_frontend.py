@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from app import api as api_module
 from app.api import api
 from app.config import ROOT
 
@@ -15,7 +17,8 @@ def _workspace_script() -> str:
 def test_intelligence_route_serves_product_shell() -> None:
     client = TestClient(api)
 
-    response = client.get("/insights")
+    with patch.object(api_module, "_request_has_valid_session", return_value=True):
+        response = client.get("/insights")
 
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
@@ -50,7 +53,7 @@ def test_intelligence_explains_and_traces_insights_without_legacy_loader() -> No
     assert "Por que a Campex está destacando isso?" in script
     assert "Causas confirmadas" in render_block
     assert "Observações da câmera não viram causa automaticamente." in render_block
-    assert "insightTraceAction(item)" in script
+    assert "insightTraceAction(item" in script
     assert "loadInsightsWorkspace" not in script
 
 
