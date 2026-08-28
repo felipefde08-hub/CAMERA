@@ -10,6 +10,7 @@ from typing import Any
 
 import httpx
 
+from app.security import mask_sensitive_error
 from shared.schemas import now_iso
 
 
@@ -112,6 +113,15 @@ def _next_attempt(attempts: int) -> str:
     return (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
 
 
+def _safe_sync_error(exc: Exception, *, cloud_url: str, edge_secret: str) -> str:
+    text = str(exc)
+    if cloud_url:
+        text = text.replace(cloud_url, "<cloud_url>")
+    if edge_secret:
+        text = text.replace(edge_secret, "***")
+    return str(mask_sensitive_error(text) or "Erro de sincronizacao ocultado.")[:500]
+
+
 def flush_sync_outbox(
     connection: sqlite3.Connection,
     cloud_url: str,
@@ -164,7 +174,7 @@ def flush_sync_outbox(
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (attempts, str(exc)[:500], _next_attempt(attempts), now_iso(), row["id"]),
+                (attempts, _safe_sync_error(exc, cloud_url=cloud_url, edge_secret=edge_secret), _next_attempt(attempts), now_iso(), row["id"]),
             )
             connection.commit()
             continue

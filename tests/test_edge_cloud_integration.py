@@ -177,6 +177,121 @@ class EdgeCloudIntegrationTest(unittest.TestCase):
         self.assertEqual(row["status"], "synced")
         poster.assert_called_once()
 
+    def test_sync_failures_keep_outbox_for_retry_without_leaking_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "edge.sqlite3"
+            cloud_url = "https://cloud.campex.test"
+            edge_secret = "secret-local-com-mais-de-12"
+            with edge_connect(db_path) as connection:
+                init_db(connection)
+                cliente_id = criar_cliente(connection, "FL Plasticos")
+                unidade_id = criar_unidade(connection, cliente_id, "Unidade")
+                camera_id = criar_camera(connection, unidade_id, "Camera", cliente_id=cliente_id)
+                registrar_evento(connection, cliente_id, unidade_id, camera_id, "machine_stoppage", event_uuid="evt-sync-secret")
+
+                with patch("edge_agent.sync_outbox.httpx.post", side_effect=httpx.ConnectError(f"offline {cloud_url} {edge_secret}")):
+                    synced = flush_sync_outbox(connection, cloud_url, EDGE_ID, edge_secret)
+                row = connection.execute("SELECT status, attempts, last_error FROM sync_outbox WHERE event_uuid = ?", ("evt-sync-secret",)).fetchone()
+
+        self.assertEqual(synced, 0)
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["attempts"], 1)
+        self.assertNotIn(edge_secret, row["last_error"])
+        self.assertNotIn(cloud_url, row["last_error"])
+
+    def test_timeout_and_http_5xx_keep_outbox_pending_for_later_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "edge.sqlite3"
+            with edge_connect(db_path) as connection:
+                init_db(connection)
+                cliente_id = criar_cliente(connection, "FL Plasticos")
+                unidade_id = criar_unidade(connection, cliente_id, "Unidade")
+                camera_id = criar_camera(connection, unidade_id, "Camera", cliente_id=cliente_id)
+                registrar_evento(connection, cliente_id, unidade_id, camera_id, "machine_stoppage", event_uuid="evt-timeout")
+                registrar_evento(connection, cliente_id, unidade_id, camera_id, "machine_stoppage", event_uuid="evt-5xx")
+
+                with patch("edge_agent.sync_outbox.httpx.post", side_effect=httpx.TimeoutException("timeout")):
+                    self.assertEqual(flush_sync_outbox(connection, "https://cloud.campex.test", EDGE_ID, EDGE_SECRET, limit=1), 0)
+                connection.execute("UPDATE sync_outbox SET next_attempt_at = '2999-01-01T00:00:00+00:00' WHERE event_uuid = ?", ("evt-timeout",))
+                connection.commit()
+
+                request = httpx.Request("POST", "https://cloud.campex.test/edge/events")
+                response = httpx.Response(503, request=request, text="temporarily unavailable")
+                with patch("edge_agent.sync_outbox.httpx.post", return_value=response):
+                    self.assertEqual(flush_sync_outbox(connection, "https://cloud.campex.test", EDGE_ID, EDGE_SECRET, limit=1), 0)
+
+                statuses = {
+                    row["event_uuid"]: row["status"]
+                    for row in connection.execute("SELECT event_uuid, status FROM sync_outbox WHERE event_uuid IN (?, ?)", ("evt-timeout", "evt-5xx")).fetchall()
+                }
+
+        self.assertEqual(statuses["evt-timeout"], "failed")
+        self.assertEqual(statuses["evt-5xx"], "failed")
+
+    def test_lost_ack_retry_is_idempotent_in_cloud_and_drains_outbox(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self.make_cloud_client(temp_dir)
+            db_path = Path(temp_dir) / "edge.sqlite3"
+            with edge_connect(db_path) as connection:
+                init_db(connection)
+                cliente_id = criar_cliente(connection, "FL Plasticos")
+                unidade_id = criar_unidade(connection, cliente_id, "Unidade")
+                camera_id = criar_camera(connection, unidade_id, "Camera", cliente_id=cliente_id)
+                self.register_edge(client, tenant_id=cliente_id, unidade_id=unidade_id)
+                registrar_evento(connection, cliente_id, unidade_id, camera_id, "machine_stoppage", event_uuid="evt-lost-ack")
+                payload = connection.execute("SELECT payload_json FROM sync_outbox WHERE event_uuid = ?", ("evt-lost-ack",)).fetchone()["payload_json"]
+
+                accepted = client.post(
+                    "/edge/events",
+                    json=__import__("json").loads(payload),
+                    headers={"X-Edge-Id": EDGE_ID, "X-Edge-Secret": EDGE_SECRET, "Idempotency-Key": "evt-lost-ack"},
+                )
+                self.assertEqual(accepted.status_code, 200)
+                self.assertEqual(pending_sync_count(connection), 1)
+
+                def local_post(url, json=None, headers=None, timeout=None):
+                    return httpx.Response(
+                        200,
+                        json=client.post("/edge/events", json=json, headers=headers).json(),
+                        request=httpx.Request("POST", url),
+                    )
+
+                with patch("edge_agent.sync_outbox.httpx.post", side_effect=local_post):
+                    synced = flush_sync_outbox(connection, "https://cloud.campex.test", EDGE_ID, EDGE_SECRET)
+                row = connection.execute("SELECT status FROM sync_outbox WHERE event_uuid = ?", ("evt-lost-ack",)).fetchone()
+                events = client.get("/eventos").json()
+
+        self.assertEqual(synced, 1)
+        self.assertEqual(row["status"], "synced")
+        self.assertEqual(len([item for item in events if item["event_uuid"] == "evt-lost-ack"]), 1)
+
+    def test_invalid_cloud_secret_keeps_outbox_unsynced(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self.make_cloud_client(temp_dir)
+            self.register_edge(client)
+            db_path = Path(temp_dir) / "edge.sqlite3"
+            with edge_connect(db_path) as connection:
+                init_db(connection)
+                cliente_id = criar_cliente(connection, "FL Plasticos")
+                unidade_id = criar_unidade(connection, cliente_id, "Unidade")
+                camera_id = criar_camera(connection, unidade_id, "Camera", cliente_id=cliente_id)
+                registrar_evento(connection, cliente_id, unidade_id, camera_id, "machine_stoppage", event_uuid="evt-invalid-secret")
+
+                def local_post(url, json=None, headers=None, timeout=None):
+                    return httpx.Response(
+                        401,
+                        json=client.post("/edge/events", json=json, headers=headers).json(),
+                        request=httpx.Request("POST", url),
+                    )
+
+                with patch("edge_agent.sync_outbox.httpx.post", side_effect=local_post):
+                    synced = flush_sync_outbox(connection, "https://cloud.campex.test", EDGE_ID, "wrong-secret")
+                row = connection.execute("SELECT status, attempts FROM sync_outbox WHERE event_uuid = ?", ("evt-invalid-secret",)).fetchone()
+
+        self.assertEqual(synced, 0)
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["attempts"], 1)
+
     def test_postgresql_url_detection(self) -> None:
         self.assertTrue(cloud_database.is_postgres_url("postgresql://user:pass@host/db"))
         self.assertTrue(cloud_database.is_postgres_url("postgres://user:pass@host/db"))
