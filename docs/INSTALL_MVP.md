@@ -9,7 +9,7 @@ Use esta documentação em vez de instruções históricas espalhadas pelo repos
 Requisitos:
 
 - Python 3.11 recomendado;
-- FFmpeg instalado;
+- FFmpeg recomendado para diagnósticos/replays, mas não é requisito crítico do runtime RC1: o pipeline atual usa OpenCV para captura e gravação de evidências/clipes;
 - acesso à rede local das câmeras/DVR/NVR;
 - navegador Chrome ou Edge;
 - arquivo `.env` local, nunca versionado.
@@ -20,15 +20,19 @@ No Windows:
 .\scripts\setup_factory_windows.ps1
 ```
 
-No Mac/Linux:
+No Mac/Linux, use o instalador idempotente oficial:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-python manage.py init-db
+python3 -m deployment.setup
 ```
+
+Para instalar também o serviço local quando o SO for suportado:
+
+```bash
+python3 -m deployment.setup --install-service
+```
+
+O setup pode ser executado novamente. Ele reutiliza `.venv`, preserva banco, evidências e configuração existente.
 
 ## 2. Configurar `.env`
 
@@ -73,7 +77,13 @@ Windows:
 Mac/Linux:
 
 ```bash
-CAMPEX_EDGE_ID=edge_cliente_01 API_HOST=0.0.0.0 API_PORT=8000 python manage.py run-edge-production
+python manage.py edge-service start
+```
+
+Para rodar em foreground durante instalação/validação:
+
+```bash
+python manage.py run-edge-production
 ```
 
 Abrir no computador:
@@ -189,9 +199,22 @@ python manage.py send-test-email --to "email@dominio.com"
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/ready
 curl http://127.0.0.1:8000/edge/status
+python -m deployment.doctor
 ```
 
 Antes de teste físico:
+
+```bash
+python -m deployment.preflight --profile local --api-url http://127.0.0.1:8000 --camera-timeout 5
+```
+
+Para piloto externo com Cloud obrigatória:
+
+```bash
+python -m deployment.preflight --profile external --api-url http://127.0.0.1:8000 --camera-timeout 5
+```
+
+Compatibilidade com o preflight histórico:
 
 ```bash
 CAMPEX_PREFLIGHT_EMAIL="admin@cliente.com" \
@@ -207,6 +230,37 @@ PRONTO PARA TESTE DE CAMPO
 ```
 
 ## 11. Restart E Recovery Básico
+
+Comandos oficiais mínimos no Mac/Linux:
+
+```bash
+# INSTALL
+python3 -m deployment.setup --install-service
+
+# START
+python manage.py edge-service start
+
+# STOP
+python manage.py edge-service stop
+
+# RESTART
+python manage.py edge-service restart
+
+# STATUS
+python manage.py edge-service status
+
+# DOCTOR
+python -m deployment.doctor
+
+# PREFLIGHT
+python -m deployment.preflight --profile local --api-url http://127.0.0.1:8000 --camera-timeout 5
+
+# PREFLIGHT EXTERNAL PILOT
+python -m deployment.preflight --profile external --api-url http://127.0.0.1:8000 --camera-timeout 5
+
+# LOGS
+python manage.py edge-service logs
+```
 
 Parar no Windows:
 
