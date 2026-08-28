@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import socket
 import sqlite3
 import sys
 import urllib.error
@@ -26,6 +27,8 @@ PASS = "PASS"
 FAIL = "FAIL"
 WARNING = "WARNING"
 NOT_CONFIGURED = "NOT CONFIGURED"
+NOT_VERIFIED = "NOT VERIFIED"
+BLOCKED = "BLOCKED"
 
 
 @dataclass(frozen=True)
@@ -101,14 +104,17 @@ def _service_state() -> tuple[bool, bool, str]:
     return installed, False, message
 
 
-def _stream_items(status_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not isinstance(status_payload, dict):
-        return []
-    cameras = status_payload.get("cameras")
-    if isinstance(cameras, list):
-        return [item for item in cameras if isinstance(item, dict)]
-    streams = ((status_payload.get("workers") or {}).get("streams") or [])
-    return [item for item in streams if isinstance(item, dict)]
+def _tcp_reachable(host: str, port: int, timeout: float) -> tuple[bool, str]:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, f"{host}:{port}"
+    except socket.timeout:
+        return False, f"CAMERA_HOST_UNREACHABLE: verificar rede/IP/porta ({host}:{port})"
+    except OSError as exc:
+        lowered = str(exc).lower()
+        if "refused" in lowered:
+            return False, f"RTSP_PORT_UNREACHABLE: verificar porta RTSP e firewall ({host}:{port})"
+        return False, f"CAMERA_HOST_UNREACHABLE: verificar rede/IP/porta ({host}:{port})"
 
 
 def run_doctor(
@@ -135,7 +141,6 @@ def run_doctor(
     add("API responding", PASS if health_code == 200 else FAIL, "" if health_code == 200 else (health_error or "API local indisponível"))
 
     ready_code, ready_payload, ready_error = _http_json(f"{base_url}/ready", timeout)
-    status_code, status_payload, status_error = _http_json(f"{base_url}/edge/status", timeout)
 
     try:
         validate_edge_config(db_path=database_path)
@@ -144,6 +149,9 @@ def run_doctor(
         add("Edge configuration", FAIL, str(exc))
 
     connection: sqlite3.Connection | None = None
+    camera_host: str | None = None
+    camera_port: int | None = None
+    camera_configured = False
     try:
         connection = connect(database_path)
         init_db(connection)
@@ -160,14 +168,31 @@ def run_doctor(
             add("Database writable", FAIL, str(exc))
 
         cameras_registered = connection.execute("SELECT COUNT(*) AS total FROM cameras WHERE ativa = 1").fetchone()["total"]
-        add("Camera registered", PASS if cameras_registered else FAIL, f"{cameras_registered} ativa(s)")
+        row = connection.execute(
+            """
+            SELECT rtsp_host, rtsp_port, config_ref, source_type
+            FROM cameras
+            WHERE ativa = 1
+            ORDER BY criado_em DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if row:
+            camera_configured = True
+            camera_host = row["rtsp_host"]
+            camera_port = int(row["rtsp_port"] or 554)
+        add("Camera configured", PASS if camera_configured else FAIL, f"{cameras_registered} ativa(s)")
 
         monitors = connection.execute("SELECT COUNT(*) AS total FROM machine_monitors WHERE ativo = 1").fetchone()["total"]
         monitors_ready = connection.execute(
             "SELECT COUNT(*) AS total FROM machine_monitors WHERE ativo = 1 AND calibration_result = 'READY'"
         ).fetchone()["total"]
         add("Machine monitor configured", PASS if monitors else FAIL, f"{monitors} ativo(s)")
-        add("Machine monitor loaded/calibrated", PASS if monitors_ready else FAIL, "calibração ausente" if monitors and not monitors_ready else f"{monitors_ready} READY")
+        add(
+            "Machine monitor loaded/calibrated",
+            PASS if monitors_ready else FAIL,
+            "calibração ausente; calibrar monitor antes do preflight" if monitors and not monitors_ready else f"{monitors_ready} READY",
+        )
 
         outbox_pending = connection.execute("SELECT COUNT(*) AS total FROM sync_outbox WHERE status IN ('pending', 'failed')").fetchone()["total"]
         add("Outbox", PASS if outbox_pending == 0 else WARNING, f"{outbox_pending} pending", required=False)
@@ -195,23 +220,32 @@ def run_doctor(
     except OSError as exc:
         add("Evidence storage", FAIL, str(exc))
 
-    streams = _stream_items(status_payload)
-    frame_recent = any(_recent(item.get("last_frame_at") or item.get("ultimo_frame"), frame_max_age_seconds) for item in streams)
-    stream_online = any(str(item.get("status") or item.get("camera_online") or "").lower() in {"online", "true", "ready"} for item in streams)
-    add("RTSP/network reachability", PASS if stream_online or frame_recent else FAIL, status_error or "sem stream online")
-    add("Frame freshness", PASS if frame_recent else FAIL, "sem frame recente")
+    stream_ready = isinstance(ready_payload, dict) and ready_payload.get("camera_stream") == "ready"
+    inference_ready = isinstance(ready_payload, dict) and ready_payload.get("inference") == "ready"
+    if not camera_configured:
+        add("Camera/RTSP network", BLOCKED, "câmera não configurada")
+        rtsp_network_ready = False
+    elif camera_host:
+        rtsp_network_ready, rtsp_detail = _tcp_reachable(camera_host, camera_port or 554, timeout)
+        add("Camera/RTSP network", PASS if rtsp_network_ready else FAIL, rtsp_detail)
+    else:
+        rtsp_network_ready = stream_ready
+        add("Camera/RTSP network", PASS if stream_ready else WARNING, "host RTSP não cadastrado; usando /ready", required=False)
+    add("RTSP credentials", PASS if stream_ready else NOT_VERIFIED, "não verificado diretamente; frames reais validam credencial", required=False)
 
-    inference_ready = False
-    for item in streams:
-        fps = float(item.get("analysis_fps") or item.get("inference_fps") or 0)
-        frames = int(item.get("analysis_frames") or item.get("frames_analyzed") or item.get("frames_processados") or 0)
-        last = item.get("last_analysis_at") or item.get("last_inference_at")
-        if fps > 0 or frames > 0 or _recent(last, frame_max_age_seconds):
-            inference_ready = True
-            break
-    if isinstance(ready_payload, dict) and ready_payload.get("inference") == "ready":
-        inference_ready = True
-    add("Inference status", PASS if inference_ready else FAIL, ready_error or "inferência sem processamento recente")
+    if stream_ready:
+        add("Frame freshness", PASS)
+    elif not rtsp_network_ready:
+        add("Frame freshness", BLOCKED, "câmera/porta indisponível")
+    else:
+        add("Frame freshness", FAIL, "porta RTSP acessível, mas /ready ainda não confirma frame recente")
+
+    if inference_ready:
+        add("Inference status", PASS)
+    elif not stream_ready:
+        add("Inference status", BLOCKED, "sem frame recente")
+    else:
+        add("Inference status", FAIL, ready_error or "stream pronto, mas inferência não está pronta em /ready")
 
     cloud_url = os.getenv("CAMPEX_CLOUD_URL")
     edge_secret = os.getenv("CAMPEX_EDGE_SECRET")
@@ -228,11 +262,13 @@ def run_doctor(
         add(
             "Cloud configuration",
             NOT_CONFIGURED if not cloud_required else FAIL,
-            "CAMPEX_CLOUD_URL/CAMPEX_EDGE_SECRET ausentes",
+            "CAMPEX_CLOUD_URL/CAMPEX_EDGE_SECRET ausentes; configurar Cloud URL e Edge secret",
             required=cloud_required,
         )
 
-    if ready_code == 200 and isinstance(ready_payload, dict):
+    if ready_code in {401, 403}:
+        add("Readiness final", FAIL, "READY_ENDPOINT_AUTH_ERROR: /ready deveria estar acessível localmente")
+    elif ready_code == 200 and isinstance(ready_payload, dict):
         add("Readiness final", PASS if ready_payload.get("status") == "ready" else FAIL, str(ready_payload.get("status") or "not_ready"))
     else:
         add("Readiness final", FAIL, ready_error or "não foi possível consultar /ready")

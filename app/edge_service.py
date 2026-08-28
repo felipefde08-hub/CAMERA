@@ -4,10 +4,13 @@ import os
 import plistlib
 import shutil
 import subprocess
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.config import ROOT
+from app.config import API_PORT, ROOT
 from app.edge_config import EdgeConfigError, validate_edge_config
 
 
@@ -42,6 +45,24 @@ def _run_launchctl(args: list[str]) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         check=False,
     )
+
+
+def _wait_for_api_health(timeout_seconds: float = 15.0, interval_seconds: float = 0.5) -> tuple[bool, str]:
+    deadline = time.monotonic() + timeout_seconds
+    url = f"http://127.0.0.1:{API_PORT}/health"
+    last_error = "API ainda não respondeu."
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=min(interval_seconds, 1.0)) as response:
+                if response.status == 200:
+                    return True, f"API pronta em {url}"
+                last_error = f"HTTP {response.status}"
+        except urllib.error.HTTPError as exc:
+            last_error = f"HTTP {exc.code}"
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(interval_seconds)
+    return False, f"timeout aguardando /health em {url}: {last_error}"
 
 
 def _ensure_service_files() -> None:
@@ -87,7 +108,10 @@ def start_service() -> EdgeServiceResult:
     kickstart = _run_launchctl(["kickstart", "-k", f"{user_domain}/{LABEL}"])
     if kickstart.returncode != 0:
         return EdgeServiceResult(False, kickstart.stderr.strip() or kickstart.stdout.strip() or "Falha ao iniciar serviço.")
-    return EdgeServiceResult(True, "Serviço Campex Edge iniciado.")
+    api_ready, api_detail = _wait_for_api_health()
+    if not api_ready:
+        return EdgeServiceResult(False, f"Serviço carregado, mas API não ficou pronta: {api_detail}")
+    return EdgeServiceResult(True, f"Serviço Campex Edge iniciado. {api_detail}.")
 
 
 def stop_service() -> EdgeServiceResult:

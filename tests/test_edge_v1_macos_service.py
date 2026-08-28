@@ -80,6 +80,7 @@ def test_start_service_uses_launchctl_without_printing_secrets(tmp_path: Path, m
         return subprocess.CompletedProcess(args=["launchctl", *args], returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("app.edge_service._run_launchctl", fake_run)
+    monkeypatch.setattr("app.edge_service._wait_for_api_health", lambda: (True, "API pronta em http://127.0.0.1:8000/health"))
 
     result = start_service()
 
@@ -87,6 +88,24 @@ def test_start_service_uses_launchctl_without_printing_secrets(tmp_path: Path, m
     assert calls[0][:2] == ["bootstrap", f"gui/{__import__('os').getuid()}"]
     assert calls[1] == ["kickstart", "-k", f"gui/{__import__('os').getuid()}/{LABEL}"]
     assert "CAMPEX_CREDENTIAL_KEY" not in result.message
+    assert "API pronta" in result.message
+
+
+def test_start_service_reports_clean_timeout_when_api_does_not_become_ready(tmp_path: Path, monkeypatch) -> None:
+    plist_path = tmp_path / f"{LABEL}.plist"
+    plist_path.write_text(render_plist(ROOT), encoding="utf-8")
+    monkeypatch.setattr("app.edge_service.PLIST_PATH", plist_path)
+    monkeypatch.setattr(
+        "app.edge_service._run_launchctl",
+        lambda args: subprocess.CompletedProcess(args=["launchctl", *args], returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr("app.edge_service._wait_for_api_health", lambda: (False, "timeout aguardando /health"))
+
+    result = start_service()
+
+    assert not result.ok
+    assert "Serviço carregado, mas API não ficou pronta" in result.message
+    assert "timeout aguardando /health" in result.message
 
 
 def test_edge_service_commands_dispatch_status(monkeypatch) -> None:

@@ -4,12 +4,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from app.api import api
 from app.database import connect, init_db
 from app.edge_pilot_check import PilotCheckReport
 from app.models import criar_camera, criar_cliente, criar_machine_monitor, criar_unidade, registrar_edge_heartbeat
 from edge_agent.sync_outbox import enqueue_sync_event
-from deployment.doctor import FAIL, NOT_CONFIGURED, PASS, WARNING, format_doctor, main as doctor_main, run_doctor
+from deployment.doctor import BLOCKED, FAIL, NOT_CONFIGURED, NOT_VERIFIED, PASS, WARNING, format_doctor, main as doctor_main, run_doctor
 from deployment.preflight import main as preflight_main
 from deployment.setup import PASS as SETUP_PASS, WARNING as SETUP_WARNING, run_setup
 
@@ -75,24 +77,16 @@ def _ready_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, monitor: bool 
 def _patch_ready_runtime(monkeypatch: pytest.MonkeyPatch, *, camera: bool = True, inference: bool = True) -> None:
     monkeypatch.setattr("deployment.doctor.PLIST_PATH", Path("/tmp/com.campex.edge.plist"))
     monkeypatch.setattr("deployment.doctor.service_status", lambda: type("R", (), {"ok": True, "message": "state = running\npid = 123"})())
+    monkeypatch.setattr("deployment.doctor._tcp_reachable", lambda host, port, timeout: (camera, f"{host}:{port}" if camera else "CAMERA_HOST_UNREACHABLE: verificar rede/IP/porta"))
 
     def fake_http(url: str, _timeout: float):
         if url.endswith("/health"):
             return 200, {"status": "ok"}, None
         if url.endswith("/ready"):
-            return 200, {"status": "ready" if camera and inference else "not_ready", "inference": "ready" if inference else "not_ready"}, None
-        if url.endswith("/edge/status"):
             return 200, {
-                "cameras": [
-                    {
-                        "id": "cam_1",
-                        "status": "online" if camera else "offline",
-                        "last_frame_at": _now_iso() if camera else None,
-                        "inference_fps": 4.0 if inference else 0,
-                        "last_inference_at": _now_iso() if inference else None,
-                        "frames_analyzed": 50 if inference else 0,
-                    }
-                ]
+                "status": "ready" if camera and inference else "not_ready",
+                "camera_stream": "ready" if camera else "not_ready",
+                "inference": "ready" if inference else "not_ready",
             }, None
         return 0, None, "unexpected"
 
@@ -153,7 +147,7 @@ def test_doctor_reports_camera_unavailable(tmp_path: Path, monkeypatch: pytest.M
     report = run_doctor(db_path=db_path, min_free_gb=0)
 
     assert report.exit_code == 1
-    assert _status(report, "Frame freshness") == FAIL
+    assert _status(report, "Frame freshness") == BLOCKED
     assert report.result == "NOT READY"
 
 
@@ -176,6 +170,76 @@ def test_doctor_reports_outbox_backlog_as_warning(tmp_path: Path, monkeypatch: p
 
     assert _status(report, "Outbox") == WARNING
     assert report.exit_code == 0
+
+
+def test_doctor_does_not_classify_local_api_401_as_rtsp_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = _ready_db(tmp_path, monkeypatch)
+    monkeypatch.setattr("deployment.doctor.PLIST_PATH", Path("/tmp/com.campex.edge.plist"))
+    monkeypatch.setattr("deployment.doctor.service_status", lambda: type("R", (), {"ok": True, "message": "state = running\npid = 123"})())
+    monkeypatch.setattr("deployment.doctor._tcp_reachable", lambda host, port, timeout: (True, f"{host}:{port}"))
+
+    def fake_http(url: str, _timeout: float):
+        if url.endswith("/health"):
+            return 200, {"status": "ok"}, None
+        if url.endswith("/ready"):
+            return 200, {"status": "not_ready", "camera_stream": "not_ready", "inference": "not_ready"}, None
+        if url.endswith("/edge/status"):
+            raise AssertionError("Doctor must not require protected /edge/status")
+        return 0, None, "unexpected"
+
+    monkeypatch.setattr("deployment.doctor._http_json", fake_http)
+
+    output = format_doctor(run_doctor(db_path=db_path, min_free_gb=0))
+
+    assert "Camera/RTSP network" in output
+    assert "API_AUTH_ERROR" not in output
+    assert "RTSP_AUTH_FAILED" not in output
+    assert "Unauthorized" not in output
+
+
+def test_edge_status_remains_protected_while_doctor_uses_local_readiness() -> None:
+    response = TestClient(api).get("/edge/status")
+
+    assert response.status_code == 401
+
+
+def test_doctor_blocks_dependent_checks_when_camera_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = _ready_db(tmp_path, monkeypatch)
+    _patch_ready_runtime(monkeypatch, camera=False, inference=False)
+
+    report = run_doctor(db_path=db_path, min_free_gb=0)
+
+    assert _status(report, "Camera/RTSP network") == FAIL
+    assert _status(report, "Frame freshness") == BLOCKED
+    assert _status(report, "Inference status") == BLOCKED
+
+
+def test_doctor_open_rtsp_port_is_network_pass_not_auth_verification(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = _ready_db(tmp_path, monkeypatch)
+    monkeypatch.setattr("deployment.doctor.PLIST_PATH", Path("/tmp/com.campex.edge.plist"))
+    monkeypatch.setattr("deployment.doctor.service_status", lambda: type("R", (), {"ok": True, "message": "state = running\npid = 123"})())
+    monkeypatch.setattr("deployment.doctor._tcp_reachable", lambda host, port, timeout: (True, f"{host}:{port}"))
+
+    def fake_http(url: str, _timeout: float):
+        if url.endswith("/health"):
+            return 200, {"status": "ok"}, None
+        if url.endswith("/ready"):
+            return 200, {"status": "not_ready", "inference": "not_ready"}, None
+        if url.endswith("/edge/status"):
+            raise AssertionError("Doctor must not require protected /edge/status")
+        return 0, None, "unexpected"
+
+    monkeypatch.setattr("deployment.doctor._http_json", fake_http)
+
+    report = run_doctor(db_path=db_path, min_free_gb=0)
+    output = format_doctor(report)
+
+    assert "Camera/RTSP network" in output
+    assert "PASS" in output
+    assert "RTSP credentials" in output
+    assert _status(report, "RTSP credentials") == NOT_VERIFIED
+    assert "NOT VERIFIED" in output
+    assert "RTSP_AUTH_FAILED" not in output
 
 
 def test_doctor_reports_cloud_not_configured_without_blocking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
