@@ -3,6 +3,12 @@ const shellState = {
   lastFocused: null,
   user: null,
   authenticated: false,
+  workspace: {
+    organization: null,
+    activeUnit: null,
+    activeUnitId: null,
+    units: [],
+  },
 };
 
 function normalizeCampexLocalHost() {
@@ -369,6 +375,7 @@ function popoverItem(item) {
   const icon = item.icon ? `<span class="cx-nav-icon" data-icon="${sanitize(item.icon)}"></span>` : "";
   const attrs = [
     item.action ? `data-popover-action="${sanitize(item.action)}"` : "",
+    item.unitId ? `data-unit-id="${sanitize(item.unitId)}"` : "",
     item.href ? `href="${sanitize(item.href)}"` : "",
     item.disabled ? "aria-disabled=\"true\"" : "",
   ].filter(Boolean).join(" ");
@@ -442,6 +449,23 @@ function updateIdentity(auth) {
   });
   document.querySelectorAll(".cx-profile-trigger").forEach((node) => {
     node.setAttribute("aria-label", shellState.authenticated ? `Conta de ${displayName}` : "Entrar na Campex");
+  });
+}
+
+function updateWorkspaceSwitcher() {
+  const workspace = shellState.workspace || {};
+  const organization = workspace.organization || {};
+  const unit = workspace.activeUnit || {};
+  const organizationLabel = organization.nome || organization.name || organizationName();
+  const unitLabel = unit.nome || unit.name || "Unidade principal";
+  document.querySelectorAll(".cx-workspace-switcher").forEach((switcher) => {
+    switcher.title = `${organizationLabel} · ${unitLabel}`;
+    const initials = switcher.querySelector(".cx-workspace-initials");
+    const strong = switcher.querySelector(".cx-workspace-copy strong");
+    const small = switcher.querySelector(".cx-workspace-copy small");
+    if (initials) initials.textContent = initialsFrom(organizationLabel, "CP");
+    if (strong) strong.textContent = organizationLabel;
+    if (small) small.textContent = unitLabel;
   });
 }
 
@@ -528,6 +552,10 @@ function setupGlobalButtons() {
       if (action === "account") {
         openAccountPanel();
       }
+      if (action === "select-unit") {
+        window.dispatchEvent(new CustomEvent("campex:set-active-unit", { detail: { unitId: popoverAction.dataset.unitId } }));
+        closePopover();
+      }
       if (action === "copy-location") {
         navigator.clipboard?.writeText(window.location.href).catch(() => {});
         closePopover();
@@ -573,8 +601,27 @@ function setupGlobalButtons() {
 
     const workspaceSwitcher = event.target.closest(".cx-workspace-switcher");
     if (workspaceSwitcher) {
-      const currentWorkspace = workspaceSwitcher.getAttribute("title") || "Cliente piloto · Unidade principal";
-      openPopover(workspaceSwitcher, "Organização", [currentWorkspace, { label: "Configurar organização", href: "/settings/cameras", icon: "settings" }]);
+      const workspace = shellState.workspace || {};
+      const organization = workspace.organization || {};
+      const units = Array.isArray(workspace.units) ? workspace.units : [];
+      const activeUnitId = workspace.activeUnitId || workspace.activeUnit?.id;
+      const organizationLabel = organization.nome || organization.name || organizationName();
+      const activeUnitLabel = workspace.activeUnit?.nome || workspace.activeUnit?.name || "Unidade principal";
+      const unitItems = units.length
+        ? units.map((unit) => ({
+            label: `${unit.id === activeUnitId ? "✓ " : ""}${unit.nome || unit.name || "Unidade sem nome"}`,
+            action: "select-unit",
+            unitId: unit.id,
+            icon: "integrations",
+          }))
+        : ["Nenhuma unidade acessível carregada."];
+      openPopover(workspaceSwitcher, "Unidade ativa", [
+        `${organizationLabel} · ${activeUnitLabel}`,
+        { type: "divider" },
+        ...unitItems,
+        { type: "divider" },
+        { label: "Configurar unidades", href: "/settings/cameras#unidades", icon: "settings" },
+      ]);
       return;
     }
 
@@ -587,6 +634,11 @@ function setupGlobalButtons() {
     if (shellState.popover && !event.target.closest(".cx-popover")) closePopover();
   });
 }
+
+window.addEventListener("campex:workspace-context", (event) => {
+  shellState.workspace = event.detail || shellState.workspace;
+  updateWorkspaceSwitcher();
+});
 
 function setupKeyboard() {
   document.addEventListener("keydown", (event) => {

@@ -166,6 +166,8 @@ let knownRecipients = [];
 let knownUsers = [];
 let currentAuthUser = null;
 let latestSystemHealth = null;
+let activeUnitId = null;
+const ACTIVE_UNIT_STORAGE_KEY = "campex_active_unit_id";
 let setupOperation = {
   areas: [],
   processes: [],
@@ -177,6 +179,80 @@ let setupOperation = {
 };
 
 stripSensitiveQueryString();
+
+function currentClient() {
+  return knownClients[0] || null;
+}
+
+function unitBelongsToCurrentClient(unit) {
+  const client = currentClient();
+  return Boolean(unit && (!client || unit.cliente_id === client.id));
+}
+
+function storedActiveUnitId() {
+  try {
+    return localStorage.getItem(ACTIVE_UNIT_STORAGE_KEY);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function persistActiveUnitId(unitId) {
+  try {
+    if (unitId) localStorage.setItem(ACTIVE_UNIT_STORAGE_KEY, unitId);
+    else localStorage.removeItem(ACTIVE_UNIT_STORAGE_KEY);
+  } catch (_error) {
+    // Browser storage is optional; the active unit still works in memory.
+  }
+}
+
+function activeUnit() {
+  return knownUnits.find((unit) => unit.id === activeUnitId && unitBelongsToCurrentClient(unit)) || null;
+}
+
+function resolveActiveUnit() {
+  const stored = storedActiveUnitId();
+  const validUnits = knownUnits.filter(unitBelongsToCurrentClient);
+  const selected = validUnits.find((unit) => unit.id === activeUnitId)
+    || validUnits.find((unit) => unit.id === stored)
+    || validUnits[0]
+    || null;
+  activeUnitId = selected?.id || null;
+  persistActiveUnitId(activeUnitId);
+  return selected;
+}
+
+function setActiveUnit(unitId) {
+  const unit = knownUnits.find((item) => item.id === unitId && unitBelongsToCurrentClient(item));
+  if (!unit) return;
+  activeUnitId = unit.id;
+  persistActiveUnitId(activeUnitId);
+  publishWorkspaceContext();
+  renderSettingsOverview();
+  renderSetupJourney();
+}
+
+function publishWorkspaceContext() {
+  const client = currentClient();
+  const unit = activeUnit() || resolveActiveUnit();
+  window.dispatchEvent(new CustomEvent("campex:workspace-context", {
+    detail: {
+      organization: client ? { id: client.id, nome: client.nome, status: client.status } : null,
+      activeUnitId,
+      activeUnit: unit ? { id: unit.id, nome: unit.nome, localizacao: unit.localizacao, timezone: unit.timezone } : null,
+      units: knownUnits.filter(unitBelongsToCurrentClient).map((item) => ({
+        id: item.id,
+        nome: item.nome,
+        localizacao: item.localizacao,
+        timezone: item.timezone,
+      })),
+    },
+  }));
+}
+
+window.addEventListener("campex:set-active-unit", (event) => {
+  setActiveUnit(event.detail?.unitId);
+});
 
 function stripSensitiveQueryString() {
   const sensitiveKeys = [
@@ -347,8 +423,8 @@ function initialsFromText(value) {
 }
 
 function renderSettingsOverview() {
-  const client = knownClients[0];
-  const unit = knownUnits[0];
+  const client = currentClient();
+  const unit = activeUnit() || resolveActiveUnit();
   const activeUsers = knownUsers.filter((user) => user.ativo !== false);
   const activeRecipients = knownRecipients.filter((recipient) => recipient.ativo !== false);
   const activeCameras = knownCameras.filter((camera) => camera.ativa !== false);
@@ -425,6 +501,7 @@ function renderSettingsOverview() {
 
   if (workspaceName) workspaceName.textContent = client?.nome || "Cliente piloto";
   if (workspaceUnit) workspaceUnit.textContent = unit?.nome || "Unidade principal";
+  publishWorkspaceContext();
 }
 
 function fillSetupSelects() {
@@ -435,6 +512,13 @@ function fillSetupSelects() {
   fillSelect(setupProcessAreaSelect, setupOperation.areas, "Selecione a área");
   fillSelect(setupAssetProcessSelect, setupOperation.processes, "Selecione o processo");
   fillSelect(setupContextAssetSelect, setupOperation.assets, "Selecione o ativo");
+  const client = currentClient();
+  if (setupUnitClientSelect && client?.id) setupUnitClientSelect.value = client.id;
+  if (unitClientSelect && client?.id) unitClientSelect.value = client.id;
+  if (userClientSelect && client?.id) userClientSelect.value = client.id;
+  if (setupAreaUnitSelect && activeUnitId && Array.from(setupAreaUnitSelect.options).some((option) => option.value === activeUnitId)) {
+    setupAreaUnitSelect.value = activeUnitId;
+  }
 }
 
 function contextForProcess(processId) {
@@ -560,8 +644,8 @@ function renderSetupReadinessConclusion(checks) {
 
 function renderSetupJourney() {
   if (setupCompanySummary) {
-    const client = knownClients[0];
-    const unit = knownUnits[0];
+    const client = currentClient();
+    const unit = activeUnit() || resolveActiveUnit();
     setupCompanySummary.innerHTML = client && unit
       ? `<article class="setup-summary-row"><strong>${safeText(client.nome)}</strong><span>${safeText(unit.nome)} · ${safeText(unit.timezone || "America/Sao_Paulo")}</span><a href="#cliente">Editar</a></article>`
       : '<div class="muted">Crie empresa e unidade no First Run ou na criação adicional abaixo.</div>';
@@ -600,6 +684,7 @@ async function loadSetupOperation() {
     setupOperation = await requestJson("/setup/operation");
     knownClients = setupOperation.clientes || knownClients;
     knownUnits = setupOperation.unidades || knownUnits;
+    resolveActiveUnit();
     knownCameras = setupOperation.cameras || knownCameras;
     fillSetupSelects();
     renderSetupHierarchy();
@@ -740,6 +825,13 @@ function toggleLoginPassword() {
 
 function openOrganizationEditor() {
   if (!organizationDialog) return;
+  const client = currentClient();
+  if (clientForm && client) {
+    const nome = clientForm.querySelector("input[name='nome']");
+    const documento = clientForm.querySelector("input[name='documento']");
+    if (nome) nome.value = client.nome || "";
+    if (documento) documento.value = client.documento || "";
+  }
   if (typeof organizationDialog.showModal === "function") {
     organizationDialog.showModal();
   } else {
@@ -1075,9 +1167,13 @@ async function loadConfigData() {
   knownClients = clients;
   knownUnits = units;
   knownUsers = users;
+  resolveActiveUnit();
   fillSelect(unitClientSelect, clients, "Organização padrão ou selecione");
   fillSelect(userClientSelect, clients, "Organização padrão ou selecione");
   fillSelect(cameraUnitSelect, units, "Usar unidade padrão");
+  if (cameraUnitSelect && activeUnitId && Array.from(cameraUnitSelect.options).some((option) => option.value === activeUnitId)) {
+    cameraUnitSelect.value = activeUnitId;
+  }
   fillSetupSelects();
   clientList.innerHTML = clients.length ? clients.map((client) => `
     <article class="compact-card cx-setup-list-row">
@@ -1341,11 +1437,14 @@ async function loadMachineConfigList() {
 
 async function saveClient(event) {
   event.preventDefault();
-  await requestJson("/clientes", {
-    method: "POST",
+  const client = currentClient();
+  if (!client?.id) {
+    throw new Error("Nenhuma organização atual foi carregada para edição.");
+  }
+  await requestJson(`/clientes/${encodeURIComponent(client.id)}`, {
+    method: "PATCH",
     body: JSON.stringify(formPayload(clientForm)),
   });
-  clientForm.reset();
   await loadConfigData();
   closeOrganizationEditor();
 }

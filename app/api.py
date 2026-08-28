@@ -176,6 +176,12 @@ class ClienteIn(BaseModel):
     status: str = "ativo"
 
 
+class ClienteUpdateIn(BaseModel):
+    nome: Optional[str] = None
+    documento: Optional[str] = None
+    status: Optional[str] = None
+
+
 class UnidadeIn(BaseModel):
     cliente_id: Optional[str] = None
     nome: str
@@ -1395,6 +1401,42 @@ def post_cliente(payload: ClienteIn, request: Request) -> dict[str, Any]:
         if user["role"] != "admin_campex" and user.get("cliente_id"):
             raise HTTPException(status_code=403, detail="Somente admin Campex cria novos clientes.")
         cliente_id = criar_cliente(connection, payload.nome, payload.status, payload.documento)
+        return listar_por_cliente(connection, "clientes", cliente_id)[0]
+
+
+@api.patch("/clientes/{cliente_id}")
+def patch_cliente(cliente_id: str, payload: ClienteUpdateIn, request: Request) -> dict[str, Any]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+        require_same_tenant(user, cliente_id, "Empresa de outro cliente.")
+
+        current = connection.execute("SELECT * FROM clientes WHERE id = ?", (cliente_id,)).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="Empresa não encontrada.")
+
+        nome = payload.nome.strip() if payload.nome is not None else current["nome"]
+        documento = payload.documento if payload.documento is not None else current["documento"]
+        status_value = payload.status.strip() if payload.status is not None else current["status"]
+        if not nome:
+            raise HTTPException(status_code=400, detail="Nome da organização é obrigatório.")
+        if not status_value:
+            raise HTTPException(status_code=400, detail="Status da organização é obrigatório.")
+
+        connection.execute(
+            "UPDATE clientes SET nome = ?, documento = ?, status = ? WHERE id = ?",
+            (nome, documento, status_value, cliente_id),
+        )
+        registrar_audit_log(
+            connection,
+            action="cliente.update",
+            actor=user,
+            entity_type="cliente",
+            entity_id=cliente_id,
+            tenant_id=cliente_id,
+            metadata={"fields": [field for field in ("nome", "documento", "status") if getattr(payload, field) is not None]},
+        )
         return listar_por_cliente(connection, "clientes", cliente_id)[0]
 
 
