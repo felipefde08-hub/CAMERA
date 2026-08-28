@@ -494,3 +494,48 @@ class LiveStreamStage2Test(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_camera_offline_invalidates_visual_operational_truth():
+    """Offline must mean UNKNOWN, never operator absence."""
+    from unittest.mock import MagicMock
+
+    from app.live_stream import LiveCameraStream
+
+    stream = LiveCameraStream("cam_p0_offline", "rtsp://invalid")
+
+    fake_machine = MagicMock()
+    stream._machine_engines = {"machine_1": fake_machine}
+    stream._incident_manager = MagicMock()
+    stream._people_zones = MagicMock()
+
+    stream.status.machine_state = "ACTIVE"
+    stream.status.machine_operator_present = False
+    stream.status.machine_event_id = "evt_machine"
+    stream.status.machine_seconds_in_state = 120
+    stream.status.active_zone_events = [
+        {
+            "event_type": "workstation_unattended",
+            "event_id": "evt_absence",
+        }
+    ]
+    stream.status.incident_active = True
+    stream.status.incident_id = "evt_absence"
+    stream.status.incident_started_at = "2026-08-28T12:00:00-03:00"
+    stream.status.incident_people = 0
+    stream.status.observation = {"operator_present": False}
+
+    stream._invalidate_operational_state_for_offline()
+
+    fake_machine.close_interrupted.assert_called_once()
+    stream._incident_manager.close_interrupted.assert_called_once()
+    stream._people_zones.close_interrupted.assert_called_once()
+
+    assert stream.status.machine_state == "unavailable"
+    assert stream.status.machine_operator_present is None
+    assert stream.status.machine_event_id is None
+    assert stream.status.machine_seconds_in_state is None
+    assert stream.status.active_zone_events == []
+    assert stream.status.incident_active is False
+    assert stream.status.incident_id is None
+    assert stream.status.incident_started_at is None
+    assert stream.status.observation == {}

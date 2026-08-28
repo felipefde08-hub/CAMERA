@@ -608,6 +608,7 @@ function operatorLabel(ops) {
     return "Dados indisponíveis";
   }
   if (!hasOperatorContext(ops)) return "Indeterminado";
+  if (ops.operator_present == null) return "Indeterminado";
   if (ops.operator_present) return `Presente${ops.operator_people_count ? ` (${ops.operator_people_count})` : ""}`;
   return "Ausente";
 }
@@ -649,6 +650,13 @@ function updateMonitorConfigCard() {
 }
 
 function updateActiveZoneAlert(payload) {
+  const runtimeStatus = String(payload?.status || currentPayload?.status || "offline").toLowerCase();
+
+  if (runtimeStatus !== "online") {
+    liveCriticalAlert.hidden = true;
+    return;
+  }
+
   const activeEvents = (payload.active_zone_events || []).concat(payload.ops?.active_zone_events || []);
   const zones = (payload.zones || []).concat(payload.ops?.zones || []);
   const active = activeEvents.find((event) => event.event_type === "workstation_unattended");

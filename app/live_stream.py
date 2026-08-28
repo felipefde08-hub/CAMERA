@@ -69,7 +69,7 @@ class LiveStreamStatus:
     machine_state: str = "unavailable"
     machine_motion: float | None = None
     machine_threshold: float | None = None
-    machine_operator_present: bool = False
+    machine_operator_present: bool | None = None
     machine_event_id: str | None = None
     machine_monitor_id: str | None = None
     machine_monitor_error: str | None = None
@@ -859,7 +859,7 @@ class LiveCameraStream:
                 "width": status.get("machine_roi_width"),
                 "height": status.get("machine_roi_height"),
             },
-            "operator_present": bool(status.get("machine_operator_present")),
+            "operator_present": status.get("machine_operator_present"),
             "operator_people_count": 1 if status.get("machine_operator_present") else 0,
             "people_count": int(status.get("people_count") or 0),
             "visual_confidence": status.get("machine_confidence") or (status.get("observation") or {}).get("machine_confidence") or 0,
@@ -963,6 +963,37 @@ class LiveCameraStream:
                     self.status.analysis_error = str(exc)
         return output
 
+    def _invalidate_operational_state_for_offline(self) -> None:
+        """Camera loss means UNKNOWN, never operator absence."""
+        for engine in list(self._machine_engines.values()):
+            try:
+                engine.close_interrupted()
+            except Exception:
+                pass
+
+        try:
+            self._incident_manager.close_interrupted()
+        except Exception:
+            pass
+
+        try:
+            self._people_zones.close_interrupted()
+        except Exception:
+            pass
+
+        with self._lock:
+            self.status.machine_state = "unavailable"
+            self.status.machine_operator_present = None
+            self.status.machine_event_id = None
+            self.status.machine_seconds_in_state = None
+            self.status.active_zone_events = []
+            self.status.incident_active = False
+            self.status.incident_id = None
+            self.status.incident_started_at = None
+            self.status.incident_duration = None
+            self.status.incident_people = 0
+            self.status.observation = {}
+
     def _run(self) -> None:
         self._analysis_worker_stop.clear()
         reconnect_delay = 1.0
@@ -978,6 +1009,7 @@ class LiveCameraStream:
                         self.status.status = "reconectando"
                         self.status.error = connector.info.error
                     self.status.reconnect_attempts += 1
+                    self._invalidate_operational_state_for_offline()
                     self._operations_recorder.update_status("offline", self._official_ops_state())
                     self._rule_runtime.camera_status("offline", self._last_raw_frame)
                     self._stop_event.wait(reconnect_delay)
@@ -1004,6 +1036,7 @@ class LiveCameraStream:
                             self.status.status = "reconectando"
                             self.status.error = "Stream parou de entregar frames."
                             self.status.reconnect_attempts += 1
+                        self._invalidate_operational_state_for_offline()
                         self._operations_recorder.update_status("offline", self._official_ops_state())
                         self._rule_runtime.camera_status("offline", self._last_raw_frame)
                         break

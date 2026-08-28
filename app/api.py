@@ -2160,7 +2160,7 @@ def live_view_official_ops(session: dict[str, object] | None, stream) -> dict[st
             "width": status.get("machine_roi_width"),
             "height": status.get("machine_roi_height"),
         },
-        "operator_present": status.get("machine_operator_present", False),
+        "operator_present": status.get("machine_operator_present"),
         "operator_people_count": 1 if status.get("machine_operator_present") else 0,
         "zones": status.get("zones") or [],
         "active_zone_events": status.get("active_zone_events") or [],

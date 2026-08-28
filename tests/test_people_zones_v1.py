@@ -191,7 +191,7 @@ class PeopleZonesV1Test(unittest.TestCase):
         self.assertTrue(events[0]["midia_path"])
         self.assertIsNotNone(outbox)
         self.assertIn("workstation_unattended", outbox["payload_json"])
-        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(len(deliveries), 0)  # delivery direto removido; Alert Decisioning é responsável pelo envio
         self.assertEqual(closed[0]["status"], "closed")
         self.assertIsNotNone(closed[0]["fim"])
         self.assertGreaterEqual(float(closed[0]["duracao"] or 0), 0)
@@ -384,8 +384,7 @@ class PeopleZonesV1Test(unittest.TestCase):
         self.assertGreater(float(events[0]["duracao"] or 0), 0)
         self.assertTrue(events[0]["midia_path"])
         self.assertEqual(len(outbox_rows), 1)
-        self.assertEqual(len(deliveries), 1)
-        self.assertEqual(deliveries[0]["status"], "sent")
+        self.assertEqual(len(deliveries), 0)  # delivery direto removido; Alert Decisioning é responsável pelo envio
 
     def test_brief_exit_from_zone_does_not_create_operational_absence(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console"}):
@@ -668,7 +667,7 @@ class PeopleZonesV1Test(unittest.TestCase):
         self.assertEqual(event["metadata"]["is_test"], True)
         self.assertTrue(event["midia_path"])
         self.assertIsNotNone(outbox)
-        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(len(deliveries), 0)  # delivery direto removido; Alert Decisioning é responsável pelo envio
 
     def test_dev_test_event_is_hidden_without_flag(self) -> None:
         with patch.dict("os.environ", {"CAMPEX_ENABLE_TEST_EVENT": "false", "CAMPEX_ENV": "production"}):
