@@ -16,7 +16,7 @@ import app.api as api_module
 import app.pilot as pilot_module
 from app.config import API_HOST, API_PORT
 from app.database import connect as db_connect, init_db
-from app.models import atualizar_camera_operacao, registrar_edge_heartbeat
+from app.models import atualizar_camera_operacao, fechar_eventos_machine_interrompidos, registrar_edge_heartbeat
 from app.operational_alerting import evaluate_alert_decisions
 from app.operational_read_model import ReadModelFilters
 from edge_agent.health import mark_edge_contact
@@ -184,6 +184,9 @@ class ProductionEdgeRuntime:
         self._bind_runtime_database()
         with db_connect(self.db_path) as connection:
             init_db(connection)
+            interrupted = fechar_eventos_machine_interrompidos(connection)
+            if interrupted:
+                logger.warning("Eventos de máquina órfãos fechados no startup: %s", interrupted)
         alerts_module.resume_pending_deliveries()
         jobs = [
             ("campex-api", self._run_api),

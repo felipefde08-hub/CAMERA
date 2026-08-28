@@ -2185,6 +2185,43 @@ def fechar_evento_machine_stoppage(connection: sqlite3.Connection, evento_id: st
     connection.commit()
 
 
+def fechar_eventos_machine_interrompidos(connection: sqlite3.Connection) -> list[str]:
+    """Close machine events left open by a previous runtime process.
+
+    The stored duration is the last duration actually observed by the runtime.
+    We intentionally do not extend it using wall-clock time while the Edge was
+    offline, because that would fabricate hours of absence/stoppage.
+    """
+    rows = connection.execute(
+        """
+        SELECT id
+        FROM eventos
+        WHERE status = 'open'
+          AND machine_monitor_id IS NOT NULL
+        """
+    ).fetchall()
+    event_ids = [str(row["id"]) for row in rows]
+    if not event_ids:
+        return []
+    placeholders = ",".join("?" for _ in event_ids)
+    connection.execute(
+        f"""
+        UPDATE eventos
+        SET status = 'closed',
+            fim = COALESCE(atualizado_em, inicio),
+            duracao = COALESCE(duracao, 0),
+            atualizado_em = CURRENT_TIMESTAMP
+        WHERE id IN ({placeholders})
+          AND status = 'open'
+        """,
+        event_ids,
+    )
+    for event_id in event_ids:
+        atualizar_outbox_evento(connection, event_id)
+    connection.commit()
+    return event_ids
+
+
 def atualizar_evento_replay(
     connection: sqlite3.Connection,
     evento_id: str,

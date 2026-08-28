@@ -73,8 +73,21 @@ class AlertsStage6Test(unittest.TestCase):
         with test_connect() as connection:
             return listar_alert_deliveries(connection)
 
+    def test_raw_event_does_not_email_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_DIRECT_EVENT_EMAILS": "false"}):
+            test_connect, camera_id, _area_id, event_id = self.make_context(temp_dir)
+            with patch("app.alerts.connect", test_connect), patch("builtins.print"):
+                with test_connect() as connection:
+                    criar_alert_recipient(connection, "Operacao", "ops@example.com", camera_id=camera_id)
+                alerts.enqueue_event_alert(event_id)
+                time.sleep(0.05)
+            with test_connect() as connection:
+                deliveries = listar_alert_deliveries(connection)
+
+        self.assertEqual(deliveries, [])
+
     def test_new_event_generates_one_alert_per_recipient_and_realtime_payload(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_DIRECT_EVENT_EMAILS": "true"}):
             test_connect, camera_id, area_id, event_id = self.make_context(temp_dir)
             with patch("app.alerts.connect", test_connect), patch("builtins.print"):
                 with test_connect() as connection:
@@ -93,7 +106,7 @@ class AlertsStage6Test(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "sent")
 
     def test_inactive_and_camera_area_filters_do_not_receive(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_DIRECT_EVENT_EMAILS": "true"}):
             test_connect, camera_id, area_id, event_id = self.make_context(temp_dir)
             with patch("app.alerts.connect", test_connect), patch("builtins.print"):
                 with test_connect() as connection:
@@ -115,7 +128,7 @@ class AlertsStage6Test(unittest.TestCase):
         self.assertEqual(len(rows), 1)
 
     def test_console_mode_does_not_use_smtp(self) -> None:
-        with patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console"}), patch("smtplib.SMTP") as smtp, patch("builtins.print") as printer:
+        with patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_DIRECT_EVENT_EMAILS": "true"}), patch("smtplib.SMTP") as smtp, patch("builtins.print") as printer:
             alerts.send_email_alert({"nome": "Pessoa", "email": "pessoa@example.com"}, None, is_test=True)
         smtp.assert_not_called()
         printer.assert_called_once()
@@ -173,7 +186,7 @@ class AlertsStage6Test(unittest.TestCase):
         self.assertEqual(rows[0]["status"], "sent")
 
     def test_api_recipients_deliveries_test_alert_and_no_credentials(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_DIRECT_EVENT_EMAILS": "true"}):
             test_connect, _camera_id, _area_id, _event_id = self.make_context(temp_dir)
             with patch("app.api.connect", test_connect), patch("app.alerts.connect", test_connect), patch("builtins.print"):
                 client = TestClient(api)
@@ -190,7 +203,7 @@ class AlertsStage6Test(unittest.TestCase):
         self.assertNotIn("senha", text.lower())
 
     def test_machine_stoppage_event_automatically_sends_real_email_once(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_DIRECT_EVENT_EMAILS": "true"}):
             test_connect, camera_id, _area_id, _event_id = self.make_context(temp_dir)
             with patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.connect", test_connect), patch("builtins.print") as printer:
                 with test_connect() as connection:
@@ -229,7 +242,7 @@ class AlertsStage6Test(unittest.TestCase):
         printer.assert_called()
 
     def test_event_type_filter_prevents_unrelated_real_email(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_DIRECT_EVENT_EMAILS": "true"}):
             test_connect, camera_id, _area_id, _event_id = self.make_context(temp_dir)
             with patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.connect", test_connect):
                 with test_connect() as connection:
@@ -260,7 +273,7 @@ class AlertsStage6Test(unittest.TestCase):
         self.assertEqual(rows, [])
 
     def test_manage_send_test_email_uses_alert_pipeline_without_operational_event(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_DIRECT_EVENT_EMAILS": "true"}):
             db_path = Path(temp_dir) / "email.sqlite3"
             with patch("builtins.print"):
                 exit_code = run_send_test_email(db_path, "destino@example.com", "Destino", timeout=2.0)

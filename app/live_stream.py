@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import os
@@ -23,6 +24,7 @@ from app.models import atualizar_machine_monitor, listar_areas_ativas_camera, li
 from app.operations_history import OperationsRecorder
 from app.observation_engine import ObservationEngine
 from app.operational_rule_runtime import OperationalRuleRuntime, facts_from_stream
+from app.security import mask_sensitive_error
 from app.restricted_area import (
     AreaPresence,
     AreaPresenceTracker,
@@ -31,6 +33,9 @@ from app.restricted_area import (
     draw_area_overlay,
     evaluate_area,
 )
+
+
+logger = logging.getLogger("campex.live_stream")
 
 
 @dataclass
@@ -67,6 +72,7 @@ class LiveStreamStatus:
     machine_operator_present: bool = False
     machine_event_id: str | None = None
     machine_monitor_id: str | None = None
+    machine_monitor_error: str | None = None
     machine_confidence: float | None = None
     machine_reason: str | None = None
     machine_seconds_in_state: float | None = None
@@ -142,6 +148,7 @@ class LiveCameraStream:
         self._people_zones = PeopleZonesEngine(camera_id)
         self._machine_engines: dict[str, MachineMonitorEngine] = {}
         self._last_machine_load_seconds = 0.0
+        self._last_machine_load_error: str | None = None
         self.live_view_ops = None
         self._operations_recorder = OperationsRecorder(camera_id, camera_id)
         self._rule_runtime = OperationalRuleRuntime(camera_id)
@@ -454,6 +461,8 @@ class LiveCameraStream:
         thread = self._thread
         if thread:
             thread.join(timeout=5.0)
+        for engine in list(self._machine_engines.values()):
+            engine.close_interrupted()
         self._incident_manager.close_interrupted()
         self._people_zones.close_interrupted()
         self._rule_runtime.camera_status("offline", self._last_raw_frame)
@@ -662,7 +671,9 @@ class LiveCameraStream:
                     calibration_result=separation["result"],
                     calibration_algorithm_version="frame-diff-roi-temporal-v1",
                 )
-                self._machine_engines.pop(monitor_id, None)
+                previous_engine = self._machine_engines.pop(monitor_id, None)
+                if previous_engine is not None:
+                    previous_engine.close_interrupted()
         except Exception as exc:
             with self._calibration_lock:
                 self._calibration = {**session, "status": "failed", "error": str(exc), "samples_count": len(samples), "finished_at": finished}
@@ -711,12 +722,23 @@ class LiveCameraStream:
                 monitors = listar_machine_monitors_ativos_camera(connection, self.camera_id)
             active_ids = {monitor["id"] for monitor in monitors}
             for stale_id in set(self._machine_engines) - active_ids:
-                self._machine_engines.pop(stale_id, None)
+                stale_engine = self._machine_engines.pop(stale_id, None)
+                if stale_engine is not None:
+                    stale_engine.close_interrupted()
             for monitor in monitors:
                 if monitor["id"] not in self._machine_engines:
                     self._machine_engines[monitor["id"]] = MachineMonitorEngine(config_from_dict(monitor))
                 setattr(self._machine_engines[monitor["id"]], "_monitor_public", monitor)
-        except Exception:
+            self._last_machine_load_error = None
+            with self._lock:
+                self.status.machine_monitor_error = None
+        except Exception as exc:
+            error = mask_sensitive_error(str(exc)) or type(exc).__name__
+            if error != self._last_machine_load_error:
+                logger.warning("Falha ao carregar machine monitor da câmera %s: %s", self.camera_id, error)
+                self._last_machine_load_error = error
+            with self._lock:
+                self.status.machine_monitor_error = error
             return list(self._machine_engines.values())
         return list(self._machine_engines.values())
 
@@ -856,7 +878,7 @@ class LiveCameraStream:
         for engine in machine_engines:
             try:
                 previous_machine_state = self.status.machine_state
-                state = engine.update(output, self._last_detections)
+                state = engine.update(output, self._last_temporal_detections or self._last_detections)
                 output = draw_machine_overlay(output, engine.config, state)
                 machine_state = "ACTIVE" if state.state == "ACTIVE" else "STOPPED" if state.state == "STOPPED" else "UNKNOWN"
 

@@ -12,7 +12,7 @@ from app.database import connect, init_db
 from app.live_stream import LiveCameraStream, calibration_separation, calibration_stats
 from app.machine_monitoring import MachineMonitorConfig, MachineMonitorEngine, baseline_stats
 from app.models import criar_area_monitorada, criar_camera, criar_cliente, criar_machine_monitor, criar_unidade, obter_machine_monitor
-from app.models import criar_alert_recipient, listar_alert_deliveries
+from app.models import criar_alert_recipient, fechar_eventos_machine_interrompidos, listar_alert_deliveries
 from app.machine_replay import evaluate_state_samples
 from app.observation_engine import ObservationEngine
 from app.person_detection import Detection
@@ -142,7 +142,7 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
 
             evidence_root = Path(temp_dir)
 
-            with patch("app.live_stream.ROOT", evidence_root), patch("app.live_stream.connect", test_connect), patch("app.live_stream.time.monotonic", return_value=100.0):
+            with patch("app.live_stream.EVIDENCE_DIR", evidence_root), patch("app.live_stream.connect", test_connect), patch("app.live_stream.time.monotonic", return_value=100.0):
                 candidate_id = stream.start_visual_candidate(
                     "scene_change",
                     context={"camera_id": camera_id},
@@ -561,6 +561,47 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
         self.assertIn("Impacto operacional estimado", events[0]["metadata_json"])
         self.assertEqual(outbox, 1)
 
+    def test_runtime_restart_closes_orphan_machine_event_without_inflating_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            frame = np.zeros((80, 120, 3), dtype=np.uint8)
+            now = time.monotonic()
+            with patch("app.machine_monitoring.connect", test_connect), patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.save_machine_evidence", return_value=(None, None)):
+                engine.state.state = "STOPPED"
+                engine.state.state_since = now - 12.0
+                engine.state.confidence = 0.9
+                engine._open_event(now, frame, "machine_stoppage")
+                engine._update_event_type("machine_stoppage", now + 12.0)
+            with test_connect() as connection:
+                before = connection.execute("SELECT id, status, duracao FROM eventos WHERE tipo = 'machine_stoppage'").fetchone()
+                self.assertEqual(before["status"], "open")
+                stored_duration = float(before["duracao"] or 0)
+                closed = fechar_eventos_machine_interrompidos(connection)
+                after = connection.execute("SELECT status, duracao, fim FROM eventos WHERE id = ?", (before["id"],)).fetchone()
+
+        self.assertIn(before["id"], closed)
+        self.assertEqual(after["status"], "closed")
+        self.assertIsNotNone(after["fim"] )
+        self.assertAlmostEqual(float(after["duracao"] or 0), stored_duration, delta=0.01)
+
+    def test_close_interrupted_closes_in_memory_machine_events(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            frame = np.zeros((80, 120, 3), dtype=np.uint8)
+            now = time.monotonic()
+            with patch("app.machine_monitoring.connect", test_connect), patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.save_machine_evidence", return_value=(None, None)):
+                engine.state.state = "STOPPED"
+                engine.state.state_since = now - 5.0
+                engine.state.confidence = 0.9
+                engine._open_event(now, frame, "machine_stoppage")
+                engine.close_interrupted()
+            with test_connect() as connection:
+                row = connection.execute("SELECT status FROM eventos WHERE tipo = 'machine_stoppage'").fetchone()
+
+        self.assertEqual(row["status"], "closed")
+
     def test_machine_stoppage_duration_uses_condition_start_not_new_state_start(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
@@ -593,6 +634,7 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
                 engine.state.state = "ACTIVE"
                 engine.state.state_since = now - 30.0
                 engine.state.operator_present = False
+                engine.state.operator_absence_confirmed = True
                 engine._evaluate_official_events(now, frame)
                 engine._evaluate_official_events(now + 0.2, frame)
                 engine._evaluate_official_events(now + 0.4, frame)
@@ -676,6 +718,7 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
                 engine.state.confidence = 0.9
                 engine.state.last_operator_seen_at = now - 2.0
                 engine.state.operator_present = False
+                engine.state.operator_absence_confirmed = True
                 engine._evaluate_official_events(now, frame)
                 engine._evaluate_official_events(now + 0.2, frame)
             with test_connect() as connection:
@@ -683,8 +726,40 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
 
         self.assertEqual(len(rows), 1)
 
+    def test_absence_is_unknown_during_initial_presence_warmup(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            engine.config.operator_presence_grace_seconds = 10.0
+            frame = np.zeros((100, 100, 3), dtype=np.uint8)
+
+            engine._update_operator(frame, [], dt=0.1, now=100.0)
+            engine._update_operator(frame, [], dt=1.0, now=105.0)
+
+        self.assertFalse(engine.state.operator_present)
+        self.assertFalse(engine.state.operator_absence_confirmed)
+        self.assertIn("presença ainda desconhecida", engine.state.operator_presence_reason)
+
+    def test_machine_absence_event_requires_confirmed_absence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
+            engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
+            frame = np.zeros((80, 120, 3), dtype=np.uint8)
+            now = time.monotonic()
+            with patch("app.machine_monitoring.connect", test_connect), patch("app.alerts.connect", test_connect), patch("app.machine_monitoring.save_machine_evidence", return_value=(None, None)):
+                engine.state.state = "ACTIVE"
+                engine.state.state_since = now - 30.0
+                engine.state.operator_present = False
+                engine.state.operator_absence_confirmed = False
+                engine._evaluate_official_events(now, frame)
+                engine._evaluate_official_events(now + 10.0, frame)
+            with test_connect() as connection:
+                total = connection.execute("SELECT COUNT(*) AS total FROM eventos WHERE tipo = 'machine_running_without_operator'").fetchone()["total"]
+
+        self.assertEqual(total, 0)
+
     def test_running_without_operator_event_evidence_outbox_and_alert(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_DIRECT_EVENT_EMAILS": "true"}):
             test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
             engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
             frame = np.zeros((80, 120, 3), dtype=np.uint8)
@@ -695,6 +770,7 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
                 engine.state.state = "ACTIVE"
                 engine.state.state_since = now - 20.0
                 engine.state.operator_present = False
+                engine.state.operator_absence_confirmed = True
                 engine._evaluate_official_events(now, frame)
                 engine._evaluate_official_events(now + 0.2, frame)
                 engine.state.operator_present = True
@@ -715,7 +791,7 @@ class MachineOperatorIntelligenceV1Test(unittest.TestCase):
         self.assertTrue(all(delivery["status"] == "sent" for delivery in deliveries))
 
     def test_stopped_with_operator_event_evidence_outbox_and_alert(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console"}):
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console", "CAMPEX_DIRECT_EVENT_EMAILS": "true"}):
             test_connect, cliente_id, unidade_id, camera_id, monitor_id = self.make_context(temp_dir)
             engine = self.make_engine(cliente_id, unidade_id, camera_id, monitor_id)
             frame = np.zeros((80, 120, 3), dtype=np.uint8)

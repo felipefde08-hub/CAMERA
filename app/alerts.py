@@ -252,22 +252,31 @@ def enqueue_alert_decisions_with_connection(connection, decisions: list[dict[str
 
 
 def enqueue_event_alert(event_id: str, phase: str = "start") -> None:
+    """Publish event realtime updates without emailing every raw event by default.
+
+    Outbound operational email is owned by Alert Decisioning. The old direct
+    event-email path can be re-enabled explicitly for legacy deployments with
+    CAMPEX_DIRECT_EVENT_EMAILS=true.
+    """
+    direct_email = os.getenv("CAMPEX_DIRECT_EVENT_EMAILS", "false").strip().lower() == "true"
     canal = "email_normalizacao" if phase == "normalization" else "email"
     with connect() as connection:
         init_db(connection)
         event = obter_evento(connection, event_id)
         if event is None:
             return
-        recipients = [
-            recipient
-            for recipient in listar_recipients_para_evento(connection, event)
-            if severity_allowed(event.get("severidade"), recipient.get("severidade_minima"))
-            and event_type_allowed(event.get("tipo"), recipient.get("event_types"))
-        ]
-        delivery_ids = [
-            criar_alert_delivery(connection, recipient["id"], evento_id=event_id, canal=canal)
-            for recipient in recipients
-        ]
+        delivery_ids: list[str] = []
+        if direct_email:
+            recipients = [
+                recipient
+                for recipient in listar_recipients_para_evento(connection, event)
+                if severity_allowed(event.get("severidade"), recipient.get("severidade_minima"))
+                and event_type_allowed(event.get("tipo"), recipient.get("event_types"))
+            ]
+            delivery_ids = [
+                criar_alert_delivery(connection, recipient["id"], evento_id=event_id, canal=canal)
+                for recipient in recipients
+            ]
     publish_alert(event_alert_payload(event, phase))
     for delivery_id in delivery_ids:
         schedule_delivery(delivery_id)

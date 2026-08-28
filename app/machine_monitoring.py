@@ -105,6 +105,7 @@ class MachineMonitorState:
     operator_presence_reason: str = "sem detecção humana recente"
     last_operator_seen_at: float | None = None
     operator_absence_candidate_since: float | None = None
+    operator_absence_confirmed: bool = False
     operator_present_seconds: float = 0.0
     operator_absent_seconds: float = 0.0
     max_people: int = 0
@@ -298,23 +299,32 @@ class MachineMonitorEngine:
         self.state.raw_operator_present = raw_present
         if raw_present:
             self.state.operator_present = True
+            self.state.operator_absence_confirmed = False
             self.state.last_operator_seen_at = now
             self.state.operator_absence_candidate_since = None
             self.state.operator_presence_reason = "pessoa detectada na área de presença operacional"
         else:
+            grace = max(0.0, self.config.operator_presence_grace_seconds)
             if self.state.last_operator_seen_at is not None:
                 missing_for = max(0.0, now - self.state.last_operator_seen_at)
-                if missing_for <= max(0.0, self.config.operator_presence_grace_seconds):
+                if missing_for <= grace:
                     self.state.operator_present = True
+                    self.state.operator_absence_confirmed = False
                     self.state.operator_presence_reason = f"presença mantida por graça temporal; detector sem pessoa há {missing_for:.1f}s"
                 else:
-                    self.state.operator_absence_candidate_since = self.state.operator_absence_candidate_since or self.state.last_operator_seen_at
+                    self.state.operator_absence_candidate_since = self.state.operator_absence_candidate_since or (self.state.last_operator_seen_at + grace)
                     self.state.operator_present = False
-                    self.state.operator_presence_reason = f"sem pessoa na área de presença há {missing_for:.1f}s"
+                    self.state.operator_absence_confirmed = True
+                    self.state.operator_presence_reason = f"ausência confirmada após graça temporal; sem pessoa há {missing_for:.1f}s"
             else:
                 self.state.operator_absence_candidate_since = self.state.operator_absence_candidate_since or now
+                candidate_for = max(0.0, now - self.state.operator_absence_candidate_since)
                 self.state.operator_present = False
-                self.state.operator_presence_reason = "nenhuma presença operacional observada desde o início do monitor"
+                self.state.operator_absence_confirmed = candidate_for >= grace
+                if self.state.operator_absence_confirmed:
+                    self.state.operator_presence_reason = f"ausência confirmada após {candidate_for:.1f}s sem presença observada"
+                else:
+                    self.state.operator_presence_reason = f"presença ainda desconhecida; aguardando janela inicial ({candidate_for:.1f}s/{grace:.1f}s)"
         self.state.track_ids.update(ids)
         self.state.max_people = max(self.state.max_people, len(ids))
         if self.state.event_id:
@@ -482,7 +492,7 @@ class MachineMonitorEngine:
             self._open_event(now, frame, "machine_stopped")
         else:
             self._close_event_type("machine_stopped", now)
-        if machine_event_ready and self.state.state == "ACTIVE" and not self.state.operator_present:
+        if machine_event_ready and self.state.state == "ACTIVE" and not self.state.operator_present and self.state.operator_absence_confirmed:
             self._open_timed_event(now, frame, "machine_running_without_operator", self.config.operator_absence_seconds, "high")
         else:
             self._close_event_type("machine_running_without_operator", now)
@@ -621,6 +631,7 @@ class MachineMonitorEngine:
                 "activity_score": self.state.smoothed_motion,
                 "raw_activity_score": self.state.raw_activity_score,
                 "operator_present": self.state.operator_present,
+                "operator_absence_confirmed": self.state.operator_absence_confirmed,
                 "raw_operator_present": self.state.raw_operator_present,
                 "operator_presence_reason": self.state.operator_presence_reason,
                 "operator_presence_grace_seconds": self.config.operator_presence_grace_seconds,
@@ -686,6 +697,16 @@ class MachineMonitorEngine:
             self.state.event_started_at = None
             self._schedule_replay(event_id)
 
+    def close_interrupted(self) -> None:
+        """Close in-memory machine events when the stream/runtime is interrupted.
+
+        This prevents open events from surviving a camera/runtime restart and later
+        appearing with wall-clock durations that were never observed.
+        """
+        now = time.monotonic()
+        for event_type in list(self.state.active_events):
+            self._close_event_type(event_type, now)
+
     def _schedule_replay(self, event_id: str | None = None) -> None:
         event_id = event_id or self.state.event_id
         if not event_id:
@@ -735,6 +756,7 @@ class MachineMonitorEngine:
                         "people_count": 1 if self.state.operator_present else 0,
                         "raw_people_count": 1 if self.state.raw_operator_present else 0,
                         "operator_presence_reason": self.state.operator_presence_reason,
+                        "operator_absence_confirmed": self.state.operator_absence_confirmed,
                         "operator_presence_grace_seconds": self.config.operator_presence_grace_seconds,
                         "raw_activity_score": self.state.raw_activity_score,
                         "window_samples": self.state.window_samples,

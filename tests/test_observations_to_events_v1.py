@@ -155,7 +155,8 @@ class ObservationsToEventsV1Test(unittest.TestCase):
         self.assertEqual(events[0]["midia_path"], "data/evidence/a6-stop.jpg")
         self.assertEqual(len(outbox_rows), 1)
         self.assertEqual(len(evidence_rows), 1)
-        self.assertGreaterEqual(len(deliveries), 1)
+        # Raw machine events no longer email by default; Alert Decisioning owns outbound alerts.
+        self.assertEqual(deliveries, [])
         provenance = events[0]["metadata"]["observation_provenance"]
         self.assertEqual(provenance["runtime"], "MachineMonitorEngine")
         self.assertIn("machine_activity", provenance["source_observations"])
@@ -209,13 +210,17 @@ class ObservationsToEventsV1Test(unittest.TestCase):
                 engine.state.operator_present = True
                 engine._evaluate_official_events(10.0, frame)
                 engine.state.operator_present = False
+                engine.state.operator_absence_confirmed = False
                 engine._evaluate_official_events(11.0, frame)
                 engine.state.operator_present = True
+                engine.state.operator_absence_confirmed = False
                 engine._evaluate_official_events(11.1, frame)
                 engine.state.operator_present = False
+                engine.state.operator_absence_confirmed = True
                 engine._evaluate_official_events(12.0, frame)
                 engine._evaluate_official_events(12.3, frame)
                 engine.state.operator_present = True
+                engine.state.operator_absence_confirmed = False
                 engine._evaluate_official_events(13.0, frame)
             with test_connect() as connection:
                 rows = listar_eventos_filtrados(connection, tipo="machine_running_without_operator")

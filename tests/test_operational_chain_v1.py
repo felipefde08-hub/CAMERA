@@ -203,7 +203,8 @@ def test_operational_chain_event_evidence_alert_history_operations_intelligence_
         patch.object(api_module, "connect", test_connect),
         patch.object(alerts_module, "connect", test_connect),
         patch.object(api_module, "ROOT", test_root),
-        patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "invalid", "CAMPEX_EMAIL_MAX_ATTEMPTS": "1"}),
+        patch.object(api_module, "EVIDENCE_DIR", test_root / "data" / "evidence"),
+        patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "invalid", "CAMPEX_EMAIL_MAX_ATTEMPTS": "1", "CAMPEX_DIRECT_EVENT_EMAILS": "true"}),
     ):
         enqueue_event_alert(event_id)
         failed = _wait_for_delivery_status(test_connect, event_id, {"failed"})
@@ -292,7 +293,7 @@ def test_operational_chain_event_evidence_alert_history_operations_intelligence_
     assert any(event["event_uuid"] in item["event_uuids"] for item in intel["attention"])
     assert b_summary["total_events"] == 0
 
-    with patch.object(api_module, "connect", test_connect), patch.object(api_module, "ROOT", test_root):
+    with patch.object(api_module, "connect", test_connect), patch.object(api_module, "ROOT", test_root), patch.object(api_module, "EVIDENCE_DIR", test_root / "data" / "evidence"):
         client = TestClient(api)
         assert client.post("/auth/login", json={"email": client_a["email"], "senha": "senha-segura"}).status_code == 200
         a_events = client.get("/eventos").json()
@@ -341,7 +342,7 @@ def test_operational_chain_failure_paths_preserve_event_outbox_and_pending_deliv
     with (
         patch.object(api_module, "connect", test_connect),
         patch.object(alerts_module, "connect", test_connect),
-        patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "invalid", "CAMPEX_EMAIL_MAX_ATTEMPTS": "1"}),
+        patch.dict(os.environ, {"CAMPEX_EMAIL_MODE": "invalid", "CAMPEX_EMAIL_MAX_ATTEMPTS": "1", "CAMPEX_DIRECT_EVENT_EMAILS": "true"}),
     ):
         enqueue_event_alert(event_id)
         _wait_for_delivery_status(test_connect, event_id, {"failed"})

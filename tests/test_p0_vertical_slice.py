@@ -134,7 +134,8 @@ class P0VerticalSliceTest(unittest.TestCase):
         self.assertTrue(events[0]["midia_path"])
         self.assertEqual(len(outbox), 1)
         self.assertEqual(outbox[0]["status"], "pending")
-        self.assertGreaterEqual(len(deliveries), 1)
+        # Short raw stoppages stay in the event stream/outbox; decisioning decides whether to alert.
+        self.assertEqual(len(deliveries), 0)
 
     def _scores(self, frames: list[np.ndarray], polygon: list[AreaPoint]) -> list[float]:
         previous = None

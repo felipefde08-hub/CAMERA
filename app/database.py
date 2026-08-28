@@ -1,21 +1,55 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from app.config import DATABASE_PATH
 
 
+_INIT_LOCK = threading.Lock()
+_INITIALIZED_DATABASES: set[str] = set()
+
+
+def _database_identity(connection: sqlite3.Connection) -> str:
+    rows = connection.execute("PRAGMA database_list").fetchall()
+    for row in rows:
+        name = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+        if name != "main":
+            continue
+        filename = row["file"] if isinstance(row, sqlite3.Row) else row[2]
+        if filename:
+            return str(Path(filename).resolve())
+    # Each in-memory connection owns a distinct database.
+    return f":memory:{id(connection)}"
+
+
 def connect(db_path: str | Path = DATABASE_PATH) -> sqlite3.Connection:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
+    connection = sqlite3.connect(path, timeout=30.0)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA busy_timeout = 30000")
     return connection
 
 
 def init_db(connection: sqlite3.Connection) -> None:
+    database_id = _database_identity(connection)
+    if database_id in _INITIALIZED_DATABASES:
+        return
+
+    with _INIT_LOCK:
+        if database_id in _INITIALIZED_DATABASES:
+            return
+        if not database_id.startswith(":memory:"):
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = NORMAL")
+        _initialize_schema(connection)
+        _INITIALIZED_DATABASES.add(database_id)
+
+
+def _initialize_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
         CREATE TABLE IF NOT EXISTS clientes (
