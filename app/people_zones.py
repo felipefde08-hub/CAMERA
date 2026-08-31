@@ -162,7 +162,7 @@ class PeopleZonesEngine:
                 metadata.get("absence_tolerance_seconds"),
                 os.getenv("CAMPEX_WORKSTATION_ABSENCE_SECONDS", "30"),
             )
-            severity = "high"
+            severity = "medium"
         elif event_type == "excessive_zone_dwell":
             minimum = self._first_configured(
                 area.get("dwell_limit_seconds"),

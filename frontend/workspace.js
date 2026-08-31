@@ -678,6 +678,7 @@ function renderTraceDrawer(uuids) {
 }
 
 function humanStatus(value) {
+  const key = String(value || "").trim().toUpperCase();
   const labels = {
     NORMAL: "Operação normal",
     ATTENTION: "Atenção",
@@ -693,8 +694,10 @@ function humanStatus(value) {
     ONLINE: "Online",
     OFFLINE: "Offline",
     ALERT: "Alerta",
+    OPEN: "Em andamento",
+    CLOSED: "Encerrado",
   };
-  return labels[value] || value || "Indisponível";
+  return labels[key] || value || "Indisponível";
 }
 
 function homeContextName(value, fallback = "Ativo sem nome") {
@@ -3050,7 +3053,7 @@ function eventDetail(event) {
           </div>
         ` : `
           <dl>
-            <div><dt>Operador presente</dt><dd>${observed.operador_presente ?? event.operador_presente ?? "Não informado"}</dd></div>
+            <div><dt>Operador presente</dt><dd>${observed.operador_presente === true ? "Sim" : observed.operador_presente === false ? "Não" : "Não informado"}</dd></div>
             <div><dt>Confiança</dt><dd>${observed.confianca ?? event.confianca ?? "Não informado"}</dd></div>
             <div><dt>Pessoas</dt><dd>${observed.quantidade_maxima ?? event.quantidade_maxima ?? event.quantidade_atual ?? "Não informado"}</dd></div>
             <div><dt>Resumo observado</dt><dd>${eventObservedSummary(event)}</dd></div>
@@ -3066,7 +3069,7 @@ function eventDetail(event) {
           <div><dt>Área</dt><dd>${homeContextName(context.area, "Não informado")}</dd></div>
           <div><dt>Processo</dt><dd>${homeContextName(context.process, "Não informado")}</dd></div>
           <div><dt>Ativo/posto</dt><dd>${homeContextName(context.asset, "Não informado")}</dd></div>
-          <div><dt>Câmera</dt><dd>${context.camera ? "Disponível" : "Não informado"}</dd></div>
+          <div><dt>Câmera</dt><dd>${homeContextName(context.camera, "Não informado")}</dd></div>
         </dl>
       </section>
 

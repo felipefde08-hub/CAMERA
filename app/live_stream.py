@@ -119,6 +119,8 @@ class LiveCameraStream:
         self._last_analysis_seconds = 0.0
         self._analysis_frames = 0
         self._analysis_started = time.monotonic()
+        self._last_non_machine_sample_seconds = 0.0
+        self._non_machine_sample_interval_seconds = 30.0
         self._analysis_worker_stop = threading.Event()
         self._analysis_worker_thread: threading.Thread | None = None
         self._analysis_frame_lock = threading.Lock()
@@ -820,6 +822,15 @@ class LiveCameraStream:
         self._evaluate_rules(output, area_presence=presence)
         return output
 
+    def _record_non_machine_operational_sample_if_due(self) -> None:
+        if self._machine_engines:
+            return
+        now = time.monotonic()
+        if now - self._last_non_machine_sample_seconds < self._non_machine_sample_interval_seconds:
+            return
+        self._last_non_machine_sample_seconds = now
+        self._operations_recorder.update_status("online", self._official_ops_state())
+
     def _official_ops_state(self) -> dict[str, object]:
         with self._lock:
             status = self.status.to_public_dict()
@@ -854,7 +865,9 @@ class LiveCameraStream:
             "analysis_error": status.get("machine_analysis_error"),
             "raw_activity_score": status.get("machine_raw_activity_score"),
             "smoothed_activity_score": status.get("machine_motion"),
-            "frames_analyzed": status.get("machine_frames_analyzed"),
+            "capture_fps": status.get("fps"),
+            "inference_fps": status.get("analysis_fps"),
+            "frames_analyzed": status.get("analysis_frames"),
             "roi": {
                 "width": status.get("machine_roi_width"),
                 "height": status.get("machine_roi_height"),
@@ -1023,7 +1036,8 @@ class LiveCameraStream:
                     self.status.width = connector.info.width
                     self.status.height = connector.info.height
                     self.status.fps = connector.info.fps
-                self._operations_recorder.update_status("online", self._official_ops_state())
+                # A amostra operacional online é registrada após o primeiro frame/análise,
+                # evitando marcar a inferência como indisponível durante o instante de conexão.
                 self._rule_runtime.camera_status("online")
 
                 frame_count = 0
@@ -1045,6 +1059,7 @@ class LiveCameraStream:
                     self._buffer_evidence_frame(frame)
                     self._update_calibration(frame)
                     output_frame = self._maybe_analyze(frame)
+                    self._record_non_machine_operational_sample_if_due()
                     encoded, jpeg = cv2.imencode(".jpg", output_frame)
                     if not encoded:
                         continue

@@ -539,3 +539,47 @@ def test_camera_offline_invalidates_visual_operational_truth():
     assert stream.status.incident_id is None
     assert stream.status.incident_started_at is None
     assert stream.status.observation == {}
+
+
+def test_official_ops_state_exposes_live_stream_telemetry():
+    from app.live_stream import LiveCameraStream
+
+    stream = LiveCameraStream("cam_ops_telemetry", "rtsp://invalid")
+    stream.status.status = "online"
+    stream.status.fps = 24.0
+    stream.status.ai_status = "ativa"
+    stream.status.analysis_fps = 5.0
+    stream.status.analysis_frames = 42
+
+    state = stream._official_ops_state()
+
+    assert state["capture_fps"] == 24.0
+    assert state["inference_fps"] == 5.0
+    assert state["frames_analyzed"] == 42
+    assert state["machine_state"] == "NAO_CONFIGURADA"
+
+
+def test_non_machine_stream_records_operational_sample_with_throttle():
+    from unittest.mock import MagicMock, patch
+
+    from app.live_stream import LiveCameraStream
+
+    stream = LiveCameraStream("cam_ops_periodic", "rtsp://invalid")
+    stream._operations_recorder = MagicMock()
+    stream.status.status = "online"
+    stream.status.fps = 24.0
+    stream.status.ai_status = "ativa"
+    stream.status.analysis_fps = 5.0
+    stream.status.analysis_frames = 10
+
+    with patch("app.live_stream.time.monotonic", return_value=100.0):
+        stream._record_non_machine_operational_sample_if_due()
+        stream._record_non_machine_operational_sample_if_due()
+
+    stream._operations_recorder.update_status.assert_called_once()
+    camera_status, state = stream._operations_recorder.update_status.call_args.args[:2]
+
+    assert camera_status == "online"
+    assert state["capture_fps"] == 24.0
+    assert state["inference_fps"] == 5.0
+    assert state["frames_analyzed"] == 10

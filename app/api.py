@@ -2938,7 +2938,7 @@ def post_camera_area(camera_id: str, payload: AreaIn, request: Request) -> dict[
                     entidade="person",
                     regiao_id=area_id,
                     condicao={"type": "absence_in_zone" if event_type == "workstation_unattended" else "presence_in_zone", "zone_id": area_id},
-                    severidade=(payload.metadata or {}).get("severidade", "high" if event_type in {"restricted_zone_occupied", "workstation_unattended"} else "medium"),
+                    severidade=(payload.metadata or {}).get("severidade", "high" if event_type == "restricted_zone_occupied" else "medium"),
                     cooldown_seconds=float((payload.metadata or {}).get("cooldown_seconds", 60)),
                     alerta_inicio=True,
                     alerta_normalizacao=True,

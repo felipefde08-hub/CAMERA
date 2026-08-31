@@ -148,12 +148,20 @@ class OperationsRecorder:
         frame: np.ndarray | None = None,
     ) -> None:
         machine = (ops_state or {}).get("machine") if ops_state else None
+        operator_present = (ops_state or {}).get("operator_present")
+        operator_state = (
+            "PRESENTE"
+            if operator_present is True
+            else "AUSENTE"
+            if operator_present is False
+            else "DESCONHECIDO"
+        )
         snapshot = OperationalSnapshot(
             session_id=self.session_id,
             camera_id=self.camera_id or self.session_id,
             machine_name=machine.get("nome") if machine else None,
             machine_state=str((ops_state or {}).get("machine_state") or "NAO_CONFIGURADA"),
-            operator_state="PRESENTE" if (ops_state or {}).get("operator_present") else "AUSENTE",
+            operator_state=operator_state,
             camera_status="online" if camera_status == "online" else "offline",
             calibration_status=str((ops_state or {}).get("calibration_status") or "não calibrada"),
             confidence=(ops_state or {}).get("visual_confidence"),
@@ -176,6 +184,20 @@ class OperationsRecorder:
                 init_operations_db(connection)
                 client_id, unit_id, canonical_camera_id, _source_camera_id = resolve_event_context(connection, self.camera_id, self.session_id)
                 machine = ops_state.get("machine") if ops_state else None
+                sample_machine_state = {
+                    "ATIVA": "ACTIVE",
+                    "PARADA": "STOPPED",
+                    "ACTIVE": "ACTIVE",
+                    "STOPPED": "STOPPED",
+                    "UNKNOWN": "UNKNOWN",
+                }.get(snapshot.machine_state)
+                sample_operator_present = (
+                    True
+                    if snapshot.operator_state == "PRESENTE"
+                    else False
+                    if snapshot.operator_state == "AUSENTE"
+                    else None
+                )
                 registrar_operational_sample(
                     connection,
                     sample_uuid=new_event_uuid(),
@@ -183,8 +205,8 @@ class OperationsRecorder:
                     unit_id=unit_id,
                     camera_id=canonical_camera_id,
                     machine_id=str(machine.get("id")) if isinstance(machine, dict) and machine.get("id") else None,
-                    machine_state=snapshot.machine_state if snapshot.machine_state in {"ACTIVE", "STOPPED", "UNKNOWN"} else None,
-                    operator_present=snapshot.operator_state == "PRESENTE",
+                    machine_state=sample_machine_state,
+                    operator_present=sample_operator_present,
                     activity_score=snapshot.activity_score,
                     confidence=snapshot.confidence,
                     capture_fps=(ops_state or {}).get("capture_fps"),

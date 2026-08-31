@@ -215,12 +215,19 @@ def resolve_event(
 
 def observed_context(event: dict[str, Any]) -> dict[str, Any]:
     metadata = event.get("metadata") or {}
+    operator_present = event.get("operador_presente")
+    if operator_present is None and event.get("tipo") in {
+        "workstation_unattended",
+        "machine_running_without_operator",
+    }:
+        operator_present = False
+
     return {
         "tipo": event.get("tipo"),
         "inicio": event.get("inicio"),
         "fim": event.get("fim"),
         "duracao": event.get("duracao"),
-        "operador_presente": event.get("operador_presente"),
+        "operador_presente": operator_present,
         "confianca": event.get("confianca"),
         "quantidade_inicial": event.get("quantidade_inicial"),
         "quantidade_maxima": event.get("quantidade_maxima"),
@@ -235,6 +242,22 @@ def event_detail(connection: sqlite3.Connection, event_id: str) -> dict[str, Any
     event = obter_evento(connection, event_id)
     if event is None:
         return None
+
+    def _context_name(table, item_id):
+        if not item_id:
+            return None
+        row = connection.execute(
+            f"SELECT nome FROM {table} WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        return row["nome"] if row and row["nome"] else None
+
+    event["cliente_name"] = _context_name("clientes", event.get("cliente_id"))
+    event["unidade_name"] = _context_name("unidades", event.get("unidade_id"))
+    event["camera_name"] = _context_name("cameras", event.get("camera_id"))
+    event["area_name"] = _context_name("operational_areas", event.get("area_context_id"))
+    event["process_name"] = _context_name("operational_processes", event.get("process_id"))
+    event["asset_name"] = _context_name("operational_assets", event.get("asset_id"))
 
     visual_understanding = None
     visual_evidence: list[dict[str, Any]] = []
