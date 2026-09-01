@@ -151,12 +151,13 @@ class PeopleZonesV1Test(unittest.TestCase):
         self.assertTrue(all(0 <= point["x"] <= 1 and 0 <= point["y"] <= 1 for area in areas for point in area["pontos"]))
         self.assertNotIn("rtsp://", str(areas))
 
-    def test_workstation_unattended_creates_one_event_evidence_alert_and_closes(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir, patch.dict("os.environ", {"CAMPEX_EMAIL_MODE": "console"}):
+    def test_workstation_unattended_is_context_only_and_does_not_create_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
             test_connect, camera_id = self.make_context(temp_dir)
             evidence_root = Path(temp_dir) / "evidence"
+
             with test_connect() as connection:
-                area_id = criar_area_monitorada(
+                criar_area_monitorada(
                     connection,
                     camera_id,
                     "Posto 1",
@@ -166,35 +167,21 @@ class PeopleZonesV1Test(unittest.TestCase):
                 )
                 self.add_operational_context(connection, camera_id, machine_state="ACTIVE")
                 areas = listar_areas_camera(connection, camera_id)
+
             frame = np.zeros((100, 100, 3), dtype=np.uint8)
             engine = PeopleZonesEngine(camera_id, evidence_root=evidence_root)
-            with patch("app.people_zones.connect", test_connect), patch("app.alerts.connect", test_connect):
-                engine.update(areas, [], frame)
-                engine.update(areas, [], frame)
-                with test_connect() as connection:
-                    events = listar_eventos_filtrados(connection, tipo="workstation_unattended")
-                    outbox = connection.execute("SELECT * FROM sync_outbox WHERE event_uuid = ?", (events[0]["event_uuid"],)).fetchone()
-                    deliveries = listar_alert_deliveries(connection)
-                inside = [Detection(30, 10, 50, 70, 0.9, track_id=1)]
-                engine.update(areas, inside, frame)
-                engine.update(areas, inside, frame)
-                engine.update(areas, inside, frame)
-                time.sleep(2.1)
-                engine.update(areas, inside, frame)
-                engine.update(areas, inside, frame)
-                with test_connect() as connection:
-                    closed = listar_eventos_filtrados(connection, tipo="workstation_unattended")
 
-        self.assertEqual(area_id, events[0]["area_id"])
-        self.assertEqual(len(events), 1)
-        self.assertTrue(events[0]["event_uuid"])
-        self.assertTrue(events[0]["midia_path"])
-        self.assertIsNotNone(outbox)
-        self.assertIn("workstation_unattended", outbox["payload_json"])
-        self.assertEqual(len(deliveries), 0)  # delivery direto removido; Alert Decisioning é responsável pelo envio
-        self.assertEqual(closed[0]["status"], "closed")
-        self.assertIsNotNone(closed[0]["fim"])
-        self.assertGreaterEqual(float(closed[0]["duracao"] or 0), 0)
+            with patch("app.people_zones.connect", test_connect):
+                engine.update(areas, [], frame)
+                engine.update(areas, [], frame)
+
+                with test_connect() as connection:
+                    events = listar_eventos_filtrados(
+                        connection,
+                        tipo="workstation_unattended",
+                    )
+
+            self.assertEqual(events, [])
 
     def test_people_zones_page_and_summary_are_served(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

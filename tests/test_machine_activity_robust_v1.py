@@ -208,3 +208,39 @@ def test_no_event_is_created_by_classification_alone() -> None:
     classify_after_samples(engine, [31, 30, 29])
 
     assert engine.state.active_events == {}
+
+def test_localized_machine_motion_is_distinguishable_from_stopped() -> None:
+    polygon = [
+        AreaPoint(0.1, 0.1),
+        AreaPoint(0.9, 0.1),
+        AreaPoint(0.9, 0.9),
+        AreaPoint(0.1, 0.9),
+    ]
+
+    base = np.zeros((120, 160, 3), dtype=np.uint8)
+
+    active_a = base.copy()
+    active_b = base.copy()
+
+    # Movimento localizado: representa correia, fio, rolo, eixo,
+    # peça ou outro componente que ocupa apenas parte da máquina.
+    active_a[45:75, 65:69] = 255
+    active_b[45:75, 79:83] = 255
+
+    previous = None
+    active_scores = []
+    for frame in [active_a, active_b, active_a, active_b]:
+        score, previous, diagnostics = machine_activity_score(frame, polygon, previous)
+        if diagnostics["analysis_status"] == "ANALYZING" and score is not None:
+            active_scores.append(score)
+
+    previous = None
+    stopped_scores = []
+    for frame in [active_a, active_a, active_a, active_a]:
+        score, previous, diagnostics = machine_activity_score(frame, polygon, previous)
+        if diagnostics["analysis_status"] == "ANALYZING" and score is not None:
+            stopped_scores.append(score)
+
+    assert active_scores
+    assert stopped_scores
+    assert min(active_scores) > max(stopped_scores) + 1.0

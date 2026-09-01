@@ -195,7 +195,9 @@ class PeopleZonesEngine:
         if zone_type in {"restricted_area", "restricted_zone"}:
             candidates.append(("restricted_zone_occupied", occupied))
         if zone_type in {"workstation", "operator_zone", "work_area"}:
-            candidates.append(("workstation_unattended", self._workstation_unattended_condition(area, presence, occupied)))
+            # Operator zones provide presence context only in V1.
+            # Absence alone must never become a client-facing event.
+            pass
         if zone_type == "dwell_area":
             candidates.append(("excessive_zone_dwell", occupied))
         if zone_type == "authorized_area":

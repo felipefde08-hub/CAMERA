@@ -557,3 +557,43 @@ def test_operational_data_tenant_isolation() -> None:
 
     assert data_a["machine_data"]["traceability"]["event_uuids"] == ["evt-tenant-a"]
     assert data_b["machine_data"]["traceability"]["event_uuids"] == ["evt-tenant-b"]
+
+def test_machine_coverage_does_not_depend_on_person_inference_fps() -> None:
+    temp_dir, _db_path, connection, cliente_id, site_id, _area_id, _process_id, asset_id, camera_id = make_context()
+    start = parse_datetime("2026-08-07T08:00:00+00:00")
+    end = parse_datetime("2026-08-07T08:10:00+00:00")
+
+    with temp_dir, connection:
+        add_sample(
+            connection,
+            cliente_id,
+            site_id,
+            camera_id,
+            asset_id,
+            "2026-08-07T08:00:00+00:00",
+            "ACTIVE",
+            None,
+            camera_online=True,
+            inference_fps=0.0,
+            metadata={
+                "canonical_observations": [
+                    {
+                        "observation_type": "machine_activity",
+                        "value": "ACTIVE",
+                        "confidence": 0.9,
+                        "data_quality": "observed",
+                    }
+                ]
+            },
+        )
+
+        data = operational_data(
+            connection,
+            ReadModelFilters(cliente_id=cliente_id, start=start, end=end),
+            now=end,
+        )
+
+    assert data["machine_data"]["active_seconds"] == 600
+    assert data["machine_data"]["unknown_seconds"] == 0
+    assert data["coverage"]["valid_percent"] == 100.0
+    assert data["coverage"]["status"] == "GOOD"

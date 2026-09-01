@@ -297,6 +297,27 @@ def _sample_has_inference_signal(sample: dict[str, Any]) -> bool:
         return False
 
 
+def _sample_has_machine_signal(sample: dict[str, Any]) -> bool:
+    metadata = sample.get("metadata") or {}
+    observations = metadata.get("canonical_observations")
+
+    if isinstance(observations, list):
+        for observation in observations:
+            if not isinstance(observation, dict):
+                continue
+            if observation.get("observation_type") != "machine_activity":
+                continue
+            if observation.get("data_quality") not in {"observed", "inferred"}:
+                continue
+            if str(observation.get("value") or "UNKNOWN").upper() not in {"ACTIVE", "STOPPED"}:
+                continue
+            return True
+
+    # Compatibilidade com samples legados que ainda não carregavam
+    # machine_activity canônica.
+    return _sample_has_inference_signal(sample)
+
+
 def _context_names(connection: sqlite3.Connection, ids: set[str]) -> dict[str, str]:
     if not ids:
         return {}
@@ -492,14 +513,18 @@ def _sample_rollup(samples: list[dict[str, Any]], start: datetime, end: datetime
         segment_seconds = _overlap_seconds({"inicio": to_iso(current_at), "fim": to_iso(next_at)}, start, end, end)
         if segment_seconds <= 0:
             continue
-        sensor_ok = sample.get("camera_online") == 1 and _sample_has_inference_signal(sample)
+        camera_online = sample.get("camera_online") == 1
+        machine_sensor_ok = camera_online and _sample_has_machine_signal(sample)
+        human_sensor_ok = camera_online and _sample_has_inference_signal(sample)
+
         state = str(sample.get("machine_state") or "UNKNOWN").upper()
-        if not sensor_ok or state not in {"ACTIVE", "STOPPED"}:
+        if not machine_sensor_ok or state not in {"ACTIVE", "STOPPED"}:
             machine["UNKNOWN"] += segment_seconds
         else:
             machine[state] += segment_seconds
+
         operator_value = sample.get("operator_present")
-        if not sensor_ok or operator_value is None:
+        if not human_sensor_ok or operator_value is None:
             human["UNKNOWN"] += segment_seconds
         elif int(operator_value) == 1:
             human["PRESENT"] += segment_seconds
