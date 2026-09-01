@@ -56,6 +56,14 @@ def email_configuration_status() -> dict[str, Any]:
     mode = os.getenv("CAMPEX_EMAIL_MODE", "").strip().lower()
     if mode == "console":
         return {"status": "CONFIGURED", "mode": "console", "missing": []}
+    if mode == "cloud":
+        required = ["CAMPEX_CLOUD_URL", "CAMPEX_EDGE_ID", "CAMPEX_EDGE_SECRET"]
+        missing = [name for name in required if not os.getenv(name)]
+        return {
+            "status": "CONFIGURED" if not missing else "NOT_CONFIGURED",
+            "mode": "cloud",
+            "missing": missing,
+        }
     if mode == "smtp":
         required = ["CAMPEX_SMTP_HOST", "CAMPEX_SMTP_USERNAME", "CAMPEX_SMTP_PASSWORD"]
         missing = [name for name in required if not os.getenv(name)]

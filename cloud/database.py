@@ -127,6 +127,23 @@ def _init_sqlite(db: SQLiteConnection) -> None:
             payload_json TEXT NOT NULL,
             received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS report_deliveries (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            cliente_id TEXT NOT NULL,
+            unidade_id TEXT NOT NULL,
+            edge_id TEXT NOT NULL,
+            recipient TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            provider_message_id TEXT,
+            last_error TEXT,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            sent_at TEXT
+        );
         """
     )
     _ensure_sqlite_column(db, "edge_events", "severidade", "TEXT")
@@ -171,6 +188,28 @@ def _init_postgres(db: PostgresConnection) -> None:
             midia_path TEXT,
             payload_json TEXT NOT NULL,
             received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """
+    )
+
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS report_deliveries (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            cliente_id TEXT NOT NULL,
+            unidade_id TEXT NOT NULL,
+            edge_id TEXT NOT NULL REFERENCES edge_devices(id),
+            recipient TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            provider_message_id TEXT,
+            last_error TEXT,
+            payload_json TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            sent_at TIMESTAMPTZ
         )
         """
     )

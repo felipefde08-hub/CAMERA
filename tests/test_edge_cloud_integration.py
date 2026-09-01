@@ -292,6 +292,87 @@ class EdgeCloudIntegrationTest(unittest.TestCase):
         self.assertEqual(row["status"], "failed")
         self.assertEqual(row["attempts"], 1)
 
+    def test_report_delivery_is_authenticated_persisted_and_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self.make_cloud_client(temp_dir)
+            with cloud_database.connect() as db:
+                cloud_database.init_cloud_db(db)
+                from cloud.security import hash_edge_secret
+                db.execute(
+                    """
+                    INSERT INTO edge_devices (
+                        id, tenant_id, cliente_id, unidade_id,
+                        nome, secret_hash, status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 'active')
+                    """,
+                    (
+                        EDGE_ID,
+                        "cli_fl",
+                        "cli_fl",
+                        "uni_fl",
+                        "Edge FL Plasticos",
+                        hash_edge_secret(EDGE_SECRET),
+                    ),
+                )
+                db.commit()
+
+            payload = {
+                "delivery_id": "report-2026-09-02-cli-fl",
+                "cliente_id": "cli_fl",
+                "recipient": "gestor@example.com",
+                "subject": "Campex | Relatório Operacional — 02/09/2026",
+                "text_body": "Resumo operacional Campex.",
+                "html_body": "<html><body>Resumo operacional Campex.</body></html>",
+            }
+            headers = {
+                "X-Edge-Id": EDGE_ID,
+                "X-Edge-Secret": EDGE_SECRET,
+            }
+
+            with patch(
+                "cloud.api._send_cloud_report_email",
+                return_value="provider-msg-001",
+            ) as send_mock:
+                first = client.post(
+                    "/edge/report-delivery",
+                    json=payload,
+                    headers=headers,
+                )
+                second = client.post(
+                    "/edge/report-delivery",
+                    json=payload,
+                    headers=headers,
+                )
+
+                conflict = client.post(
+                    "/edge/report-delivery",
+                    json={**payload, "subject": "Outro relatório"},
+                    headers=headers,
+                )
+
+            with cloud_database.connect() as db:
+                row = db.fetchone(
+                    "SELECT * FROM report_deliveries WHERE id = ?",
+                    (payload["delivery_id"],),
+                )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["status"], "sent")
+        self.assertFalse(first.json()["idempotent"])
+
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["status"], "sent")
+        self.assertTrue(second.json()["idempotent"])
+
+        self.assertEqual(conflict.status_code, 409)
+
+        self.assertEqual(send_mock.call_count, 1)
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "sent")
+        self.assertEqual(row["attempts"], 1)
+        self.assertEqual(row["provider_message_id"], "provider-msg-001")
+
     def test_postgresql_url_detection(self) -> None:
         self.assertTrue(cloud_database.is_postgres_url("postgresql://user:pass@host/db"))
         self.assertTrue(cloud_database.is_postgres_url("postgres://user:pass@host/db"))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from app.models import (
 from app.report_delivery import (
     build_report_for_tenant,
     get_report_schedule,
+    send_report_email,
     upsert_report_schedule,
 )
 
@@ -60,6 +62,77 @@ class ReportDeliveryV1Test(unittest.TestCase):
             self.assertEqual(schedule_b["email"], "diretor-b@empresa.com")
 
             self.assertNotEqual(schedule_a["tenant_id"], schedule_b["tenant_id"])
+
+    def test_report_email_cloud_transport_uses_edge_credentials_and_delivery_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db_path = Path(temp_dir) / "reports.sqlite3"
+
+            with connect(db_path) as connection:
+                init_db(connection)
+                company = criar_cliente(connection, "Empresa A")
+                criar_unidade(connection, company, "Unidade A")
+
+                report = build_report_for_tenant(
+                    connection,
+                    tenant_id=company,
+                    end_at=datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc),
+                )
+
+            response = Mock()
+            response.status_code = 200
+            response.json.return_value = {
+                "status": "sent",
+                "delivery_id": "report-fixed-001",
+            }
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "CAMPEX_EMAIL_MODE": "cloud",
+                    "CAMPEX_CLOUD_URL": "https://cloud.campex.test",
+                    "CAMPEX_EDGE_ID": "edge-001",
+                    "CAMPEX_EDGE_SECRET": "edge-secret-001",
+                },
+                clear=False,
+            ):
+                with patch(
+                    "app.report_delivery.httpx.post",
+                    return_value=response,
+                ) as post_mock:
+                    send_report_email(
+                        report,
+                        "gestor@empresa.com",
+                        "Gestor",
+                        delivery_id="report-fixed-001",
+                    )
+
+            post_mock.assert_called_once()
+            args, kwargs = post_mock.call_args
+
+            self.assertEqual(
+                args[0],
+                "https://cloud.campex.test/edge/report-delivery",
+            )
+            self.assertEqual(
+                kwargs["headers"]["X-Edge-Id"],
+                "edge-001",
+            )
+            self.assertEqual(
+                kwargs["headers"]["X-Edge-Secret"],
+                "edge-secret-001",
+            )
+            self.assertEqual(
+                kwargs["json"]["delivery_id"],
+                "report-fixed-001",
+            )
+            self.assertEqual(
+                kwargs["json"]["cliente_id"],
+                company,
+            )
+            self.assertEqual(
+                kwargs["json"]["recipient"],
+                "gestor@empresa.com",
+            )
 
     def test_daily_report_never_mixes_company_events(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

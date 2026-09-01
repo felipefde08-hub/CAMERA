@@ -51,6 +51,16 @@ class EdgeEventIn(BaseModel):
     metadata: Optional[dict[str, Any]] = None
 
 
+class ReportDeliveryIn(BaseModel):
+    delivery_id: str = Field(min_length=8)
+    cliente_id: str
+    recipient: str
+    subject: str
+    text_body: str
+    html_body: str
+
+
+
 @api.on_event("startup")
 def startup() -> None:
     init_cloud_db()
@@ -116,6 +126,247 @@ def create_edge_device(payload: EdgeDeviceIn) -> dict[str, Any]:
         )
         db.commit()
     return {"id": payload.id, "tenant_id": payload.tenant_id, "status": "active"}
+
+
+def _send_cloud_report_email(payload: ReportDeliveryIn) -> str:
+    import os
+    import urllib.error
+    import urllib.request
+
+    provider = os.getenv("CAMPEX_CLOUD_EMAIL_PROVIDER", "").strip().lower()
+
+    if provider != "resend":
+        raise RuntimeError(
+            "CLOUD_EMAIL_NOT_CONFIGURED: CAMPEX_CLOUD_EMAIL_PROVIDER deve ser 'resend'."
+        )
+
+    api_key = os.getenv("CAMPEX_RESEND_API_KEY", "").strip()
+    from_address = os.getenv("CAMPEX_EMAIL_FROM", "").strip()
+
+    if not api_key or not from_address:
+        missing = []
+        if not api_key:
+            missing.append("CAMPEX_RESEND_API_KEY")
+        if not from_address:
+            missing.append("CAMPEX_EMAIL_FROM")
+        raise RuntimeError(
+            f"CLOUD_EMAIL_NOT_CONFIGURED: faltam {', '.join(missing)}."
+        )
+
+    body = json.dumps(
+        {
+            "from": from_address,
+            "to": [payload.recipient],
+            "subject": payload.subject,
+            "text": payload.text_body,
+            "html": payload.html_body,
+        }
+    ).encode("utf-8")
+
+    request = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Idempotency-Key": payload.delivery_id,
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            response_payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:1000]
+        raise RuntimeError(
+            f"EMAIL_PROVIDER_ERROR: HTTP {exc.code}: {detail}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(
+            f"EMAIL_PROVIDER_UNAVAILABLE: {exc.reason}"
+        ) from exc
+
+    provider_message_id = str(response_payload.get("id") or "").strip()
+    if not provider_message_id:
+        raise RuntimeError("EMAIL_PROVIDER_INVALID_RESPONSE: id ausente.")
+
+    return provider_message_id
+
+
+@api.post("/edge/report-delivery")
+def receive_report_delivery(
+    payload: ReportDeliveryIn,
+    x_edge_id: Optional[str] = Header(default=None, alias="X-Edge-Id"),
+    x_edge_secret: Optional[str] = Header(default=None, alias="X-Edge-Secret"),
+) -> dict[str, Any]:
+    if not x_edge_id or not x_edge_secret:
+        raise HTTPException(status_code=401, detail="Credenciais do Edge ausentes.")
+
+    payload_json = json.dumps(
+        payload.model_dump(),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+    with connect() as db:
+        init_cloud_db(db)
+
+        device = db.fetchone(
+            "SELECT * FROM edge_devices WHERE id = ?",
+            (x_edge_id,),
+        )
+
+        if not device or not verify_edge_secret(
+            x_edge_secret,
+            device["secret_hash"],
+        ):
+            LOGGER.warning(
+                "Tentativa de report delivery com credencial invalida para edge_id=%s",
+                x_edge_id,
+            )
+            raise HTTPException(status_code=401, detail="Edge nao autorizado.")
+
+        if device["status"] != "active" or device.get("revoked_at"):
+            raise HTTPException(
+                status_code=403,
+                detail="Edge revogado ou inativo.",
+            )
+
+        if payload.cliente_id != device["cliente_id"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Relatorio pertence a outro cliente.",
+            )
+
+        existing = db.fetchone(
+            """
+            SELECT *
+            FROM report_deliveries
+            WHERE id = ?
+            """,
+            (payload.delivery_id,),
+        )
+
+        if existing:
+            if (
+                existing["cliente_id"] != payload.cliente_id
+                or existing["edge_id"] != x_edge_id
+                or existing["payload_json"] != payload_json
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="delivery_id ja utilizado com outro payload.",
+                )
+
+            if existing["status"] == "sent":
+                return {
+                    "delivery_id": payload.delivery_id,
+                    "status": "sent",
+                    "idempotent": True,
+                    "provider_message_id": existing.get("provider_message_id"),
+                }
+        else:
+            db.execute(
+                """
+                INSERT INTO report_deliveries (
+                    id,
+                    tenant_id,
+                    cliente_id,
+                    unidade_id,
+                    edge_id,
+                    recipient,
+                    subject,
+                    status,
+                    attempts,
+                    payload_json,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+                """,
+                (
+                    payload.delivery_id,
+                    device["tenant_id"],
+                    payload.cliente_id,
+                    device["unidade_id"],
+                    x_edge_id,
+                    payload.recipient,
+                    payload.subject,
+                    payload_json,
+                    now_iso(),
+                    now_iso(),
+                ),
+            )
+            db.commit()
+
+        db.execute(
+            """
+            UPDATE report_deliveries
+            SET
+                status = 'pending',
+                attempts = attempts + 1,
+                last_error = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now_iso(), payload.delivery_id),
+        )
+        db.commit()
+
+        try:
+            provider_message_id = _send_cloud_report_email(payload)
+        except Exception as exc:
+            db.execute(
+                """
+                UPDATE report_deliveries
+                SET
+                    status = 'failed',
+                    last_error = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    str(exc)[:2000],
+                    now_iso(),
+                    payload.delivery_id,
+                ),
+            )
+            db.commit()
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc),
+            ) from exc
+
+        sent_at = now_iso()
+
+        db.execute(
+            """
+            UPDATE report_deliveries
+            SET
+                status = 'sent',
+                provider_message_id = ?,
+                last_error = NULL,
+                sent_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                provider_message_id,
+                sent_at,
+                sent_at,
+                payload.delivery_id,
+            ),
+        )
+        db.commit()
+
+        return {
+            "delivery_id": payload.delivery_id,
+            "status": "sent",
+            "idempotent": False,
+            "provider_message_id": provider_message_id,
+        }
+
 
 
 @api.post("/edge/events")
