@@ -2867,6 +2867,14 @@ async function renderEventsPage(config) {
         <div class="cx-home-topbar-actions">
           <span>${events.length} ocorrência(s)</span>
           <span>${eventsSelectedPeriod === "all" ? "Todo histórico" : eventsSelectedPeriod}</span>
+          <button type="button" class="cx-events-clear-button" id="cx-events-clear">
+            <span class="cx-events-clear-button__text">Limpar eventos</span>
+            <span class="cx-events-clear-button__icon" aria-hidden="true">
+              <svg class="cx-events-clear-button__svg" viewBox="0 0 24 24">
+                <path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-1 11H8L7 9Zm3 2v7h2v-7h-2Zm4 0v7h2v-7h-2Z"/>
+              </svg>
+            </span>
+          </button>
         </div>
       </div>
       <header class="cx-events-hero">
@@ -2887,6 +2895,25 @@ async function renderEventsPage(config) {
       </section>
     </section>
   `;
+
+  document.querySelector("#cx-events-clear")?.addEventListener("click", async () => {
+    const confirmed = window.confirm(
+      "Apagar todos os eventos desta empresa?\n\nEsta ação limpa o histórico de eventos e evidências relacionadas, mas não altera câmeras, zonas ou calibração."
+    );
+    if (!confirmed) return;
+
+    const button = document.querySelector("#cx-events-clear");
+    if (button) button.disabled = true;
+
+    try {
+      const result = await requestJson("/eventos", { method: "DELETE" });
+      window.alert(`${result.deleted || 0} evento(s) apagado(s).`);
+      await loadPage(window.location.pathname);
+    } catch (error) {
+      window.alert(`Não foi possível limpar os eventos: ${error.message}`);
+      if (button) button.disabled = false;
+    }
+  });
 }
 
 function filterCanonicalEvents(rows) {

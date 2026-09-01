@@ -3533,6 +3533,57 @@ def patch_evento(evento_id: str, payload: EventoUpdateIn, request: Request) -> d
         return event
 
 
+@api.delete("/eventos")
+def delete_eventos(request: Request) -> dict[str, int]:
+    with connect() as connection:
+        init_db(connection)
+        user = require_user(request, connection)
+        require_role(user, ADMIN_ROLES)
+
+        cliente_id = tenant_filter(user)
+        if not cliente_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Selecione um cliente antes de limpar os eventos.",
+            )
+
+        rows = connection.execute(
+            "SELECT id FROM eventos WHERE cliente_id = ?",
+            (cliente_id,),
+        ).fetchall()
+        event_ids = [row["id"] for row in rows]
+
+        if not event_ids:
+            return {"deleted": 0}
+
+        placeholders = ",".join("?" for _ in event_ids)
+
+        connection.execute(
+            f"UPDATE visual_rule_states SET active_event_id = NULL "
+            f"WHERE active_event_id IN ({placeholders})",
+            event_ids,
+        )
+        connection.execute(
+            f"DELETE FROM alert_deliveries WHERE evento_id IN ({placeholders})",
+            event_ids,
+        )
+        connection.execute(
+            f"DELETE FROM alertas WHERE evento_id IN ({placeholders})",
+            event_ids,
+        )
+        connection.execute(
+            f"DELETE FROM evidences WHERE event_id IN ({placeholders})",
+            event_ids,
+        )
+        connection.execute(
+            f"DELETE FROM eventos WHERE id IN ({placeholders})",
+            event_ids,
+        )
+        connection.commit()
+
+        return {"deleted": len(event_ids)}
+
+
 @api.get("/eventos")
 def get_eventos(
     request: Request,

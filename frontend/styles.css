@@ -14304,3 +14304,77 @@ body {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+
+/* Events — clear history button */
+.cx-events-clear-button {
+  --main-focus: #2d8cf0;
+  --font-color: #323232;
+  --bg-color-sub: #dedede;
+  --bg-color: #eee;
+  --main-color: #323232;
+  position: relative;
+  width: 150px;
+  height: 40px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  border: 2px solid var(--main-color);
+  box-shadow: 4px 4px var(--main-color);
+  background-color: var(--bg-color);
+  border-radius: 10px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.cx-events-clear-button,
+.cx-events-clear-button__icon,
+.cx-events-clear-button__text {
+  transition: all 0.3s;
+}
+
+.cx-events-clear-button .cx-events-clear-button__text {
+  transform: translateX(18px);
+  color: var(--font-color);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.cx-events-clear-button .cx-events-clear-button__icon {
+  position: absolute;
+  transform: translateX(109px);
+  height: 100%;
+  width: 39px;
+  background-color: var(--bg-color-sub);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cx-events-clear-button .cx-events-clear-button__svg {
+  width: 20px;
+  fill: var(--main-color);
+}
+
+.cx-events-clear-button:hover {
+  background: var(--bg-color);
+}
+
+.cx-events-clear-button:hover .cx-events-clear-button__text {
+  color: transparent;
+}
+
+.cx-events-clear-button:hover .cx-events-clear-button__icon {
+  width: 148px;
+  transform: translateX(0);
+}
+
+.cx-events-clear-button:active {
+  transform: translate(3px, 3px);
+  box-shadow: 0 0 var(--main-color);
+}
+
+.cx-events-clear-button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
