@@ -246,7 +246,8 @@ class MachineMonitorEngine:
         now = time.monotonic()
         self.replay_buffer.add(frame, self.state.state, self.state.operator_present, self.config.replay_pre_seconds + self.config.replay_post_seconds + self.config.stop_seconds)
         if now - self._last_analysis < 1.0 / max(0.1, self.analysis_fps):
-            self.state.analysis_status = "FRAME_STALE"
+            # Frame recebido normalmente; apenas ignorado pelo limitador de FPS.
+            # Preserva o último status válido para não contaminar a cobertura.
             return self.state
         dt = max(0.001, now - self.state.last_update)
         self._last_analysis = now
@@ -492,10 +493,9 @@ class MachineMonitorEngine:
             self._open_event(now, frame, "machine_stopped")
         else:
             self._close_event_type("machine_stopped", now)
-        if machine_event_ready and self.state.state == "ACTIVE" and not self.state.operator_present and self.state.operator_absence_confirmed:
-            self._open_timed_event(now, frame, "machine_running_without_operator", self.config.operator_absence_seconds, "high")
-        else:
-            self._close_event_type("machine_running_without_operator", now)
+        # Operator absence is contextual data only in V1.
+        # It must never create a client-facing operational event by itself.
+        self._close_event_type("machine_running_without_operator", now)
         if machine_event_ready and self.state.state == "STOPPED" and self.state.operator_present:
             self._open_timed_event(now, frame, "machine_stopped_with_operator", self.config.stopped_with_operator_seconds, "medium")
         else:
