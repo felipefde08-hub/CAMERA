@@ -277,7 +277,7 @@ const routes = {
     actionHref: "/settings/cameras",
     emptyTitle: "Nenhuma configuração encontrada.",
     emptyDescription: "Abra uma área de configuração para ajustar o piloto local.",
-    tabs: ["Empresa", "Unidades", "Usuários", "Câmeras", "Máquinas e áreas", "Alertas", "Integrações", "Segurança", "Retenção"],
+    tabs: ["Empresa", "Unidades", "Usuários", "Câmeras", "Máquinas e áreas", "Edges", "Alertas", "Integrações", "Segurança", "Retenção"],
     filters: ["Área"],
     columns: ["Configuração", "Destino"],
     transform: () => [
@@ -286,6 +286,7 @@ const routes = {
       { name: "Usuários", href: "/users", note: "Convites, permissões e vínculo ao cliente." },
       { name: "Câmeras", href: "/settings/cameras" },
       { name: "Máquinas e áreas", href: "/settings/cameras#maquinas", note: "Zonas e parâmetros de calibração." },
+      { name: "Edges", href: "/edges", note: "Computadores Campex conectados às unidades." },
       { name: "Alertas", href: "/settings/notifications", note: "Destinatários e entregas." },
       { name: "Integrações", href: "/integrations", note: "Conexões futuras com sistemas da operação." },
       { name: "Segurança", href: "/settings/account", note: "Sessão, credenciais protegidas e acesso local." },
@@ -293,6 +294,30 @@ const routes = {
     ],
     row: (item) => [item.name, `<span>${item.note || "Configuração do piloto local."}</span> <a class="cx-link" href="${item.href}">Abrir</a>`],
   },
+  "/edges": {
+    title: "Campex Edge",
+    section: "platform",
+    breadcrumb: "Plataforma / Configurações / Edges",
+    permissions: [],
+    heading: "Campex Edge",
+    subtitle: "Computadores responsáveis por conectar a operação física à Campex.",
+    endpoint: "/edge-devices",
+    action: "Instalar Campex Edge",
+    actionType: "install-edge",
+    emptyTitle: "Nenhum Edge instalado.",
+    emptyDescription: "Instale o Campex Edge em um computador da unidade para conectar câmeras e iniciar o monitoramento.",
+    tabs: ["Todos", "Online", "Offline"],
+    filters: ["Unidade", "Status"],
+    columns: ["Edge", "Unidade", "Status", "Último contato"],
+    transform: (payload) => Array.isArray(payload) ? payload : [],
+    row: (edge) => [
+      edge.nome || edge.id || "Campex Edge",
+      edge.unidade_id || "—",
+      badge(edge.online ? "Online" : "Offline"),
+      edge.last_seen_at || "Nunca",
+    ],
+  },
+
   "/settings/cameras": {
     title: "Configurações de câmeras",
     section: "platform",
@@ -1792,6 +1817,7 @@ async function renderReportsPage(config) {
 
   const sendTime = schedule.send_time || "08:00";
   const destination = schedule.email || "";
+  const recipientName = schedule.recipient_name || "";
 
   function nextSendLabel(timeValue) {
     const [hour, minute] = String(timeValue || "08:00")
@@ -1952,6 +1978,17 @@ async function renderReportsPage(config) {
                       WhatsApp — requer integração
                     </option>
                   </select>
+                </label>
+
+                <label>
+                  Nome do destinatário
+                  <input
+                    type="text"
+                    name="recipient_name"
+                    value="${sanitize(recipientName)}"
+                    placeholder="Ex.: João"
+                    required
+                  />
                 </label>
 
                 <label>
@@ -2210,6 +2247,9 @@ async function renderReportsPage(config) {
         ),
         email: String(
           data.get("email") || ""
+        ).trim(),
+        recipient_name: String(
+          data.get("recipient_name") || ""
         ).trim(),
       };
 
@@ -3420,6 +3460,84 @@ function renderOperationsAuthState(area = "Operação") {
   tableTitle.textContent = "";
   tableHint.textContent = "";
   primaryAction.textContent = "Entrar";
+
+async function openEdgeInstaller() {
+  drawer.classList.add("open");
+  drawer.setAttribute("aria-hidden", "false");
+  drawerContent.innerHTML = `
+    <div class="cx-drawer-section">
+      <p class="cx-eyebrow">Campex Edge</p>
+      <h2 id="workspaceDrawerTitle">Instalar Campex Edge</h2>
+      <p>Escolha a unidade onde este computador será instalado.</p>
+
+      <label class="cx-field">
+        <span>Unidade</span>
+        <select id="cx-edge-install-unit">
+          <option value="">Carregando unidades...</option>
+        </select>
+      </label>
+
+      <div id="cx-edge-install-status" role="status"></div>
+
+      <button
+        id="cx-edge-install-download"
+        class="cx-primary-action"
+        type="button"
+        disabled
+      >
+        Baixar Campex Edge
+      </button>
+    </div>
+  `;
+
+  drawer.focus({ preventScroll: true });
+
+  const select = drawerContent.querySelector("#cx-edge-install-unit");
+  const button = drawerContent.querySelector("#cx-edge-install-download");
+  const status = drawerContent.querySelector("#cx-edge-install-status");
+
+  try {
+    const response = await fetch("/unidades", { credentials: "same-origin" });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const units = await response.json();
+
+    if (!Array.isArray(units) || !units.length) {
+      select.innerHTML = `<option value="">Nenhuma unidade cadastrada</option>`;
+      status.textContent = "Cadastre uma unidade antes de instalar o Edge.";
+      return;
+    }
+
+    select.innerHTML = `
+      <option value="">Selecione uma unidade</option>
+      ${units.map((unit) => `
+        <option value="${unit.id}">
+          ${unit.nome || unit.id}
+        </option>
+      `).join("")}
+    `;
+
+    select.addEventListener("change", () => {
+      button.disabled = !select.value;
+    });
+
+    button.addEventListener("click", () => {
+      if (!select.value) return;
+
+      status.textContent = "Preparando instalador...";
+      window.location.href =
+        `/edge-installer/windows?unidade_id=${encodeURIComponent(select.value)}`;
+    });
+  } catch (error) {
+    select.innerHTML = `<option value="">Não foi possível carregar</option>`;
+    status.textContent = "Não foi possível carregar as unidades.";
+  }
+}
+
+
   primaryAction.onclick = () => {
     window.location.href = `/login?next=${target}`;
   };
@@ -3772,6 +3890,11 @@ async function loadPage(path = window.location.pathname) {
   body.closest("table")?.setAttribute("aria-hidden", "false");
   primaryAction.textContent = config.action || "Nova ação";
   primaryAction.onclick = () => {
+    if (config.actionType === "install-edge") {
+      openEdgeInstaller();
+      return;
+    }
+
     if (config.actionType === "visual-rule") {
       drawer.classList.add("open");
       drawer.setAttribute("aria-hidden", "false");

@@ -9,6 +9,7 @@ from unittest.mock import patch
 import httpx
 from fastapi.testclient import TestClient
 
+from app.auth import create_user
 from app.database import connect as edge_connect
 from app.database import init_db
 from app.models import criar_camera, criar_cliente, criar_unidade, registrar_evento
@@ -25,7 +26,28 @@ class EdgeCloudIntegrationTest(unittest.TestCase):
     def make_cloud_client(self, temp_dir: str) -> TestClient:
         cloud_database.DATABASE_URL = ""
         cloud_database.SQLITE_CLOUD_PATH = Path(temp_dir) / "cloud.sqlite3"
-        return TestClient(cloud_api)
+        client = TestClient(cloud_api)
+
+        with cloud_database.connect() as db:
+            cloud_database.init_cloud_db(db)
+            create_user(
+                db,
+                email="admin@campex.test",
+                password="SenhaCampex123",
+                role="admin_campex",
+                nome="Admin Campex",
+            )
+
+        response = client.post(
+            "/auth/login",
+            json={
+                "email": "admin@campex.test",
+                "senha": "SenhaCampex123",
+            },
+        )
+        assert response.status_code == 200
+
+        return client
 
     def register_edge(self, client: TestClient, tenant_id: str = "cli_fl", unidade_id: str = "uni_fl") -> None:
         response = client.post(
@@ -75,7 +97,7 @@ class EdgeCloudIntegrationTest(unittest.TestCase):
         self.assertEqual(health.status_code, 200)
         self.assertEqual(health.json()["status"], "ok")
         self.assertEqual(dashboard.status_code, 200)
-        self.assertIn("Campex Operations", dashboard.text)
+        self.assertIn('id="workspaceTitle"', dashboard.text)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "received")
         self.assertEqual(len(events), 1)

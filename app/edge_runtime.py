@@ -6,6 +6,8 @@ import signal
 import shutil
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -118,6 +120,23 @@ class ProductionEdgeRuntime:
                 disk_used_percent=round((disk.used / disk.total) * 100, 2) if disk.total else None,
             )
 
+    def _send_cloud_heartbeat(self, cloud_url: str, edge_secret: str) -> None:
+        url = f"{cloud_url.rstrip('/')}/edge/heartbeat"
+        request = urllib.request.Request(
+            url,
+            data=b"{}",
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-Edge-Id": self.edge_id,
+                "X-Edge-Secret": edge_secret,
+            },
+        )
+        with urllib.request.urlopen(request, timeout=5.0) as response:
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError(f"Cloud heartbeat retornou HTTP {response.status}")
+
+
     def _run_outbox_sync(self) -> None:
         cloud_url = os.getenv("CAMPEX_CLOUD_URL")
         edge_secret = os.getenv("CAMPEX_EDGE_SECRET")
@@ -126,11 +145,17 @@ class ProductionEdgeRuntime:
             return
         while not self.stop_event.is_set():
             try:
+                self._send_cloud_heartbeat(cloud_url, edge_secret)
+            except Exception as exc:
+                logger.warning("Falha temporaria no heartbeat com Cloud: %s", exc)
+
+            try:
                 with db_connect(self.db_path) as connection:
                     init_db(connection)
                     flush_sync_outbox(connection, cloud_url, self.edge_id, edge_secret)
             except Exception as exc:
                 logger.warning("Falha temporaria ao sincronizar outbox: %s", exc)
+
             self.stop_event.wait(self.sync_seconds)
 
     def _run_alert_delivery_resume(self) -> None:

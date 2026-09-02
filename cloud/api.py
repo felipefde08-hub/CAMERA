@@ -2,15 +2,26 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
+from urllib.parse import quote
 from typing import Any, Optional
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import ROOT
+from app.auth import (
+    ADMIN_ROLES,
+    authenticate,
+    create_session,
+    create_user,
+    delete_session,
+    get_request_user,
+    users_exist,
+)
 from cloud.database import connect, init_cloud_db, is_postgres_url
 from cloud.security import hash_edge_secret, verify_edge_secret
 from shared.schemas import now_iso
@@ -22,6 +33,24 @@ FRONTEND_DIR = ROOT / "frontend"
 
 if FRONTEND_DIR.exists():
     api.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+
+
+class LoginIn(BaseModel):
+    email: str
+    senha: str
+
+
+class CloudClienteIn(BaseModel):
+    nome: str = Field(min_length=1)
+    documento: Optional[str] = None
+    status: str = "ativo"
+
+
+class CloudUnidadeIn(BaseModel):
+    cliente_id: Optional[str] = None
+    nome: str = Field(min_length=1)
+    localizacao: Optional[str] = None
+    timezone: str = "America/Sao_Paulo"
 
 
 class EdgeDeviceIn(BaseModel):
@@ -60,10 +89,37 @@ class ReportDeliveryIn(BaseModel):
     html_body: str
 
 
+def _cookie_secure() -> bool:
+    return os.getenv("CAMPEX_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _bootstrap_cloud_admin() -> None:
+    email = os.getenv("CAMPEX_CLOUD_ADMIN_EMAIL", "").strip().lower()
+    password = os.getenv("CAMPEX_CLOUD_ADMIN_PASSWORD", "")
+    if not email or not password:
+        LOGGER.warning("Cloud sem credenciais bootstrap configuradas.")
+        return
+    if len(password) < 8:
+        raise RuntimeError("CAMPEX_CLOUD_ADMIN_PASSWORD deve ter pelo menos 8 caracteres.")
+
+    with connect() as db:
+        init_cloud_db(db)
+        if users_exist(db):
+            return
+        create_user(
+            db,
+            email=email,
+            password=password,
+            role="admin_campex",
+            nome="Administrador Campex",
+        )
+        LOGGER.info("Administrador inicial do Campex Cloud criado.")
+
 
 @api.on_event("startup")
 def startup() -> None:
     init_cloud_db()
+    _bootstrap_cloud_admin()
 
 
 @api.get("/health")
@@ -73,35 +129,314 @@ def health() -> dict[str, Any]:
 
 @api.get("/")
 def root() -> RedirectResponse:
-    return RedirectResponse(url="/dashboard", status_code=307)
+    return RedirectResponse(url="/operations-view", status_code=307)
 
 
 INTERNAL_ROUTES = {
-    "/dashboard": "dashboard.html",
-    "/overview": "dashboard.html",
+    "/dashboard": "workspace.html",
+    "/overview": "workspace.html",
+    "/operations-view": "workspace.html",
+    "/cameras": "workspace.html",
     "/events": "workspace.html",
+    "/alerts": "workspace.html",
     "/evidence": "workspace.html",
+    "/rules": "workspace.html",
+    "/reports": "workspace.html",
+    "/insights": "workspace.html",
+    "/history": "workspace.html",
+    "/integrations": "workspace.html",
+    "/users": "workspace.html",
+    "/edges": "workspace.html",
+    "/settings": "workspace.html",
+    "/settings/cameras": "index.html",
+    "/settings/notifications": "workspace.html",
+    "/settings/account": "workspace.html",
+    "/help": "workspace.html",
 }
 
 
-for internal_route, html_file in INTERNAL_ROUTES.items():
-    async def serve_internal(file_name: str = html_file) -> FileResponse:
-        return FileResponse(FRONTEND_DIR / file_name)
+def _cloud_user(request: Request) -> dict[str, Any] | None:
+    with connect() as db:
+        init_cloud_db(db)
+        return get_request_user(request, db)
 
-    api.add_api_route(internal_route, serve_internal, methods=["GET"], include_in_schema=False)
+
+def _require_cloud_user(request: Request) -> dict[str, Any]:
+    user = _cloud_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Login necessario.")
+    return user
+
+
+def _login_redirect(request: Request) -> RedirectResponse:
+    next_path = request.url.path
+    if request.url.query:
+        next_path = f"{next_path}?{request.url.query}"
+    return RedirectResponse(
+        url=f"/login?next={quote(next_path, safe='')}",
+        status_code=303,
+    )
+
+
+@api.get("/login", include_in_schema=False)
+def cloud_login_page() -> FileResponse:
+    return FileResponse(FRONTEND_DIR / "login.html")
+
+
+@api.get("/login/", include_in_schema=False)
+def cloud_login_page_slash() -> FileResponse:
+    return cloud_login_page()
+
+
+async def serve_internal(request: Request):
+    if _cloud_user(request) is None:
+        return _login_redirect(request)
+    file_name = INTERNAL_ROUTES.get(request.url.path)
+    if file_name is None:
+        raise HTTPException(status_code=404, detail="Pagina nao encontrada.")
+    return FileResponse(FRONTEND_DIR / file_name)
+
+
+for internal_route in INTERNAL_ROUTES:
+    api.add_api_route(
+        internal_route,
+        serve_internal,
+        methods=["GET"],
+        include_in_schema=False,
+    )
+
+
+@api.post("/auth/login")
+def cloud_post_login(payload: LoginIn, response: Response) -> dict[str, Any]:
+    with connect() as db:
+        init_cloud_db(db)
+        user = authenticate(db, payload.email, payload.senha)
+        if user is None:
+            raise HTTPException(status_code=401, detail="E-mail ou senha invalidos.")
+        token = create_session(db, user["id"])
+
+    response.set_cookie(
+        "campex_session",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+        max_age=60 * 60 * 12,
+    )
+    return {"user": user, "next": "/operations-view?view=home"}
+
+
+@api.post("/auth/logout")
+def cloud_post_logout(request: Request, response: Response) -> dict[str, bool]:
+    token = request.cookies.get("campex_session")
+    if token:
+        with connect() as db:
+            init_cloud_db(db)
+            delete_session(db, token)
+    response.delete_cookie("campex_session")
+    return {"ok": True}
+
+
+@api.get("/auth/me")
+def cloud_auth_me(request: Request) -> dict[str, Any]:
+    return {"user": _require_cloud_user(request)}
 
 
 @api.get("/auth/status")
-def cloud_auth_status() -> dict[str, Any]:
+def cloud_auth_status(request: Request) -> dict[str, Any]:
+    user = _cloud_user(request)
     return {
-        "authenticated": True,
-        "bootstrap": True,
-        "user": {"nome": "Campex Cloud", "role": "admin_campex"},
+        "authenticated": user is not None,
+        "bootstrap": False,
+        "user": user,
     }
 
 
+
+def _cloud_new_id(prefix: str) -> str:
+    import uuid
+    return f"{prefix}_{uuid.uuid4().hex[:16]}"
+
+
+@api.get("/clientes")
+def cloud_get_clientes(request: Request) -> list[dict[str, Any]]:
+    user = _require_cloud_user(request)
+
+    with connect() as db:
+        init_cloud_db(db)
+
+        if user.get("role") == "admin_campex":
+            rows = db.fetchall(
+                "SELECT * FROM clientes ORDER BY nome"
+            )
+        else:
+            cliente_id = user.get("cliente_id")
+            if not cliente_id:
+                return []
+            rows = db.fetchall(
+                "SELECT * FROM clientes WHERE id = ? ORDER BY nome",
+                (cliente_id,),
+            )
+
+    return [dict(row) for row in rows]
+
+
+@api.post("/clientes")
+def cloud_post_cliente(
+    payload: CloudClienteIn,
+    request: Request,
+) -> dict[str, Any]:
+    user = _require_cloud_user(request)
+
+    if user.get("role") != "admin_campex":
+        raise HTTPException(
+            status_code=403,
+            detail="Somente admin Campex cria clientes.",
+        )
+
+    cliente_id = _cloud_new_id("cli")
+
+    with connect() as db:
+        init_cloud_db(db)
+        db.execute(
+            """
+            INSERT INTO clientes (
+                id,
+                nome,
+                documento,
+                status
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                cliente_id,
+                payload.nome.strip(),
+                payload.documento,
+                payload.status.strip() or "ativo",
+            ),
+        )
+        db.commit()
+
+        row = db.fetchone(
+            "SELECT * FROM clientes WHERE id = ?",
+            (cliente_id,),
+        )
+
+    return dict(row)
+
+
+@api.get("/unidades")
+def cloud_get_unidades(
+    request: Request,
+    cliente_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    user = _require_cloud_user(request)
+
+    effective_cliente_id = cliente_id
+
+    if user.get("role") != "admin_campex":
+        effective_cliente_id = user.get("cliente_id")
+
+    with connect() as db:
+        init_cloud_db(db)
+
+        if effective_cliente_id:
+            rows = db.fetchall(
+                """
+                SELECT *
+                FROM unidades
+                WHERE cliente_id = ?
+                ORDER BY nome
+                """,
+                (effective_cliente_id,),
+            )
+        elif user.get("role") == "admin_campex":
+            rows = db.fetchall(
+                "SELECT * FROM unidades ORDER BY nome"
+            )
+        else:
+            rows = []
+
+    return [dict(row) for row in rows]
+
+
+@api.post("/unidades")
+def cloud_post_unidade(
+    payload: CloudUnidadeIn,
+    request: Request,
+) -> dict[str, Any]:
+    user = _require_cloud_user(request)
+
+    if user.get("role") not in ADMIN_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Permissao insuficiente.",
+        )
+
+    if user.get("role") == "admin_campex":
+        cliente_id = (payload.cliente_id or "").strip()
+        if not cliente_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Informe o cliente da unidade.",
+            )
+    else:
+        cliente_id = str(user.get("cliente_id") or "").strip()
+        if not cliente_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Usuario sem cliente vinculado.",
+            )
+
+    with connect() as db:
+        init_cloud_db(db)
+
+        cliente = db.fetchone(
+            "SELECT id FROM clientes WHERE id = ?",
+            (cliente_id,),
+        )
+        if not cliente:
+            raise HTTPException(
+                status_code=404,
+                detail="Cliente nao encontrado.",
+            )
+
+        unidade_id = _cloud_new_id("uni")
+
+        db.execute(
+            """
+            INSERT INTO unidades (
+                id,
+                cliente_id,
+                nome,
+                localizacao,
+                timezone
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                unidade_id,
+                cliente_id,
+                payload.nome.strip(),
+                payload.localizacao,
+                payload.timezone,
+            ),
+        )
+        db.commit()
+
+        row = db.fetchone(
+            "SELECT * FROM unidades WHERE id = ?",
+            (unidade_id,),
+        )
+
+    return dict(row)
+
+
 @api.post("/admin/edge-devices")
-def create_edge_device(payload: EdgeDeviceIn) -> dict[str, Any]:
+def create_edge_device(payload: EdgeDeviceIn, request: Request) -> dict[str, Any]:
+    user = _require_cloud_user(request)
+    if user.get("role") not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permissao insuficiente.")
     with connect() as db:
         init_cloud_db(db)
         existing = db.fetchone("SELECT id FROM edge_devices WHERE id = ?", (payload.id,))
@@ -126,6 +461,292 @@ def create_edge_device(payload: EdgeDeviceIn) -> dict[str, Any]:
         )
         db.commit()
     return {"id": payload.id, "tenant_id": payload.tenant_id, "status": "active"}
+
+
+
+
+
+@api.get("/edge-installer/windows")
+def download_windows_edge_installer(
+    request: Request,
+    unidade_id: str,
+) -> Response:
+    import base64
+    import os
+    import secrets
+
+    from cloud.edge_installer import build_windows_installer_cmd
+
+    user = _require_cloud_user(request)
+
+    if user.get("role") not in ADMIN_ROLES:
+        raise HTTPException(
+            status_code=403,
+            detail="Permissao insuficiente para instalar Edge.",
+        )
+
+    with connect() as db:
+        init_cloud_db(db)
+
+        unidade = db.fetchone(
+            "SELECT * FROM unidades WHERE id = ?",
+            (unidade_id,),
+        )
+
+        if not unidade:
+            raise HTTPException(
+                status_code=404,
+                detail="Unidade nao encontrada.",
+            )
+
+        cliente_id = str(unidade["cliente_id"])
+
+        if (
+            user.get("role") != "admin_campex"
+            and str(user.get("cliente_id") or "") != cliente_id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Unidade pertence a outro cliente.",
+            )
+
+        edge_id = _cloud_new_id("edge")
+        edge_secret = secrets.token_urlsafe(32)
+        credential_key = base64.urlsafe_b64encode(
+            os.urandom(32)
+        ).decode("ascii")
+
+        created_at = now_iso()
+
+        db.execute(
+            """
+            INSERT INTO edge_devices (
+                id,
+                tenant_id,
+                cliente_id,
+                unidade_id,
+                nome,
+                secret_hash,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+            """,
+            (
+                edge_id,
+                cliente_id,
+                cliente_id,
+                unidade_id,
+                f"Campex Edge - {unidade['nome']}",
+                hash_edge_secret(edge_secret),
+                created_at,
+                created_at,
+            ),
+        )
+        db.commit()
+
+    cloud_url = str(request.base_url).rstrip("/")
+
+    installer = build_windows_installer_cmd(
+        cloud_url=cloud_url,
+        edge_id=edge_id,
+        edge_secret=edge_secret,
+        credential_key=credential_key,
+    )
+
+    return Response(
+        content=installer,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": 'attachment; filename="Instalar-Campex.cmd"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@api.get("/edge-package/windows")
+def download_windows_edge_package(
+    x_edge_id: Optional[str] = Header(default=None, alias="X-Edge-Id"),
+    x_edge_secret: Optional[str] = Header(default=None, alias="X-Edge-Secret"),
+):
+    import os
+
+    from starlette.background import BackgroundTask
+    from cloud.edge_installer import create_windows_edge_package
+
+    if not x_edge_id or not x_edge_secret:
+        raise HTTPException(
+            status_code=401,
+            detail="Credenciais do Edge ausentes.",
+        )
+
+    with connect() as db:
+        init_cloud_db(db)
+
+        device = db.fetchone(
+            "SELECT * FROM edge_devices WHERE id = ?",
+            (x_edge_id,),
+        )
+
+        if not device or not verify_edge_secret(
+            x_edge_secret,
+            device["secret_hash"],
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail="Edge nao autorizado.",
+            )
+
+        if device["status"] != "active" or device.get("revoked_at"):
+            raise HTTPException(
+                status_code=403,
+                detail="Edge revogado ou inativo.",
+            )
+
+    project_root = Path(__file__).resolve().parents[1]
+    zip_path = create_windows_edge_package(project_root)
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename="campex-edge-package.zip",
+        background=BackgroundTask(
+            lambda: os.unlink(zip_path)
+            if os.path.exists(zip_path)
+            else None
+        ),
+    )
+
+
+@api.get("/edge-devices")
+def list_edge_devices(
+    request: Request,
+    cliente_id: Optional[str] = None,
+    unidade_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    from datetime import datetime, timezone
+
+    user = _require_cloud_user(request)
+
+    effective_cliente_id = cliente_id
+    if user.get("role") != "admin_campex":
+        effective_cliente_id = user.get("cliente_id")
+
+    clauses = []
+    params: list[Any] = []
+
+    if effective_cliente_id:
+        clauses.append("cliente_id = ?")
+        params.append(effective_cliente_id)
+
+    if unidade_id:
+        clauses.append("unidade_id = ?")
+        params.append(unidade_id)
+
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    with connect() as db:
+        init_cloud_db(db)
+        rows = db.fetchall(
+            f"""
+            SELECT
+                id,
+                tenant_id,
+                cliente_id,
+                unidade_id,
+                nome,
+                status,
+                revoked_at,
+                created_at,
+                updated_at,
+                last_seen_at
+            FROM edge_devices
+            {where}
+            ORDER BY nome
+            """,
+            tuple(params),
+        )
+
+    now = datetime.now(timezone.utc)
+    result = []
+
+    for row in rows:
+        item = dict(row)
+        last_seen = item.get("last_seen_at")
+        online = False
+
+        if last_seen and item.get("status") == "active" and not item.get("revoked_at"):
+            try:
+                parsed = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                online = (
+                    now - parsed.astimezone(timezone.utc)
+                ).total_seconds() <= 90
+            except Exception:
+                online = False
+
+        item["online"] = online
+        item["connection_status"] = "online" if online else "offline"
+        item["last_seen_at"] = last_seen
+        result.append(item)
+
+    return result
+
+
+@api.post("/edge/heartbeat")
+def edge_heartbeat(
+    x_edge_id: Optional[str] = Header(default=None, alias="X-Edge-Id"),
+    x_edge_secret: Optional[str] = Header(default=None, alias="X-Edge-Secret"),
+) -> dict[str, Any]:
+    if not x_edge_id or not x_edge_secret:
+        raise HTTPException(
+            status_code=401,
+            detail="Credenciais do Edge ausentes.",
+        )
+
+    with connect() as db:
+        init_cloud_db(db)
+
+        device = db.fetchone(
+            "SELECT * FROM edge_devices WHERE id = ?",
+            (x_edge_id,),
+        )
+
+        if not device or not verify_edge_secret(
+            x_edge_secret,
+            device["secret_hash"],
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail="Edge nao autorizado.",
+            )
+
+        if device["status"] != "active" or device.get("revoked_at"):
+            raise HTTPException(
+                status_code=403,
+                detail="Edge revogado ou inativo.",
+            )
+
+        seen_at = now_iso()
+
+        db.execute(
+            """
+            UPDATE edge_devices
+            SET last_seen_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (seen_at, seen_at, x_edge_id),
+        )
+        db.commit()
+
+    return {
+        "ok": True,
+        "edge_id": x_edge_id,
+        "status": "online",
+        "seen_at": seen_at,
+    }
 
 
 def _send_cloud_report_email(payload: ReportDeliveryIn) -> str:
@@ -366,7 +987,6 @@ def receive_report_delivery(
             "idempotent": False,
             "provider_message_id": provider_message_id,
         }
-
 
 
 @api.post("/edge/events")
