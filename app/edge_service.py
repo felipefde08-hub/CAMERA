@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import platform
 import plistlib
 import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -21,6 +23,9 @@ PLIST_PATH = LAUNCH_AGENTS_DIR / f"{LABEL}.plist"
 LAUNCHER_PATH = ROOT / "deployment" / "run-campex-edge.sh"
 STDOUT_LOG = ROOT / "logs" / "edge.stdout.log"
 STDERR_LOG = ROOT / "logs" / "edge.stderr.log"
+
+WINDOWS_TASK_NAME = "Campex Edge"
+WINDOWS_LAUNCHER_PATH = ROOT / "deployment" / "run_campex_edge_windows.py"
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,146 @@ def _wait_for_api_health(timeout_seconds: float = 15.0, interval_seconds: float 
     return False, f"timeout aguardando /health em {url}: {last_error}"
 
 
+
+def _is_windows() -> bool:
+    return platform.system().lower() == "windows"
+
+
+def _windows_pythonw() -> Path:
+    executable = Path(sys.executable)
+    candidate = executable.with_name("pythonw.exe")
+    return candidate if candidate.exists() else executable
+
+
+def _windows_task_command() -> str:
+    pythonw = _windows_pythonw()
+    return f'"{pythonw}" "{WINDOWS_LAUNCHER_PATH}"'
+
+
+def _run_schtasks(args: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["schtasks", *args],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _install_windows_service() -> EdgeServiceResult:
+    try:
+        validate_edge_config()
+    except EdgeConfigError as exc:
+        return EdgeServiceResult(False, f"Campex Edge configuration error:\n{exc}")
+
+    if not WINDOWS_LAUNCHER_PATH.exists():
+        return EdgeServiceResult(
+            False,
+            f"Launcher Windows não encontrado: {WINDOWS_LAUNCHER_PATH}",
+        )
+
+    (ROOT / "logs").mkdir(parents=True, exist_ok=True)
+
+    result = _run_schtasks([
+        "/Create",
+        "/TN", WINDOWS_TASK_NAME,
+        "/SC", "ONLOGON",
+        "/TR", _windows_task_command(),
+        "/F",
+    ])
+
+    if result.returncode != 0:
+        return EdgeServiceResult(
+            False,
+            result.stderr.strip()
+            or result.stdout.strip()
+            or "Falha ao instalar tarefa Campex Edge.",
+        )
+
+    return EdgeServiceResult(
+        True,
+        "Campex Edge instalado no Windows Task Scheduler.",
+    )
+
+
+def _start_windows_service() -> EdgeServiceResult:
+    query = _run_schtasks(["/Query", "/TN", WINDOWS_TASK_NAME])
+    if query.returncode != 0:
+        installed = _install_windows_service()
+        if not installed.ok:
+            return installed
+
+    result = _run_schtasks(["/Run", "/TN", WINDOWS_TASK_NAME])
+    if result.returncode != 0:
+        return EdgeServiceResult(
+            False,
+            result.stderr.strip()
+            or result.stdout.strip()
+            or "Falha ao iniciar Campex Edge.",
+        )
+
+    api_ready, api_detail = _wait_for_api_health(timeout_seconds=25.0)
+    if not api_ready:
+        return EdgeServiceResult(
+            False,
+            f"Tarefa iniciada, mas API não ficou pronta: {api_detail}",
+        )
+
+    return EdgeServiceResult(
+        True,
+        f"Campex Edge iniciado em segundo plano. {api_detail}.",
+    )
+
+
+def _stop_windows_service() -> EdgeServiceResult:
+    result = _run_schtasks(["/End", "/TN", WINDOWS_TASK_NAME])
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().lower()
+        if "cannot find" not in detail and "não" not in detail:
+            return EdgeServiceResult(
+                False,
+                result.stderr.strip()
+                or result.stdout.strip()
+                or "Falha ao parar Campex Edge.",
+            )
+    return EdgeServiceResult(True, "Campex Edge parado.")
+
+
+def _uninstall_windows_service() -> EdgeServiceResult:
+    _stop_windows_service()
+    result = _run_schtasks([
+        "/Delete",
+        "/TN", WINDOWS_TASK_NAME,
+        "/F",
+    ])
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip().lower()
+        if "cannot find" not in detail and "não" not in detail:
+            return EdgeServiceResult(
+                False,
+                result.stderr.strip()
+                or result.stdout.strip()
+                or "Falha ao remover Campex Edge.",
+            )
+    return EdgeServiceResult(True, "Campex Edge removido do Windows.")
+
+
+def _status_windows_service() -> EdgeServiceResult:
+    result = _run_schtasks([
+        "/Query",
+        "/TN", WINDOWS_TASK_NAME,
+        "/FO", "LIST",
+        "/V",
+    ])
+    if result.returncode != 0:
+        return EdgeServiceResult(
+            True,
+            result.stderr.strip()
+            or result.stdout.strip()
+            or "Campex Edge não instalado.",
+        )
+    return EdgeServiceResult(True, result.stdout.strip())
+
+
 def _ensure_service_files() -> None:
     if not LAUNCHER_PATH.exists():
         raise RuntimeError(f"Launcher não encontrado: {LAUNCHER_PATH}")
@@ -74,6 +219,9 @@ def _ensure_service_files() -> None:
 
 
 def install_service() -> EdgeServiceResult:
+    if _is_windows():
+        return _install_windows_service()
+
     try:
         validate_edge_config()
     except EdgeConfigError as exc:
@@ -90,6 +238,9 @@ def install_service() -> EdgeServiceResult:
 
 
 def uninstall_service() -> EdgeServiceResult:
+    if _is_windows():
+        return _uninstall_windows_service()
+
     stop_service()
     if PLIST_PATH.exists():
         PLIST_PATH.unlink()
@@ -97,6 +248,9 @@ def uninstall_service() -> EdgeServiceResult:
 
 
 def start_service() -> EdgeServiceResult:
+    if _is_windows():
+        return _start_windows_service()
+
     if not PLIST_PATH.exists():
         install = install_service()
         if not install.ok:
@@ -115,6 +269,9 @@ def start_service() -> EdgeServiceResult:
 
 
 def stop_service() -> EdgeServiceResult:
+    if _is_windows():
+        return _stop_windows_service()
+
     user_domain = f"gui/{os.getuid()}"
     result = _run_launchctl(["bootout", user_domain, str(PLIST_PATH)])
     if result.returncode not in {0, 36, 113}:
@@ -130,6 +287,9 @@ def restart_service() -> EdgeServiceResult:
 
 
 def service_status() -> EdgeServiceResult:
+    if _is_windows():
+        return _status_windows_service()
+
     user_domain = f"gui/{os.getuid()}"
     result = _run_launchctl(["print", f"{user_domain}/{LABEL}"])
     if result.returncode == 0:
