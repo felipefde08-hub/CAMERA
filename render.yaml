@@ -2,7 +2,7 @@ services:
   - type: web
     name: campex-cloud
     runtime: python
-    plan: starter
+    plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python -m cloud.main"
     healthCheckPath: "/health"
@@ -16,4 +16,4 @@ services:
 
 databases:
   - name: campex-cloud-db
-    plan: starter
+    plan: free
