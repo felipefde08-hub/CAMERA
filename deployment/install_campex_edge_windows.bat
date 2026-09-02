@@ -26,7 +26,12 @@ if errorlevel 1 (
 )
 
 echo.
-echo Campex Edge instalado e funcionando.
+echo Campex instalado e funcionando.
+
+powershell -NoProfile -Command "$desktop=[Environment]::GetFolderPath('Desktop'); $p=Join-Path $desktop 'Campex.url'; Set-Content -Path $p -Value '[InternetShortcut]`r`nURL=http://127.0.0.1:8000/'"
+
+echo Atalho Campex criado na Area de Trabalho.
 start "" "http://127.0.0.1:8000/setup"
+
 timeout /t 3 /nobreak >nul
 exit /b 0
