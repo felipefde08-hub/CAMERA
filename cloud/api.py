@@ -986,20 +986,41 @@ def download_windows_edge_installer(
             edge_id = edge["id"]
             encrypted_secret = edge.get("edge_secret_encrypted")
             encrypted_credential_key = edge.get("credential_key_encrypted")
+            credentials_unrecoverable = False
+
             if not encrypted_secret or not encrypted_credential_key:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Esta unidade já possui um Edge sem credenciais recuperáveis. Revogue esse Edge ou solicite reinstalação assistida.",
-                )
-            try:
-                edge_secret = decrypt_secret(encrypted_secret)
-                credential_key = decrypt_secret(encrypted_credential_key)
-            except Exception as exc:
-                raise HTTPException(
-                    status_code=409,
-                    detail="As credenciais do Edge existente não podem ser recuperadas com a chave atual do Cloud.",
-                ) from exc
-        else:
+                credentials_unrecoverable = True
+            else:
+                try:
+                    edge_secret = decrypt_secret(encrypted_secret)
+                    credential_key = decrypt_secret(encrypted_credential_key)
+                except Exception:
+                    credentials_unrecoverable = True
+
+            if credentials_unrecoverable:
+                # Um Edge que nunca enviou heartbeat é apenas uma tentativa de
+                # instalação incompleta. Pode ser rotacionado com segurança.
+                if not edge.get("last_seen_at"):
+                    revoked_at = now_iso()
+                    db.execute(
+                        """
+                        UPDATE edge_devices
+                        SET status = 'revoked',
+                            revoked_at = ?,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (revoked_at, revoked_at, edge_id),
+                    )
+                    db.commit()
+                    edge = None
+                else:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Este Edge já foi utilizado e suas credenciais não podem ser recuperadas. Reinstalação assistida necessária.",
+                    )
+
+        if not edge:
             edge_id = _cloud_new_id("edge")
             edge_secret = secrets.token_urlsafe(32)
             credential_key = base64.urlsafe_b64encode(

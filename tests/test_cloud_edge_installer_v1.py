@@ -180,16 +180,18 @@ def test_repeated_installer_download_reuses_edge_identity_and_credential_key() -
         assert "credential_key_encrypted" not in client.get("/edge-devices").text
 
 
-def test_installer_does_not_create_duplicate_when_existing_edge_lacks_recoverable_secret() -> None:
+def test_installer_rotates_unused_edge_when_credentials_are_unrecoverable() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         client = make_client(temp_dir)
         cliente_id, unidade_id = bootstrap_account(client)
+
         with cloud_database.connect() as db:
             cloud_database.init_cloud_db(db)
             db.execute(
                 """
                 INSERT INTO edge_devices (
-                    id, tenant_id, cliente_id, unidade_id, nome, secret_hash, status, created_at, updated_at
+                    id, tenant_id, cliente_id, unidade_id, nome,
+                    secret_hash, status, created_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
@@ -197,14 +199,70 @@ def test_installer_does_not_create_duplicate_when_existing_edge_lacks_recoverabl
             )
             db.commit()
 
-        response = client.get("/edge-installer/windows", params={"unidade_id": unidade_id})
+        response = client.get(
+            "/edge-installer/windows",
+            params={"unidade_id": unidade_id},
+        )
+
+        assert response.status_code == 200
+
+        with cloud_database.connect() as db:
+            rows = db.fetchall(
+                """
+                SELECT id, status, revoked_at
+                FROM edge_devices
+                WHERE unidade_id = ?
+                ORDER BY created_at
+                """,
+                (unidade_id,),
+            )
+
+        assert len(rows) == 2
+        legacy = next(row for row in rows if row["id"] == "edge_legacy")
+        assert legacy["status"] == "revoked"
+        assert legacy["revoked_at"] is not None
+
+        active = [row for row in rows if row["status"] == "active"]
+        assert len(active) == 1
+        assert active[0]["id"] != "edge_legacy"
+
+
+def test_installer_refuses_rotation_when_existing_edge_was_already_used() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        client = make_client(temp_dir)
+        cliente_id, unidade_id = bootstrap_account(client)
+
+        with cloud_database.connect() as db:
+            cloud_database.init_cloud_db(db)
+            db.execute(
+                """
+                INSERT INTO edge_devices (
+                    id, tenant_id, cliente_id, unidade_id, nome,
+                    secret_hash, status, created_at, updated_at, last_seen_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'active',
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                ("edge_used", cliente_id, cliente_id, unidade_id, "Edge usado", "hash-only"),
+            )
+            db.commit()
+
+        response = client.get(
+            "/edge-installer/windows",
+            params={"unidade_id": unidade_id},
+        )
 
         assert response.status_code == 409
-        assert "sem credenciais recuperáveis" in response.json()["detail"]
-        with cloud_database.connect() as db:
-            total = db.fetchone("SELECT COUNT(*) AS total FROM edge_devices WHERE unidade_id = ?", (unidade_id,))
-        assert total["total"] == 1
 
+        with cloud_database.connect() as db:
+            rows = db.fetchall(
+                "SELECT id, status FROM edge_devices WHERE unidade_id = ?",
+                (unidade_id,),
+            )
+
+        assert len(rows) == 1
+        assert rows[0]["id"] == "edge_used"
+        assert rows[0]["status"] == "active"
 
 def test_installer_preserves_existing_env_and_data_on_reinstall() -> None:
     installer = build_windows_installer_cmd(
