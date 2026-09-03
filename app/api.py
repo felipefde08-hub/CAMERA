@@ -5029,6 +5029,7 @@ class ReportSchedulePayload(BaseModel):
     timezone: str = "America/Sao_Paulo"
     channel: str = "email"
     email: Optional[str] = None
+    recipient_name: Optional[str] = None
     whatsapp_number: Optional[str] = None
     tenant_id: Optional[str] = None
 
@@ -5126,6 +5127,7 @@ def put_reports_schedule(
                 timezone_name=payload.timezone,
                 channel=payload.channel,
                 email=payload.email,
+                recipient_name=payload.recipient_name,
                 whatsapp_number=payload.whatsapp_number,
             )
         except ValueError as exc:
@@ -5185,7 +5187,11 @@ def post_reports_send_now(
         )
 
         try:
-            send_report_email(report, str(email))
+            send_report_email(
+                report,
+                str(email),
+                schedule.get("recipient_name"),
+            )
         except Exception as exc:
             raise HTTPException(
                 status_code=503,

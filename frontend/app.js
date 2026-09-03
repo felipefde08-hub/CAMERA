@@ -85,6 +85,7 @@ const machineConfigList = document.querySelector("#machineConfigList");
 const unitClientSelect = document.querySelector("#unitClientSelect");
 const userClientSelect = document.querySelector("#userClientSelect");
 const cameraUnitSelect = document.querySelector("#cameraUnitSelect");
+const cameraEdgeSelect = document.querySelector("#cameraEdgeSelect");
 const machineCameraSelect = document.querySelector("#machineCameraSelect");
 const setupSaveStatus = document.querySelector("#setupSaveStatus");
 const setupUnitForm = document.querySelector("#setupUnitForm");
@@ -145,6 +146,7 @@ const setupSections = Array.from(document.querySelectorAll("[data-setup-section]
 let currentCameraId = null;
 let currentCameraName = null;
 let statusTimer = null;
+let latestFrameTimer = null;
 let eventTimer = null;
 let deliveryTimer = null;
 let eventSource = null;
@@ -161,6 +163,7 @@ const seenAlertEvents = new Set();
 let liveAlerts = [];
 let knownClients = [];
 let knownUnits = [];
+let knownEdges = [];
 let knownCameras = [];
 let knownRecipients = [];
 let knownUsers = [];
@@ -301,6 +304,31 @@ function fillSelect(select, items, emptyLabel) {
     `<option value="">${emptyLabel}</option>`,
     ...items.map((item) => `<option value="${item.id}">${item.nome}</option>`),
   ].join("");
+}
+
+function fillCameraEdgeSelect() {
+  if (!cameraEdgeSelect) return;
+  const unitId = cameraUnitSelect?.value || activeUnitId || "";
+  const edges = knownEdges.filter((edge) => !unitId || edge.unidade_id === unitId);
+  if (!edges.length) {
+    cameraEdgeSelect.disabled = true;
+    cameraEdgeSelect.innerHTML = '<option value="">Nenhum Edge configurado para esta unidade</option>';
+    return;
+  }
+  const current = cameraEdgeSelect.value;
+  cameraEdgeSelect.disabled = false;
+  cameraEdgeSelect.innerHTML = [
+    '<option value="">Selecione o Campex Edge</option>',
+    ...edges.map((edge) => {
+      const status = edge.online ? "online" : (edge.connection_status || edge.status || "offline");
+      return `<option value="${safeText(edge.id)}">${safeText(edge.nome || edge.id)} · ${safeText(status)}</option>`;
+    }),
+  ].join("");
+  if (Array.from(cameraEdgeSelect.options).some((option) => option.value === current)) {
+    cameraEdgeSelect.value = current;
+  } else if (edges.length === 1) {
+    cameraEdgeSelect.value = edges[0].id;
+  }
 }
 
 function safeText(value) {
@@ -1023,7 +1051,6 @@ function cleanPayload(includeIdentity) {
   }
   if (includeIdentity) {
     delete payload.cliente_id;
-    delete payload.edge_id;
     payload.ativa = Boolean(payload.ativa);
   }
   return payload;
@@ -1097,13 +1124,16 @@ function openLiveView() {
 async function saveCamera(event) {
   event.preventDefault();
   result.className = "result muted";
-  result.textContent = "Cadastrando câmera...";
+  result.textContent = "Enviando configuração ao Campex Edge...";
   try {
+    const body = cleanPayload(true);
+    if (!body.edge_id) throw new Error("Selecione o Campex Edge responsável por esta câmera.");
     const payload = await requestJson("/cameras/rtsp", {
       method: "POST",
-      body: JSON.stringify(cleanPayload(true)),
+      body: JSON.stringify(body),
     });
-    if (payload.teste) showResult(payload.teste);
+    result.className = "result online";
+    result.textContent = "Configuração enviada ao Campex Edge. Aguardando conexão.";
     if (lastRtspPayload) {
       lastRtspPayload.camera_id = payload.id;
       lastRtspPayload.nome = payload.camera?.nome || lastRtspPayload.nome;
@@ -1113,6 +1143,8 @@ async function saveCamera(event) {
     await loadSetupOperation();
     form.reset();
     form.elements.porta_rtsp.value = 554;
+    if (cameraUnitSelect && activeUnitId) cameraUnitSelect.value = activeUnitId;
+    fillCameraEdgeSelect();
   } catch (error) {
     result.className = "result offline";
     result.innerHTML = setupErrorState("Não foi possível cadastrar a câmera", error, "Tentar novamente");
@@ -1159,14 +1191,16 @@ async function loadCameras() {
 }
 
 async function loadConfigData() {
-  const [clients, units, users] = await Promise.all([
+  const [clients, units, users, edges] = await Promise.all([
     requestJson("/clientes").catch(() => []),
     requestJson("/unidades").catch(() => []),
     requestJson("/users").catch(() => []),
+    requestJson("/edge-devices").catch(() => []),
   ]);
   knownClients = clients;
   knownUnits = units;
   knownUsers = users;
+  knownEdges = edges;
   resolveActiveUnit();
   fillSelect(unitClientSelect, clients, "Organização padrão ou selecione");
   fillSelect(userClientSelect, clients, "Organização padrão ou selecione");
@@ -1174,6 +1208,7 @@ async function loadConfigData() {
   if (cameraUnitSelect && activeUnitId && Array.from(cameraUnitSelect.options).some((option) => option.value === activeUnitId)) {
     cameraUnitSelect.value = activeUnitId;
   }
+  fillCameraEdgeSelect();
   fillSetupSelects();
   clientList.innerHTML = clients.length ? clients.map((client) => `
     <article class="compact-card cx-setup-list-row">
@@ -1251,18 +1286,42 @@ function startStatusPolling() {
   statusTimer = setInterval(pollStatus, 1500);
 }
 
+function isCloudFrontend() {
+  return window.location.port === "8787" || !["localhost", "127.0.0.1", "0.0.0.0"].includes(window.location.hostname);
+}
+
+function refreshCloudLatestFrame() {
+  if (!currentCameraId) return;
+  liveImage.src = `/cameras/${encodeURIComponent(currentCameraId)}/latest-frame?t=${Date.now()}`;
+}
+
+function startLatestFramePolling() {
+  if (latestFrameTimer) clearInterval(latestFrameTimer);
+  latestFrameTimer = setInterval(refreshCloudLatestFrame, 3000);
+}
+
 async function openCamera(cameraId, cameraName) {
   currentCameraId = cameraId;
   currentCameraName = cameraName;
   viewerTitle.textContent = cameraName;
-  setViewerMessage("Conectando...", "conectando");
+  setViewerMessage(isCloudFrontend() ? "Aguardando primeiro frame do Campex Edge." : "Conectando...", "conectando");
   document.querySelector(".viewer").scrollIntoView({ behavior: "smooth", block: "start" });
-  await requestJson(`/cameras/${cameraId}/start`, { method: "POST" });
-  liveImage.src = `/cameras/${cameraId}/stream?ts=${Date.now()}`;
-  liveImage.onerror = () => {
-    viewerStage.classList.remove("online");
-    viewerMessage.textContent = "Sem imagem no momento. Tentando reconectar...";
-  };
+  if (isCloudFrontend()) {
+    liveImage.onload = () => setViewerMessage("Atualização recente do Campex Edge.", "online");
+    liveImage.onerror = () => {
+      viewerStage.classList.remove("online");
+      viewerMessage.textContent = "Aguardando primeiro frame do Campex Edge.";
+    };
+    refreshCloudLatestFrame();
+    startLatestFramePolling();
+  } else {
+    await requestJson(`/cameras/${cameraId}/start`, { method: "POST" });
+    liveImage.src = `/cameras/${cameraId}/stream?ts=${Date.now()}`;
+    liveImage.onerror = () => {
+      viewerStage.classList.remove("online");
+      viewerMessage.textContent = "Sem imagem no momento. Tentando reconectar...";
+    };
+  }
   await pollStatus();
   startStatusPolling();
   await loadAreas();
@@ -1274,6 +1333,18 @@ async function openCamera(cameraId, cameraName) {
 }
 
 async function stopCamera(cameraId) {
+  if (latestFrameTimer) {
+    clearInterval(latestFrameTimer);
+    latestFrameTimer = null;
+  }
+  if (isCloudFrontend()) {
+    if (currentCameraId === cameraId) {
+      liveImage.removeAttribute("src");
+      setViewerMessage("Visualização de snapshot encerrada.", "offline");
+      await pollStatus();
+    }
+    return;
+  }
   await requestJson(`/cameras/${cameraId}/stop`, { method: "POST" });
   if (currentCameraId === cameraId) {
     liveImage.removeAttribute("src");
@@ -1904,8 +1975,9 @@ async function loadSystemHealth() {
   }
 }
 
-testButton.addEventListener("click", testConnection);
-liveViewButton.addEventListener("click", openLiveView);
+testButton?.addEventListener("click", testConnection);
+liveViewButton?.addEventListener("click", openLiveView);
+cameraUnitSelect?.addEventListener("change", fillCameraEdgeSelect);
 loginForm.addEventListener("submit", login);
 signupForm?.addEventListener("submit", signup);
 showSignupButton?.addEventListener("click", showSignupMode);

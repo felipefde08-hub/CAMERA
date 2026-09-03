@@ -28,3 +28,8 @@ reports/
 
 .env
 .DS_Store
+
+# Runtime Cloud / arquivos temporarios
+data/cloud/
+tmp/
+data/*.db-*

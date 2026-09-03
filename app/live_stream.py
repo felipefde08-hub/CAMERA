@@ -198,6 +198,10 @@ class LiveCameraStream:
                 if sample["monotonic"] >= cutoff
             ]
 
+    def latest_jpeg(self) -> bytes | None:
+        with self._lock:
+            return bytes(self._last_jpeg) if self._last_jpeg else None
+
     def start_visual_candidate(
         self,
         candidate_type: str,

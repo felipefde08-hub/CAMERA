@@ -106,6 +106,7 @@ const wizardActivationStatus = document.querySelector("#wizardActivationStatus")
 
 let sessionId = null;
 let statusTimer = null;
+let latestFrameTimer = null;
 let drawMode = null;
 let draftPoints = [];
 let machineConfig = null;
@@ -145,6 +146,21 @@ function markLiveNavigationActive() {
     if (active) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   });
+}
+
+function isCloudFrontend() {
+  return window.location.port === "8787" || !["localhost", "127.0.0.1", "0.0.0.0"].includes(window.location.hostname);
+}
+
+function configureCloudLiveViewControls() {
+  if (!isCloudFrontend()) return;
+  [liveAiStart, liveAiStop, calibrateActive, calibrateStopped, startMonitoring]
+    .filter(Boolean)
+    .forEach((button) => {
+      button.hidden = true;
+      button.disabled = true;
+    });
+  if (liveStreamSummary) liveStreamSummary.textContent = "Latest-frame atualizado pelo Campex Edge.";
 }
 
 async function requestJson(url, options) {
@@ -636,7 +652,8 @@ function updateMonitorConfigCard() {
   const selected = currentMachine();
   const machineRegion = zoneByType("machine_region");
   const operatorZone = zoneByType("operator_zone") || zoneByType("workstation");
-  const configured = Boolean(selected && machineRegion && operatorZone);
+  const needsAbsence = capabilityAbsence?.checked === true;
+  const configured = Boolean(selected && machineRegion && (!needsAbsence || operatorZone));
   monitorConfigCard.classList.toggle("is-configured", configured);
   if (configured) {
     monitorConfigTitle.textContent = selected.nome || "Monitor configurado";
@@ -645,7 +662,9 @@ function updateMonitorConfigCard() {
     return;
   }
   monitorConfigTitle.textContent = "Configure esta câmera";
-  monitorConfigText.textContent = "Defina a região da máquina e a área do operador para iniciar o monitoramento operacional.";
+  monitorConfigText.textContent = needsAbsence
+    ? "Defina a região da máquina e a área do operador para iniciar o monitoramento operacional."
+    : "Defina a região da máquina para iniciar o monitoramento operacional.";
   createMachineMonitor.textContent = "Configurar monitoramento";
 }
 
@@ -763,6 +782,11 @@ function connectLiveEvents() {
 }
 
 function updateAiControls(aiStatus) {
+  if (isCloudFrontend()) {
+    if (liveAiStart) liveAiStart.hidden = true;
+    if (liveAiStop) liveAiStop.hidden = true;
+    return;
+  }
   const active = aiStatus === "ativa" || aiStatus === "carregando";
   liveAiStart.hidden = active;
   liveAiStop.hidden = !active;
@@ -780,12 +804,31 @@ function formatMachineState(state) {
 }
 
 async function pollStatus() {
+  if (isCloudFrontend()) {
+    if (!currentCameraId) return;
+    try {
+      renderStatus(await requestJson(`/cameras/${currentCameraId}/status`));
+    } catch (error) {
+      setStatus("offline", friendlyLiveError(error));
+    }
+    return;
+  }
   if (!sessionId) return;
   try {
     renderStatus(await requestJson(`/live-view/${sessionId}/status`));
   } catch (error) {
     setStatus("offline", friendlyLiveError(error));
   }
+}
+
+function refreshCloudLatestFrame() {
+  if (!currentCameraId) return;
+  liveViewImage.src = `/cameras/${encodeURIComponent(currentCameraId)}/latest-frame?t=${Date.now()}`;
+}
+
+function startCloudLatestFramePolling() {
+  if (latestFrameTimer) clearInterval(latestFrameTimer);
+  latestFrameTimer = setInterval(refreshCloudLatestFrame, 3000);
 }
 
 async function startLiveView() {
@@ -811,6 +854,21 @@ async function startLiveView() {
   await loadRecentLiveEvents();
   liveViewName.textContent = payload.nome || "Live View";
   if (liveRailName) liveRailName.textContent = payload.nome || "Live View";
+  if (isCloudFrontend()) {
+    configureCloudLiveViewControls();
+    setStatus("conectando", "Aguardando frame do Campex Edge.");
+    liveViewImage.onload = () => {
+      setStatus("online", "Atualização recente do Campex Edge.");
+      drawCanvas();
+    };
+    liveViewImage.onerror = () => setStatus("conectando", "Aguardando frame do Campex Edge.");
+    refreshCloudLatestFrame();
+    startCloudLatestFramePolling();
+    await pollStatus();
+    statusTimer = setInterval(pollStatus, 3000);
+    connectLiveEvents();
+    return;
+  }
   setStatus("conectando", "Abrindo transmissão...");
   const started = await requestJson("/live-view/start", {
     method: "POST",
@@ -967,7 +1025,11 @@ function renderZoneList() {
 }
 
 function startZoneEditor(zone, preset = {}) {
-  if (!sessionId) return;
+  if (!sessionId && !isCloudFrontend()) return;
+  if (!currentCameraId) {
+    setStatus("offline", "Abra uma câmera cadastrada para configurar zonas.");
+    return;
+  }
   drawMode = "zone";
   editingZoneId = zone?.id || null;
   draftPoints = zone?.pontos ? zone.pontos.map((point) => ({ x: point.x, y: point.y })) : [];
@@ -1013,10 +1075,10 @@ async function finishZoneDrawing() {
   liveViewHint.textContent = "Salvando zona...";
   const payload = {
     camera_id: currentCameraId,
-    name: nome,
-    area_type: zoneType,
-    active: true,
-    polygon: draftPoints,
+    nome,
+    tipo: zoneType,
+    ativa: true,
+    pontos: draftPoints,
   };
   const seconds = Number(zoneSecondsInput.value || "0");
   if (["workstation", "operator_zone", "work_area"].includes(zoneType)) {
@@ -1026,23 +1088,32 @@ async function finishZoneDrawing() {
     payload.dwell_limit_seconds = Number.isFinite(seconds) ? seconds : 300;
   }
   try {
-    const saved = editingZoneId
-      ? await requestJson(`/areas/${editingZoneId}`, {
+    let saved;
+    if (editingZoneId && isCloudFrontend()) {
+      await requestJson(`/areas/${editingZoneId}`, { method: "DELETE" });
+      saved = await requestJson(`/cameras/${currentCameraId}/areas`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    } else {
+      saved = editingZoneId
+        ? await requestJson(`/areas/${editingZoneId}`, {
           method: "PATCH",
           body: JSON.stringify({
-            nome: payload.name,
-            tipo: payload.area_type,
-            ativa: payload.active,
-            pontos: payload.polygon,
+            nome: payload.nome,
+            tipo: payload.tipo,
+            ativa: payload.ativa,
+            pontos: payload.pontos,
             absence_tolerance_seconds: payload.absence_tolerance_seconds,
             dwell_limit_seconds: payload.dwell_limit_seconds,
           }),
         })
-      : await requestJson(`/cameras/${currentCameraId}/areas`, {
+        : await requestJson(`/cameras/${currentCameraId}/areas`, {
           method: "POST",
           body: JSON.stringify(payload),
         });
-    if (!editingZoneId && saved._http_status !== 201) {
+    }
+    if (!isCloudFrontend() && !editingZoneId && saved._http_status !== 201) {
       throw new Error(`Resposta inesperada ao salvar zona: HTTP ${saved._http_status}`);
     }
     await loadPersistedZones();
@@ -1168,8 +1239,8 @@ async function saveWizardMonitor() {
   }
   const machineRegion = zoneByType("machine_region");
   const operatorZone = zoneByType("operator_zone") || zoneByType("workstation");
-  const needsStoppage = capabilityStoppage.checked;
-  const needsAbsence = capabilityAbsence.checked;
+  const needsStoppage = capabilityStoppage?.checked !== false;
+  const needsAbsence = capabilityAbsence?.checked === true;
   if (needsStoppage && !machineRegion) {
     wizardMonitorStatus.textContent = "Desenhe e salve a região da máquina antes de continuar.";
     return;
@@ -1199,8 +1270,8 @@ async function saveWizardMonitor() {
       stopped_with_operator_seconds: secondsFromInput(wizardStoppedOperatorSeconds, 5),
     };
     const machine = currentMachine();
-    const saved = await requestJson(machine ? `/machine-monitors/${machine.id}` : `/cameras/${currentCameraId}/machine-monitors`, {
-      method: machine ? "PATCH" : "POST",
+    const saved = await requestJson((machine && !isCloudFrontend()) ? `/machine-monitors/${machine.id}` : `/cameras/${currentCameraId}/machine-monitors`, {
+      method: (machine && !isCloudFrontend()) ? "PATCH" : "POST",
       body: JSON.stringify(payload),
     });
     selectedMachineId = saved.id;
@@ -1229,7 +1300,7 @@ async function activateWizardMonitor() {
     activateMonitorWizard.disabled = true;
     wizardActivationStatus.textContent = "Ativando monitoramento...";
     await requestJson(`/machine-monitors/${selectedMachineId}/activate`, { method: "POST" });
-    if (sessionId) await requestJson(`/live-view/${sessionId}/ai/start`, { method: "POST" });
+    if (!isCloudFrontend() && sessionId) await requestJson(`/live-view/${sessionId}/ai/start`, { method: "POST" });
     await loadMachines();
     wizardActivationStatus.textContent = "Campex monitorando este ativo ✓";
     liveViewSituation.textContent = "Monitorando";
@@ -1241,11 +1312,13 @@ async function activateWizardMonitor() {
 }
 
 liveAiStart.addEventListener("click", () => {
+  if (isCloudFrontend()) return;
   if (!sessionId) return;
   requestJson(`/live-view/${sessionId}/ai/start`, { method: "POST" }).then((ops) => renderStatus({ status: "online", ops })).catch((error) => setStatus("offline", friendlyLiveError(error)));
 });
 
 liveAiStop.addEventListener("click", () => {
+  if (isCloudFrontend()) return;
   if (!sessionId) return;
   requestJson(`/live-view/${sessionId}/ai/stop`, { method: "POST" }).then((ops) => renderStatus({ status: "online", ops })).catch((error) => setStatus("offline", friendlyLiveError(error)));
 });
@@ -1311,7 +1384,11 @@ configureRestrictedArea.addEventListener("click", () => {
 });
 
 clearMachine.addEventListener("click", () => {
-  if (!sessionId) return;
+  if (!sessionId && !isCloudFrontend()) return;
+  if (!currentCameraId) {
+    setStatus("offline", "Abra uma câmera cadastrada antes de limpar zonas.");
+    return;
+  }
   if (!window.confirm("Limpar somente as zonas da câmera atual? Câmeras e eventos serão preservados.")) return;
   (currentCameraId
     ? requestJson(`/cameras/${currentCameraId}/areas`).then((areas) => Promise.all(areas.map((area) => requestJson(`/areas/${area.id}`, { method: "DELETE" }))))
@@ -1361,10 +1438,15 @@ zoneList.addEventListener("click", async (event) => {
       return;
     }
     if (action === "toggle") {
-      await requestJson(`/areas/${zone.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ ativa: button.dataset.zoneActive !== "true" }),
-      });
+      const nextActive = button.dataset.zoneActive !== "true";
+      if (isCloudFrontend()) {
+        await requestJson(`/areas/${zone.id}/${nextActive ? "activate" : "deactivate"}`, { method: "POST" });
+      } else {
+        await requestJson(`/areas/${zone.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ ativa: nextActive }),
+        });
+      }
       await loadPersistedZones();
       liveViewHint.textContent = "Zona atualizada com sucesso.";
       return;
@@ -1401,7 +1483,7 @@ createMachineMonitor.addEventListener("click", async () => {
   }
   const machineRegion = zoneByType("machine_region");
   const operatorZone = zoneByType("operator_zone") || zoneByType("workstation");
-  const needsAbsence = capabilityAbsence?.checked !== false;
+  const needsAbsence = capabilityAbsence?.checked === true;
   if (!machineRegion) {
     calibrationStatus.textContent = "Crie e salve uma machine_region antes de cadastrar a máquina.";
     return;
@@ -1428,8 +1510,8 @@ createMachineMonitor.addEventListener("click", async () => {
       stopped_with_operator_seconds: stoppedWithOperatorSeconds,
     };
     const machine = currentMachine();
-    const saved = await requestJson(machine ? `/machine-monitors/${machine.id}` : `/cameras/${currentCameraId}/machine-monitors`, {
-      method: machine ? "PATCH" : "POST",
+    const saved = await requestJson((machine && !isCloudFrontend()) ? `/machine-monitors/${machine.id}` : `/cameras/${currentCameraId}/machine-monitors`, {
+      method: (machine && !isCloudFrontend()) ? "PATCH" : "POST",
       body: JSON.stringify({
         ...payload,
       }),
@@ -1495,17 +1577,19 @@ startMonitoring.addEventListener("click", async () => {
     return;
   }
   await requestJson(`/machine-monitors/${selectedMachineId}/activate`, { method: "POST" });
-  await requestJson(`/live-view/${sessionId}/ai/start`, { method: "POST" });
+  if (!isCloudFrontend() && sessionId) await requestJson(`/live-view/${sessionId}/ai/start`, { method: "POST" });
   calibrationStatus.textContent = "Monitoramento iniciado com IA ativa.";
   await loadMachines();
 });
 
 window.addEventListener("beforeunload", () => {
   if (statusTimer) clearInterval(statusTimer);
+  if (latestFrameTimer) clearInterval(latestFrameTimer);
   if (calibrationTimer) clearInterval(calibrationTimer);
   if (eventSource) eventSource.close();
-  if (sessionId) fetch(`/live-view/${sessionId}/stop`, { method: "POST", keepalive: true }).catch(() => {});
+  if (!isCloudFrontend() && sessionId) fetch(`/live-view/${sessionId}/stop`, { method: "POST", keepalive: true }).catch(() => {});
 });
 
 markLiveNavigationActive();
+configureCloudLiveViewControls();
 startLiveView().catch((error) => setStatus("offline", friendlyLiveError(error)));

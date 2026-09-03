@@ -10,7 +10,7 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=campex-settings-v1-20260821" />
+    <link rel="stylesheet" href="/static/styles.css?v=campex-settings-v1-20260902" />
   </head>
   <body class="campex-dashboard cx-setup-mode">
     <aside class="cx-sidebar">
@@ -705,17 +705,25 @@
             Nome da câmera
             <input name="nome" required placeholder="Ex.: Máquina Principal" />
           </label>
-          <label>
-            Unidade
-            <select name="unidade_id" id="cameraUnitSelect"></select>
-          </label>
+          <div class="grid">
+            <label>
+              Unidade
+              <select name="unidade_id" id="cameraUnitSelect" required></select>
+            </label>
+            <label>
+              Campex Edge
+              <select name="edge_id" id="cameraEdgeSelect" required>
+                <option value="">Carregando Edges...</option>
+              </select>
+            </label>
+          </div>
 
           <label>
-            URL RTSP completa
+            URL RTSP completa <span class="muted">(opcional)</span>
             <input name="rtsp_url" placeholder="rtsp://usuario:senha@host:554/caminho" />
           </label>
 
-          <div class="separator">ou informe os campos separadamente</div>
+          <div class="separator">ou informe os dados separadamente</div>
 
           <div class="grid">
             <label>
@@ -744,9 +752,9 @@
           </div>
 
           <div class="actions">
-            <button type="button" id="testButton">Testar conexão</button>
-            <button type="button" id="liveViewButton">Abrir Live View</button>
-            <button type="submit">Cadastrar câmera</button>
+            <button type="button" id="testButton" hidden>Testar conexão</button>
+            <button type="button" id="liveViewButton" hidden>Abrir Live View</button>
+            <button type="submit">Adicionar câmera</button>
           </div>
           <label class="sound-toggle">
             <input name="ativa" type="checkbox" checked />
@@ -756,8 +764,8 @@
         </section>
 
       <section class="panel cx-setup-result-panel" data-setup-section="cameras">
-        <h2>Resultado</h2>
-        <div id="result" class="result muted">Nenhum teste executado ainda.</div>
+        <h2>Status da configuração</h2>
+        <div id="result" class="result muted">Preencha os dados da câmera para enviar a configuração ao Campex Edge.</div>
       </section>
 
       <section class="panel cx-setup-health-panel" data-setup-section="entregas">
@@ -897,6 +905,6 @@
       </section>
     </main>
     <script src="/static/shell.js?v=campex-settings-v1-20260821"></script>
-    <script src="/static/app.js?v=campex-settings-v1-20260821"></script>
+    <script src="/static/app.js?v=campex-settings-v1-20260902"></script>
   </body>
 </html>

@@ -43,6 +43,7 @@ def main() -> None:
                     stdout=stdout,
                     stderr=stderr,
                     check=False,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 stderr.write(
                     f"\nCampex Edge encerrou com código "

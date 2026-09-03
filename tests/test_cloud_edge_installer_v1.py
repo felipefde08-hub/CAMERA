@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-import base64
 import re
 import tempfile
+import zipfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from app.auth import create_user
+from app.config import ROOT
 from cloud import database as cloud_database
 from cloud.api import api as cloud_api
+from cloud.edge_installer import build_windows_installer_cmd, create_windows_edge_package
 
 
 def make_client(temp_dir: str) -> TestClient:
@@ -64,20 +66,9 @@ def bootstrap_account(client: TestClient) -> tuple[str, str]:
     return cliente_id, unidade_id
 
 
-def decode_installer_powershell(cmd_text: str) -> str:
-    match = re.search(
-        r"-EncodedCommand\s+([A-Za-z0-9+/=]+)",
-        cmd_text,
-    )
-    assert match is not None
-
-    encoded = match.group(1)
-    return base64.b64decode(encoded).decode("utf-16le")
-
-
 def extract_variable(script: str, name: str) -> str:
     match = re.search(
-        rf'^\${re.escape(name)}\s*=\s*"([^"]+)"',
+        rf'^set "{re.escape(name)}=([^"]*)"$',
         script,
         flags=re.MULTILINE,
     )
@@ -102,16 +93,20 @@ def test_installer_creates_offline_edge_then_heartbeat_makes_it_online() -> None
         )
 
         cmd_text = download.text
-        powershell = decode_installer_powershell(cmd_text)
+        installer = cmd_text
 
-        edge_id = extract_variable(powershell, "EdgeId")
-        edge_secret = extract_variable(powershell, "EdgeSecret")
-        cloud_url = extract_variable(powershell, "CloudUrl")
+        edge_id = extract_variable(installer, "CAMPEX_EDGE_ID")
+        edge_secret = extract_variable(installer, "CAMPEX_EDGE_SECRET")
+        cloud_url = extract_variable(installer, "CAMPEX_CLOUD_URL")
 
         assert edge_id.startswith("edge_")
         assert len(edge_secret) >= 12
         assert cloud_url.startswith("http://testserver")
-        assert "/edge-package/windows" in powershell
+        assert "/edge-package/windows" in installer
+        assert "manage.py edge-config-check" in installer
+        assert "http://127.0.0.1:8000/health" in installer
+        assert "/edge/heartbeat" in installer
+        assert "EncodedCommand" not in installer
 
         with cloud_database.connect() as db:
             cloud_database.init_cloud_db(db)
@@ -157,3 +152,85 @@ def test_installer_creates_offline_edge_then_heartbeat_makes_it_online() -> None
         assert edge_after["online"] is True
         assert edge_after["connection_status"] == "online"
         assert edge_after["last_seen_at"] is not None
+
+
+def test_repeated_installer_download_reuses_edge_identity_and_credential_key() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        client = make_client(temp_dir)
+        _, unidade_id = bootstrap_account(client)
+
+        first = client.get("/edge-installer/windows", params={"unidade_id": unidade_id})
+        second = client.get("/edge-installer/windows", params={"unidade_id": unidade_id})
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert extract_variable(first.text, "CAMPEX_EDGE_ID") == extract_variable(second.text, "CAMPEX_EDGE_ID")
+        assert extract_variable(first.text, "CAMPEX_EDGE_SECRET") == extract_variable(second.text, "CAMPEX_EDGE_SECRET")
+        assert extract_variable(first.text, "CAMPEX_CREDENTIAL_KEY") == extract_variable(second.text, "CAMPEX_CREDENTIAL_KEY")
+
+        with cloud_database.connect() as db:
+            cloud_database.init_cloud_db(db)
+            total = db.fetchone("SELECT COUNT(*) AS total FROM edge_devices WHERE unidade_id = ?", (unidade_id,))
+            edge = db.fetchone("SELECT * FROM edge_devices WHERE unidade_id = ?", (unidade_id,))
+
+        assert total["total"] == 1
+        assert edge["edge_secret_encrypted"]
+        assert edge["credential_key_encrypted"]
+        assert "edge_secret_encrypted" not in client.get("/edge-devices").text
+        assert "credential_key_encrypted" not in client.get("/edge-devices").text
+
+
+def test_installer_does_not_create_duplicate_when_existing_edge_lacks_recoverable_secret() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        client = make_client(temp_dir)
+        cliente_id, unidade_id = bootstrap_account(client)
+        with cloud_database.connect() as db:
+            cloud_database.init_cloud_db(db)
+            db.execute(
+                """
+                INSERT INTO edge_devices (
+                    id, tenant_id, cliente_id, unidade_id, nome, secret_hash, status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """,
+                ("edge_legacy", cliente_id, cliente_id, unidade_id, "Edge legado", "hash-only"),
+            )
+            db.commit()
+
+        response = client.get("/edge-installer/windows", params={"unidade_id": unidade_id})
+
+        assert response.status_code == 409
+        assert "sem credenciais recuperáveis" in response.json()["detail"]
+        with cloud_database.connect() as db:
+            total = db.fetchone("SELECT COUNT(*) AS total FROM edge_devices WHERE unidade_id = ?", (unidade_id,))
+        assert total["total"] == 1
+
+
+def test_installer_preserves_existing_env_and_data_on_reinstall() -> None:
+    installer = build_windows_installer_cmd(
+        cloud_url="https://cloud.campex.test",
+        edge_id="edge_existing",
+        edge_secret="edge-secret-existing",
+        credential_key="credential-key-existing",
+    )
+
+    assert 'set "ENV_FILE=%INSTALL_ROOT%\\.env"' in installer
+    assert 'if not exist "%ENV_FILE%"' in installer
+    assert "Arquivo .env existente preservado." in installer
+    assert "Preservando identidade, credenciais e dados locais." in installer
+    assert "run_campex_edge_windows.py" in installer
+    assert "Stop-Process -Id $_.ProcessId -Force" in installer
+
+
+def test_edge_package_excludes_env_data_tests_and_tmp_secret() -> None:
+    zip_path = create_windows_edge_package(ROOT)
+    try:
+        with zipfile.ZipFile(zip_path) as package:
+            names = package.namelist()
+    finally:
+        Path(zip_path).unlink(missing_ok=True)
+
+    assert ".env" not in names
+    assert not any(name.startswith("data/") for name in names)
+    assert not any(name.startswith("tests/") for name in names)
+    assert "tmp/cloud_edge_secret.txt" not in names

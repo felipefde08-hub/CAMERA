@@ -5758,10 +5758,6 @@ label {
   margin-top: 10px;
 }
 
-.campex-dashboard[data-setup-has-asset="false"] #cameras,
-.campex-dashboard[data-setup-has-asset="false"] #cameraForm {
-  display: none;
-}
 
 .setup-v0-panel h3 {
   margin: 0 0 10px;

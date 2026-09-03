@@ -2559,7 +2559,14 @@ function eventSeverityPill(event) {
 }
 
 function eventFamily(event) {
-  return event.event_family || event.business_taxonomy?.event_family || "unknown";
+  const explicit = event.event_family || event.business_taxonomy?.event_family;
+  if (explicit) return explicit;
+  const type = String(event.event_subtype || event.tipo || event.technical_type || event.event_type || "").toLowerCase();
+  if (["machine_stoppage", "exceptionally_long_stoppage"].includes(type)) return "interruption";
+  if (["workstation_unattended", "operator_absence"].includes(type)) return "absence";
+  if (["restricted_area_occupied", "restricted_zone_occupied", "zone_occupancy"].includes(type)) return "flow";
+  if (["camera_offline"].includes(type)) return "infrastructure";
+  return "unknown";
 }
 
 function eventSubtype(event) {
@@ -3448,19 +3455,6 @@ function usesProductMemoryShell(path) {
   return path === "/home-view" || path === "/operations-view" || path === "/events" || path === "/insights" || path === "/reports";
 }
 
-function renderOperationsAuthState(area = "Operação") {
-  const target = area === "Início"
-    ? "%2Foperations-view%3Fview%3Dhome"
-    : area === "Relatórios"
-      ? "%2Freports"
-      : "%2Foperations-view";
-  title.textContent = "";
-  heading.textContent = "";
-  subtitle.textContent = "";
-  tableTitle.textContent = "";
-  tableHint.textContent = "";
-  primaryAction.textContent = "Entrar";
-
 async function openEdgeInstaller() {
   drawer.classList.add("open");
   drawer.setAttribute("aria-hidden", "false");
@@ -3536,6 +3530,19 @@ async function openEdgeInstaller() {
     status.textContent = "Não foi possível carregar as unidades.";
   }
 }
+
+function renderOperationsAuthState(area = "Operação") {
+  const target = area === "Início"
+    ? "%2Foperations-view%3Fview%3Dhome"
+    : area === "Relatórios"
+      ? "%2Freports"
+      : "%2Foperations-view";
+  title.textContent = "";
+  heading.textContent = "";
+  subtitle.textContent = "";
+  tableTitle.textContent = "";
+  tableHint.textContent = "";
+  primaryAction.textContent = "Entrar";
 
 
   primaryAction.onclick = () => {

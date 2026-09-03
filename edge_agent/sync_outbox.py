@@ -6,10 +6,12 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+from app.config import ROOT
 from app.security import mask_sensitive_error
 from shared.schemas import now_iso
 
@@ -122,6 +124,48 @@ def _safe_sync_error(exc: Exception, *, cloud_url: str, edge_secret: str) -> str
     return str(mask_sensitive_error(text) or "Erro de sincronizacao ocultado.")[:500]
 
 
+def _event_evidence_file(payload: dict[str, Any]) -> Path | None:
+    midia_path = str(payload.get("midia_path") or "").strip()
+    if not midia_path:
+        return None
+    candidate = Path(midia_path)
+    if not candidate.is_absolute():
+        candidate = ROOT / candidate
+    try:
+        resolved = candidate.resolve()
+        root = ROOT.resolve()
+    except Exception:
+        return None
+    if root not in resolved.parents and resolved != root:
+        return None
+    if not resolved.exists() or not resolved.is_file():
+        return None
+    return resolved
+
+
+def _upload_event_evidence(
+    *,
+    cloud_url: str,
+    edge_id: str,
+    edge_secret: str,
+    event_uuid: str,
+    evidence_path: Path,
+    timeout: float,
+) -> None:
+    with evidence_path.open("rb") as file_obj:
+        response = httpx.post(
+            f"{cloud_url.rstrip('/')}/edge/events/{event_uuid}/evidence",
+            content=file_obj.read(),
+            headers={
+                "Content-Type": "image/jpeg",
+                "X-Edge-Id": edge_id,
+                "X-Edge-Secret": edge_secret,
+            },
+            timeout=timeout,
+        )
+    response.raise_for_status()
+
+
 def flush_sync_outbox(
     connection: sqlite3.Connection,
     cloud_url: str,
@@ -162,6 +206,16 @@ def flush_sync_outbox(
                 timeout=timeout,
             )
             response.raise_for_status()
+            evidence_path = _event_evidence_file(payload)
+            if evidence_path is not None:
+                _upload_event_evidence(
+                    cloud_url=cloud_url,
+                    edge_id=edge_id,
+                    edge_secret=edge_secret,
+                    event_uuid=row["event_uuid"],
+                    evidence_path=evidence_path,
+                    timeout=timeout,
+                )
         except Exception as exc:
             attempts = int(row["attempts"] or 0) + 1
             connection.execute(

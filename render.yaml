@@ -2,18 +2,34 @@ services:
   - type: web
     name: campex-cloud
     runtime: python
-    plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python -m cloud.main"
-    healthCheckPath: "/health"
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: campex-cloud-db
-          property: connectionString
-      - key: CLOUD_HOST
-        value: "0.0.0.0"
+    plan: 0.5c-512mb
 
-databases:
-  - name: campex-cloud-db
-    plan: free
+    buildCommand: pip install -r requirements.txt
+
+    startCommand: python -m uvicorn cloud.api:api --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"
+
+    healthCheckPath: /health
+
+    disk:
+      name: campex-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+
+      - key: CLOUD_SQLITE_PATH
+        value: "/opt/render/project/src/data/campex_cloud.sqlite3"
+
+      - key: CAMPEX_COOKIE_SECURE
+        value: "true"
+
+      - key: CAMPEX_ENABLE_PUBLIC_SIGNUP
+        value: "false"
+
+      - key: CAMPEX_CLOUD_ADMIN_EMAIL
+        sync: false
+
+      - key: CAMPEX_CLOUD_ADMIN_PASSWORD
+        sync: false

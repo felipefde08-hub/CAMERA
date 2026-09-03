@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import os
 import tempfile
 import zipfile
@@ -14,185 +13,202 @@ def build_windows_installer_cmd(
     edge_secret: str,
     credential_key: str,
 ) -> str:
-    powershell = r'''$ErrorActionPreference = "Stop"
+    cmd = r"""@echo off
+setlocal
+title Campex Edge
 
-Write-Host ""
-Write-Host "========================================="
-Write-Host "          Instalando Campex"
-Write-Host "========================================="
-Write-Host ""
+set "CAMPEX_CLOUD_URL=__CLOUD_URL__"
+set "CAMPEX_EDGE_ID=__EDGE_ID__"
+set "CAMPEX_EDGE_SECRET=__EDGE_SECRET__"
+set "CAMPEX_CREDENTIAL_KEY=__CREDENTIAL_KEY__"
 
-$CloudUrl = "__CLOUD_URL__"
-$EdgeId = "__EDGE_ID__"
-$EdgeSecret = "__EDGE_SECRET__"
-$CredentialKey = "__CREDENTIAL_KEY__"
+set "INSTALL_ROOT=%LOCALAPPDATA%\Campex\Edge"
+set "PYTHON_ROOT=%INSTALL_ROOT%\.runtime\python"
+set "PYTHON_EXE=%PYTHON_ROOT%\python.exe"
+set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"
+set "VENV_PYTHONW=%INSTALL_ROOT%\.venv\Scripts\pythonw.exe"
+set "PACKAGE_ZIP=%TEMP%\campex-edge-package.zip"
+set "PYTHON_INSTALLER=%TEMP%\campex-python-installer.exe"
+set "STARTUP_FILE=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\CampexEdge.cmd"
+set "ENV_FILE=%INSTALL_ROOT%\.env"
 
-$InstallRoot = Join-Path $env:LOCALAPPDATA "Campex\Edge"
-$RuntimeRoot = Join-Path $InstallRoot ".runtime"
-$PythonRoot = Join-Path $RuntimeRoot "python"
-$PythonExe = Join-Path $PythonRoot "python.exe"
-$VenvPython = Join-Path $InstallRoot ".venv\Scripts\python.exe"
-$PackageZip = Join-Path $env:TEMP "campex-edge-package.zip"
-$PythonInstaller = Join-Path $env:TEMP "campex-python-installer.exe"
+echo.
+echo =========================================
+echo            Instalando Campex
+echo =========================================
+echo.
 
-New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
-New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
+if not exist "%INSTALL_ROOT%" mkdir "%INSTALL_ROOT%"
+if not exist "%PYTHON_ROOT%" mkdir "%PYTHON_ROOT%"
 
-Write-Host "[1/6] Baixando Campex Edge..."
+if exist "%ENV_FILE%" (
+    echo Instalacao existente detectada. Preservando identidade, credenciais e dados locais.
+)
 
-$headers = @{
-    "X-Edge-Id" = $EdgeId
-    "X-Edge-Secret" = $EdgeSecret
-}
+echo [1/6] Baixando Campex Edge...
 
-Invoke-WebRequest `
-    -UseBasicParsing `
-    -Uri "$CloudUrl/edge-package/windows" `
-    -Headers $headers `
-    -OutFile $PackageZip
+curl.exe -fL ^
+  -H "X-Edge-Id: %CAMPEX_EDGE_ID%" ^
+  -H "X-Edge-Secret: %CAMPEX_EDGE_SECRET%" ^
+  "%CAMPEX_CLOUD_URL%/edge-package/windows" ^
+  -o "%PACKAGE_ZIP%"
 
-Write-Host "[2/6] Preparando arquivos..."
+if errorlevel 1 goto :error
 
-Expand-Archive `
-    -Path $PackageZip `
-    -DestinationPath $InstallRoot `
-    -Force
+echo [2/6] Preparando arquivos...
 
-if (-not (Test-Path $PythonExe)) {
-    Write-Host "[3/6] Instalando runtime da Campex..."
+tar.exe -xf "%PACKAGE_ZIP%" -C "%INSTALL_ROOT%"
 
-    Invoke-WebRequest `
-        -UseBasicParsing `
-        -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" `
-        -OutFile $PythonInstaller
+if errorlevel 1 goto :error
 
-    $process = Start-Process `
-        -FilePath $PythonInstaller `
-        -ArgumentList @(
-            "/quiet",
-            "InstallAllUsers=0",
-            "PrependPath=0",
-            "Include_launcher=0",
-            "Include_test=0",
-            "TargetDir=$PythonRoot"
-        ) `
-        -Wait `
-        -PassThru
+if not exist "%PYTHON_EXE%" (
+    echo [3/6] Preparando runtime Campex...
 
-    if ($process.ExitCode -ne 0) {
-        throw "Nao foi possivel instalar o runtime da Campex."
-    }
-} else {
-    Write-Host "[3/6] Runtime Campex ja instalado."
-}
+    curl.exe -fL ^
+      "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" ^
+      -o "%PYTHON_INSTALLER%"
 
-if (-not (Test-Path $VenvPython)) {
-    Write-Host "[4/6] Preparando ambiente..."
-    & $PythonExe -m venv (Join-Path $InstallRoot ".venv")
-} else {
-    Write-Host "[4/6] Ambiente ja preparado."
-}
+    if errorlevel 1 goto :error
 
-Write-Host "[5/6] Instalando componentes..."
+    "%PYTHON_INSTALLER%" /quiet ^
+      InstallAllUsers=0 ^
+      PrependPath=0 ^
+      Include_launcher=0 ^
+      Include_test=0 ^
+      Shortcuts=0 ^
+      AssociateFiles=0 ^
+      TargetDir="%PYTHON_ROOT%"
 
-& $VenvPython -m pip install `
-    --disable-pip-version-check `
-    --quiet `
-    -r (Join-Path $InstallRoot "requirements.txt")
+    if errorlevel 1 goto :error
+) else (
+    echo [3/6] Runtime Campex ja preparado.
+)
 
-if ($LASTEXITCODE -ne 0) {
-    throw "Falha ao instalar componentes da Campex."
-}
+if not exist "%VENV_PYTHON%" (
+    echo [4/6] Criando ambiente Campex...
+    "%PYTHON_EXE%" -m venv "%INSTALL_ROOT%\.venv"
+    if errorlevel 1 goto :error
+) else (
+    echo [4/6] Ambiente Campex ja preparado.
+)
 
-$EnvContent = @"
-CAMPEX_CLOUD_URL=$CloudUrl
-CAMPEX_EDGE_ID=$EdgeId
-CAMPEX_EDGE_SECRET=$EdgeSecret
-CAMPEX_CREDENTIAL_KEY=$CredentialKey
-CAMPEX_EMAIL_MODE=cloud
-"@
+echo [5/6] Instalando componentes...
 
-Set-Content `
-    -Path (Join-Path $InstallRoot ".env") `
-    -Value $EnvContent `
-    -Encoding UTF8
+"%VENV_PYTHON%" -m pip install ^
+  --disable-pip-version-check ^
+  --no-input ^
+  -r "%INSTALL_ROOT%\requirements.txt"
 
-Write-Host "[6/6] Iniciando Campex Edge..."
+if errorlevel 1 goto :error
 
-Push-Location $InstallRoot
+if not exist "%ENV_FILE%" (
+    > "%ENV_FILE%" (
+        echo CAMPEX_CLOUD_URL=%CAMPEX_CLOUD_URL%
+        echo CAMPEX_EDGE_ID=%CAMPEX_EDGE_ID%
+        echo CAMPEX_EDGE_SECRET=%CAMPEX_EDGE_SECRET%
+        echo CAMPEX_CREDENTIAL_KEY=%CAMPEX_CREDENTIAL_KEY%
+        echo CAMPEX_EMAIL_MODE=cloud
+    )
+) else (
+    echo [5/6] Arquivo .env existente preservado.
+)
 
-& $VenvPython manage.py edge-service install
-if ($LASTEXITCODE -ne 0) {
-    Pop-Location
-    throw "Nao foi possivel instalar o Campex Edge em segundo plano."
-}
+echo [6/6] Validando e iniciando Campex Edge...
 
-& $VenvPython manage.py edge-service start
-if ($LASTEXITCODE -ne 0) {
-    Pop-Location
-    throw "Campex Edge foi instalado, mas nao iniciou."
-}
+pushd "%INSTALL_ROOT%"
+"%VENV_PYTHON%" manage.py edge-config-check
+if errorlevel 1 (
+    popd
+    goto :error
+)
+popd
 
-Pop-Location
+> "%STARTUP_FILE%" (
+    echo @echo off
+    echo cd /d "%%LOCALAPPDATA%%\Campex\Edge"
+    echo start "" "%%LOCALAPPDATA%%\Campex\Edge\.venv\Scripts\pythonw.exe" "%%LOCALAPPDATA%%\Campex\Edge\deployment\run_campex_edge_windows.py"
+    echo exit /b 0
+)
 
-$Desktop = [Environment]::GetFolderPath("Desktop")
-$Shortcut = Join-Path $Desktop "Campex.url"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run_campex_edge_windows.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 
-@"
-[InternetShortcut]
-URL=$CloudUrl
-"@ | Set-Content -Path $Shortcut -Encoding ASCII
+start "" /D "%INSTALL_ROOT%" "%VENV_PYTHONW%" "%INSTALL_ROOT%\deployment\run_campex_edge_windows.py"
 
-Remove-Item $PackageZip -Force -ErrorAction SilentlyContinue
-Remove-Item $PythonInstaller -Force -ErrorAction SilentlyContinue
+echo Aguardando o Campex Edge iniciar...
 
-Write-Host ""
-Write-Host "========================================="
-Write-Host "       Campex instalada com sucesso"
-Write-Host "========================================="
-Write-Host ""
-Write-Host "O monitoramento continuara em segundo plano."
+for /L %%I in (1,1,30) do (
+    curl.exe -fsS "http://127.0.0.1:8000/health" >nul 2>&1
+    if not errorlevel 1 goto :edge_ready
+    timeout /t 1 /nobreak >nul
+)
 
-Start-Process "$CloudUrl/edges"
-'''
+echo O Campex Edge nao iniciou dentro do tempo esperado.
+goto :error
 
-    powershell = (
-        powershell
-        .replace("__CLOUD_URL__", cloud_url)
+:edge_ready
+
+curl.exe -fsS ^
+  -X POST ^
+  -H "Content-Type: application/json" ^
+  -H "X-Edge-Id: %CAMPEX_EDGE_ID%" ^
+  -H "X-Edge-Secret: %CAMPEX_EDGE_SECRET%" ^
+  -d "{}" ^
+  "%CAMPEX_CLOUD_URL%/edge/heartbeat" ^
+  >nul
+
+if errorlevel 1 (
+    echo O Edge iniciou, mas nao conseguiu conectar ao Campex Cloud.
+    goto :error
+)
+
+> "%USERPROFILE%\Desktop\Campex.url" (
+    echo [InternetShortcut]
+    echo URL=%CAMPEX_CLOUD_URL%
+)
+
+del "%PACKAGE_ZIP%" >nul 2>&1
+del "%PYTHON_INSTALLER%" >nul 2>&1
+
+echo.
+echo =========================================
+echo       Campex instalada com sucesso
+echo =========================================
+echo.
+echo O Campex Edge esta rodando em segundo plano.
+echo Voce pode fechar esta janela.
+echo.
+
+start "" "%CAMPEX_CLOUD_URL%/edges"
+pause
+exit /b 0
+
+:error
+echo.
+
+if exist "%INSTALL_ROOT%\logs\edge.stderr.log" (
+    echo Ultimo diagnostico automatico:
+    echo -----------------------------------------
+    type "%INSTALL_ROOT%\logs\edge.stderr.log"
+    echo -----------------------------------------
+)
+
+echo =========================================
+echo A instalacao da Campex nao foi concluida.
+echo =========================================
+echo.
+echo Nao desative o Windows Defender.
+echo Deixe esta janela aberta e informe a etapa acima.
+echo.
+pause
+exit /b 1
+"""
+
+    return (
+        cmd.replace("__CLOUD_URL__", cloud_url)
         .replace("__EDGE_ID__", edge_id)
         .replace("__EDGE_SECRET__", edge_secret)
         .replace("__CREDENTIAL_KEY__", credential_key)
     )
-
-    encoded = base64.b64encode(
-        powershell.encode("utf-16le")
-    ).decode("ascii")
-
-    cmd = r'''@echo off
-title Instalando Campex
-
-echo.
-echo Iniciando instalacao da Campex...
-echo.
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand __ENCODED__
-
-if errorlevel 1 (
-    echo.
-    echo [ERRO] A instalacao da Campex nao foi concluida.
-    echo Mantenha esta janela aberta para diagnostico.
-    pause
-    exit /b 1
-)
-
-echo.
-echo Campex pronta.
-timeout /t 3 /nobreak >nul
-del "%~f0"
-exit /b 0
-'''
-
-    return cmd.replace("__ENCODED__", encoded)
 
 
 def create_windows_edge_package(project_root: Path) -> str:

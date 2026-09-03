@@ -105,8 +105,13 @@ function connectionClass(status) {
 }
 
 function hasOperationalContext(camera) {
-  const context = camera.context || {};
-  return Boolean(context.asset_id || context.process_id || context.area_id || context.machine_monitor_id);
+  if (!camera?.ativa) return false;
+  return Boolean(
+    camera.online ||
+    camera.status === "online" ||
+    camera.ultimo_frame ||
+    camera.last_frame_at
+  );
 }
 
 function displayCameraName(camera) {
@@ -135,7 +140,7 @@ function activeEventDuration(event) {
 function renderPicker() {
   const rows = Array.from(cameras.values());
   const operationalRows = rows.filter(hasOperationalContext);
-  const technicalRows = rows.filter((camera) => !hasOperationalContext(camera));
+  const technicalRows = rows.filter((camera) => camera.ativa && !hasOperationalContext(camera));
   if (!rows.length) {
     picker.innerHTML = "";
     message.textContent = "Nenhuma câmera cadastrada. Cadastre uma câmera em Configurações > Câmeras.";
@@ -250,55 +255,49 @@ function renderGrid() {
 }
 
 async function startCamera(cameraId) {
-  if (selected.size >= 4) {
-    message.textContent = "Para preservar desempenho, monitore até quatro câmeras nesta tela.";
-    renderPicker();
-    return;
-  }
   const camera = cameras.get(cameraId);
   if (!camera) return;
-  await requestJson(`/cameras/${cameraId}/start`, { method: "POST" });
+
+  const status = await requestJson(`/cameras/${encodeURIComponent(cameraId)}/status`).catch(() => ({
+    status: camera.status || "offline",
+    last_frame_at: camera.ultimo_frame || null,
+  }));
+
   selected.set(cameraId, {
     camera,
-    status: { status: "conectando" },
-    streamUrl: `/cameras/${encodeURIComponent(cameraId)}/stream?ts=${Date.now()}`,
+    status,
+    streamUrl: `/cameras/${encodeURIComponent(cameraId)}/latest-frame?t=${Date.now()}`,
   });
+
   renderPicker();
   renderGrid();
 }
 
 async function stopCamera(cameraId) {
-  await requestJson(`/cameras/${cameraId}/stop`, { method: "POST" }).catch(() => {});
   selected.delete(cameraId);
   renderPicker();
   renderGrid();
 }
 
 async function refreshStatuses() {
-  try {
-    const overview = await requestJson("/live/overview");
-    overview.cameras.forEach((entry) => {
-      cameras.set(entry.camera.id, { ...entry.camera, context: entry.status?.context });
-      const item = selected.get(entry.camera.id);
-      if (item) {
-        item.camera = { ...entry.camera, context: entry.status?.context };
-        item.status = entry.status;
-      }
-    });
-    resources.textContent = rowsWithContextLabel();
-  } catch (error) {
-    resources.textContent = "Recursos indisponíveis";
-    await Promise.all(Array.from(selected.keys()).map(async (cameraId) => {
-      try {
-        const status = await requestJson(`/cameras/${cameraId}/status`);
-        const item = selected.get(cameraId);
-        if (item) item.status = status;
-      } catch (statusError) {
-        const item = selected.get(cameraId);
-        if (item) item.status = { status: "offline", error: statusError.message };
-      }
-    }));
-  }
+  const rows = await requestJson("/cameras/estado").catch(() => []);
+
+  rows.forEach((camera) => cameras.set(camera.id, camera));
+
+  await Promise.all(Array.from(selected.keys()).map(async (cameraId) => {
+    const item = selected.get(cameraId);
+    if (!item) return;
+    try {
+      item.camera = cameras.get(cameraId) || item.camera;
+      item.status = await requestJson(`/cameras/${encodeURIComponent(cameraId)}/status`);
+      item.streamUrl = `/cameras/${encodeURIComponent(cameraId)}/latest-frame?t=${Date.now()}`;
+    } catch (error) {
+      item.status = { status: "offline", error: error.message };
+    }
+  }));
+
+  resources.textContent = rowsWithContextLabel();
+  renderPicker();
   renderGrid();
 }
 
@@ -340,19 +339,21 @@ async function boot() {
     renderAuthGate();
     return;
   }
-  const overview = await requestJson("/live/overview").catch(async () => {
-    const rows = await requestJson("/cameras/estado");
-    return { cameras: rows.map((camera) => ({ camera, status: { context: null } })), resources: {} };
-  });
-  const rows = overview.cameras.map((entry) => ({ ...entry.camera, context: entry.status?.context }));
+
+  const rows = await requestJson("/cameras/estado");
   rows.forEach((camera) => cameras.set(camera.id, camera));
+
   renderPicker();
+
   const auto = rows.filter(hasOperationalContext).slice(0, 2);
   for (const camera of auto) {
-    await startCamera(camera.id).catch((error) => { message.textContent = friendlyGridError(error); });
+    await startCamera(camera.id).catch((error) => {
+      message.textContent = friendlyGridError(error);
+    });
   }
+
   await refreshStatuses();
-  statusTimer = setInterval(refreshStatuses, 2000);
+  statusTimer = setInterval(refreshStatuses, 3000);
 }
 
 function rowsWithContextLabel() {
