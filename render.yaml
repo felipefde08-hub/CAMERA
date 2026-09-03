@@ -2,7 +2,7 @@ services:
   - type: web
     name: campex-cloud
     runtime: python
-    plan: 0.5c-512mb
+    plan: free
 
     buildCommand: pip install -r requirements.txt
 
@@ -10,17 +10,14 @@ services:
 
     healthCheckPath: /health
 
-    disk:
-      name: campex-data
-      mountPath: /opt/render/project/src/data
-      sizeGB: 1
-
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"
 
-      - key: CLOUD_SQLITE_PATH
-        value: "/opt/render/project/src/data/campex_cloud.sqlite3"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: campex-cloud-db
+          property: connectionString
 
       - key: CAMPEX_COOKIE_SECURE
         value: "true"
@@ -33,3 +30,7 @@ services:
 
       - key: CAMPEX_CLOUD_ADMIN_PASSWORD
         sync: false
+
+databases:
+  - name: campex-cloud-db
+    plan: free
