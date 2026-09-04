@@ -43,7 +43,11 @@ def test_windows_install_creates_scheduled_task(monkeypatch, tmp_path: Path) -> 
     assert calls
     assert calls[0][0] == "/Create"
     assert "Campex Edge" in calls[0]
-    assert "ONLOGON" in calls[0]
+    assert "ONSTART" in calls[0]
+    assert "/RU" in calls[0]
+    assert "SYSTEM" in calls[0]
+    assert "/RL" in calls[0]
+    assert "HIGHEST" in calls[0]
 
 
 def test_windows_start_runs_task_and_waits_for_health(monkeypatch) -> None:

@@ -103,6 +103,7 @@ def test_installer_creates_offline_edge_then_heartbeat_makes_it_online() -> None
         assert len(edge_secret) >= 12
         assert cloud_url.startswith("http://testserver")
         assert "/edge-package/windows" in installer
+        assert "Start-Process -FilePath '%~f0' -Verb RunAs" in installer
         assert "manage.py edge-config-check" in installer
         assert "manage.py edge-service install" in installer
         assert "manage.py edge-service start" in installer

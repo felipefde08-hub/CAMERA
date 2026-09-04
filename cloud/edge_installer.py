@@ -14,6 +14,14 @@ def build_windows_installer_cmd(
     credential_key: str,
 ) -> str:
     cmd = r"""@echo off
+
+powershell -NoProfile -Command "if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 1 }"
+if errorlevel 1 (
+    echo Solicitando permissao de administrador...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    exit /b
+)
+
 setlocal EnableDelayedExpansion
 title Campex Edge
 

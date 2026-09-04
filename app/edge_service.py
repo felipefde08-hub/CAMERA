@@ -112,7 +112,9 @@ def _install_windows_service() -> EdgeServiceResult:
     result = _run_schtasks([
         "/Create",
         "/TN", WINDOWS_TASK_NAME,
-        "/SC", "ONLOGON",
+        "/SC", "ONSTART",
+        "/RU", "SYSTEM",
+        "/RL", "HIGHEST",
         "/TR", _windows_task_command(),
         "/F",
     ])
