@@ -42,6 +42,23 @@ if not exist "%INSTALL_ROOT%" mkdir "%INSTALL_ROOT%"
 if not exist "%PYTHON_ROOT%" mkdir "%PYTHON_ROOT%"
 
 if exist "%ENV_FILE%" (
+    set "EXISTING_EDGE_ID="
+    for /f "usebackq tokens=1,* delims==" %%A in ("%ENV_FILE%") do (
+        if /I "%%A"=="CAMPEX_EDGE_ID" set "EXISTING_EDGE_ID=%%B"
+    )
+
+    if defined EXISTING_EDGE_ID (
+        if /I not "%EXISTING_EDGE_ID%"=="%CAMPEX_EDGE_ID%" (
+            echo.
+            echo Este computador ja esta vinculado a outro Edge Campex.
+            echo Instalacao atual: %EXISTING_EDGE_ID%
+            echo Instalacao solicitada: %CAMPEX_EDGE_ID%
+            echo.
+            echo A Campex nao substituiu a identidade existente para evitar mistura entre unidades.
+            goto :error
+        )
+    )
+
     echo Instalacao existente detectada. Preservando identidade, credenciais e dados locais.
 )
 

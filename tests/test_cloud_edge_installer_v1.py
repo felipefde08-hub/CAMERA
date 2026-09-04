@@ -281,6 +281,21 @@ def test_installer_preserves_existing_env_and_data_on_reinstall() -> None:
     assert "Stop-Process -Id $_.ProcessId -Force" in installer
 
 
+def test_installer_blocks_existing_env_from_different_edge_identity() -> None:
+    installer = build_windows_installer_cmd(
+        cloud_url="https://cloud.campex.test",
+        edge_id="edge_new",
+        edge_secret="edge-secret-new",
+        credential_key="credential-key-new",
+    )
+
+    assert 'set "EXISTING_EDGE_ID="' in installer
+    assert 'if /I "%%A"=="CAMPEX_EDGE_ID" set "EXISTING_EDGE_ID=%%B"' in installer
+    assert 'if /I not "%EXISTING_EDGE_ID%"=="%CAMPEX_EDGE_ID%"' in installer
+    assert "Este computador ja esta vinculado a outro Edge Campex." in installer
+    assert "A Campex nao substituiu a identidade existente" in installer
+
+
 def test_edge_package_excludes_env_data_tests_and_tmp_secret() -> None:
     zip_path = create_windows_edge_package(ROOT)
     try:
