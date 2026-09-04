@@ -123,15 +123,11 @@ if errorlevel 1 (
 )
 popd
 
-> "%STARTUP_FILE%" (
-    echo @echo off
-    echo cd /d "%%LOCALAPPDATA%%\Campex\Edge"
-    echo start "" "%%LOCALAPPDATA%%\Campex\Edge\.venv\Scripts\pythonw.exe" "%%LOCALAPPDATA%%\Campex\Edge\deployment\run_campex_edge_windows.py"
-    echo exit /b 0
-)
-
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run_campex_edge_windows.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 
+timeout /t 2 /nobreak >nul
+
+rem Inicia o Edge diretamente para a sessao atual.
 start "" /D "%INSTALL_ROOT%" "%VENV_PYTHONW%" "%INSTALL_ROOT%\deployment\run_campex_edge_windows.py"
 
 echo Aguardando o Campex Edge iniciar...
@@ -146,6 +142,19 @@ echo O Campex Edge nao iniciou dentro do tempo esperado.
 goto :error
 
 :edge_ready
+
+rem Registra a tarefa de boot para proximos reinicios.
+pushd "%INSTALL_ROOT%"
+"%VENV_PYTHON%" manage.py edge-service install
+if errorlevel 1 (
+    popd
+    echo Nao foi possivel instalar o Campex Edge no Windows para inicializacao automatica.
+    goto :error
+)
+popd
+
+rem Remove mecanismo legado da pasta Startup, se existir.
+if exist "%STARTUP_FILE%" del /f /q "%STARTUP_FILE%" >nul 2>&1
 
 curl.exe -fsS ^
   -X POST ^
