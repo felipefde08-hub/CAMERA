@@ -39,6 +39,13 @@ set "PACKAGE_ZIP=%TEMP%\campex-edge-package.zip"
 set "PYTHON_PACKAGE=%TEMP%\campex-python-3.11.9.nupkg"
 set "STARTUP_FILE=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\CampexEdge.cmd"
 set "ENV_FILE=%INSTALL_ROOT%\.env"
+set "INSTALL_LOG=%INSTALL_ROOT%\logs\installer.log"
+
+if not exist "%INSTALL_ROOT%\logs" mkdir "%INSTALL_ROOT%\logs"
+
+> "%INSTALL_LOG%" echo Campex Edge Installer
+>> "%INSTALL_LOG%" echo Inicio: %DATE% %TIME%
+>> "%INSTALL_LOG%" echo Edge: %CAMPEX_EDGE_ID%
 
 echo.
 echo =========================================
@@ -111,7 +118,7 @@ if not exist "%PYTHON_EXE%" (
 
 if not exist "%VENV_PYTHON%" (
     echo [4/6] Criando ambiente Campex...
-    "%PYTHON_EXE%" -m venv "%INSTALL_ROOT%\.venv"
+    "%PYTHON_EXE%" -m venv "%INSTALL_ROOT%\.venv" >> "%INSTALL_LOG%" 2>&1
     if errorlevel 1 goto :error
 ) else (
     echo [4/6] Ambiente Campex ja preparado.
@@ -122,7 +129,7 @@ echo [5/6] Instalando componentes...
 "%VENV_PYTHON%" -m pip install ^
   --disable-pip-version-check ^
   --no-input ^
-  -r "%INSTALL_ROOT%\requirements.txt"
+  -r "%INSTALL_ROOT%\requirements.txt" >> "%INSTALL_LOG%" 2>&1
 
 if errorlevel 1 goto :error
 
@@ -141,7 +148,7 @@ if not exist "%ENV_FILE%" (
 echo [6/6] Validando e iniciando Campex Edge...
 
 pushd "%INSTALL_ROOT%"
-"%VENV_PYTHON%" manage.py edge-config-check
+"%VENV_PYTHON%" manage.py edge-config-check >> "%INSTALL_LOG%" 2>&1
 if errorlevel 1 (
     popd
     goto :error
@@ -167,14 +174,14 @@ timeout /t 2 /nobreak >nul
 
 pushd "%INSTALL_ROOT%"
 
-"%VENV_PYTHON%" manage.py edge-service install
+"%VENV_PYTHON%" manage.py edge-service install >> "%INSTALL_LOG%" 2>&1
 if errorlevel 1 (
     popd
     echo Nao foi possivel instalar o Campex Edge no Windows.
     goto :error
 )
 
-"%VENV_PYTHON%" manage.py edge-service start
+"%VENV_PYTHON%" manage.py edge-service start >> "%INSTALL_LOG%" 2>&1
 if errorlevel 1 (
     popd
     echo O servico Campex Edge foi instalado, mas nao iniciou corretamente.
@@ -246,12 +253,14 @@ echo A instalacao da Campex nao foi concluida.
 echo =========================================
 echo.
 echo Nao desative o Windows Defender.
-echo Deixe esta janela aberta e informe a etapa acima.
 echo.
-echo Por seguranca, este instalador sera removido depois que voce fechar esta mensagem.
-pause
+echo Um diagnostico foi salvo na Area de Trabalho:
+echo Campex-Install-Erro.txt
 
-start "" /b cmd.exe /c "timeout /t 2 /nobreak >nul & del /f /q \"%~f0\""
+copy /y "%INSTALL_LOG%" "%USERPROFILE%\Desktop\Campex-Install-Erro.txt" >nul 2>&1
+
+echo.
+pause
 exit /b 1
 """
 
