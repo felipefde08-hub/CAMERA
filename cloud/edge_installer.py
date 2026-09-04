@@ -14,15 +14,7 @@ def build_windows_installer_cmd(
     credential_key: str,
 ) -> str:
     cmd = r"""@echo off
-
-powershell -NoProfile -Command "if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 1 }"
-if errorlevel 1 (
-    echo Solicitando permissao de administrador...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
-    exit /b
-)
-
-setlocal EnableDelayedExpansion
+setlocal
 title Campex Edge
 
 set "CAMPEX_CLOUD_URL=__CLOUD_URL__"
@@ -32,20 +24,13 @@ set "CAMPEX_CREDENTIAL_KEY=__CREDENTIAL_KEY__"
 
 set "INSTALL_ROOT=%LOCALAPPDATA%\Campex\Edge"
 set "PYTHON_ROOT=%INSTALL_ROOT%\.runtime\python"
-set "PYTHON_EXE=%PYTHON_ROOT%\tools\python.exe"
+set "PYTHON_EXE=%PYTHON_ROOT%\python.exe"
 set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"
 set "VENV_PYTHONW=%INSTALL_ROOT%\.venv\Scripts\pythonw.exe"
 set "PACKAGE_ZIP=%TEMP%\campex-edge-package.zip"
-set "PYTHON_PACKAGE=%TEMP%\campex-python-3.11.9.nupkg"
+set "PYTHON_INSTALLER=%TEMP%\campex-python-installer.exe"
 set "STARTUP_FILE=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\CampexEdge.cmd"
 set "ENV_FILE=%INSTALL_ROOT%\.env"
-set "INSTALL_LOG=%INSTALL_ROOT%\logs\installer.log"
-
-if not exist "%INSTALL_ROOT%\logs" mkdir "%INSTALL_ROOT%\logs"
-
-> "%INSTALL_LOG%" echo Campex Edge Installer
->> "%INSTALL_LOG%" echo Inicio: %DATE% %TIME%
->> "%INSTALL_LOG%" echo Edge: %CAMPEX_EDGE_ID%
 
 echo.
 echo =========================================
@@ -57,23 +42,6 @@ if not exist "%INSTALL_ROOT%" mkdir "%INSTALL_ROOT%"
 if not exist "%PYTHON_ROOT%" mkdir "%PYTHON_ROOT%"
 
 if exist "%ENV_FILE%" (
-    set "EXISTING_EDGE_ID="
-    for /f "usebackq tokens=1,* delims==" %%A in ("%ENV_FILE%") do (
-        if /I "%%A"=="CAMPEX_EDGE_ID" set "EXISTING_EDGE_ID=%%B"
-    )
-
-    if defined EXISTING_EDGE_ID (
-        if /I not "!EXISTING_EDGE_ID!"=="%CAMPEX_EDGE_ID%" (
-            echo.
-            echo Este computador ja esta vinculado a outro Edge Campex.
-            echo Instalacao atual: !EXISTING_EDGE_ID!
-            echo Instalacao solicitada: %CAMPEX_EDGE_ID%
-            echo.
-            echo A Campex nao substituiu a identidade existente para evitar mistura entre unidades.
-            goto :error
-        )
-    )
-
     echo Instalacao existente detectada. Preservando identidade, credenciais e dados locais.
 )
 
@@ -94,31 +62,31 @@ tar.exe -xf "%PACKAGE_ZIP%" -C "%INSTALL_ROOT%"
 if errorlevel 1 goto :error
 
 if not exist "%PYTHON_EXE%" (
-    echo [3/6] Preparando runtime privado Campex...
-
-    if exist "%PYTHON_ROOT%" rmdir /s /q "%PYTHON_ROOT%"
-    mkdir "%PYTHON_ROOT%"
+    echo [3/6] Preparando runtime Campex...
 
     curl.exe -fL ^
-      "https://www.nuget.org/api/v2/package/python/3.11.9" ^
-      -o "%PYTHON_PACKAGE%"
+      "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" ^
+      -o "%PYTHON_INSTALLER%"
 
     if errorlevel 1 goto :error
 
-    tar.exe -xf "%PYTHON_PACKAGE%" -C "%PYTHON_ROOT%"
-    if errorlevel 1 goto :error
+    "%PYTHON_INSTALLER%" /quiet ^
+      InstallAllUsers=0 ^
+      PrependPath=0 ^
+      Include_launcher=0 ^
+      Include_test=0 ^
+      Shortcuts=0 ^
+      AssociateFiles=0 ^
+      TargetDir="%PYTHON_ROOT%"
 
-    if not exist "%PYTHON_EXE%" (
-        echo Runtime Python Campex nao foi preparado corretamente.
-        goto :error
-    )
+    if errorlevel 1 goto :error
 ) else (
     echo [3/6] Runtime Campex ja preparado.
 )
 
 if not exist "%VENV_PYTHON%" (
     echo [4/6] Criando ambiente Campex...
-    "%PYTHON_EXE%" -m venv "%INSTALL_ROOT%\.venv" >> "%INSTALL_LOG%" 2>&1
+    "%PYTHON_EXE%" -m venv "%INSTALL_ROOT%\.venv"
     if errorlevel 1 goto :error
 ) else (
     echo [4/6] Ambiente Campex ja preparado.
@@ -129,7 +97,7 @@ echo [5/6] Instalando componentes...
 "%VENV_PYTHON%" -m pip install ^
   --disable-pip-version-check ^
   --no-input ^
-  -r "%INSTALL_ROOT%\requirements.txt" >> "%INSTALL_LOG%" 2>&1
+  -r "%INSTALL_ROOT%\requirements.txt"
 
 if errorlevel 1 goto :error
 
@@ -148,69 +116,50 @@ if not exist "%ENV_FILE%" (
 echo [6/6] Validando e iniciando Campex Edge...
 
 pushd "%INSTALL_ROOT%"
-"%VENV_PYTHON%" manage.py edge-config-check >> "%INSTALL_LOG%" 2>&1
+"%VENV_PYTHON%" manage.py edge-config-check
 if errorlevel 1 (
     popd
     goto :error
 )
 popd
 
-rem Remove mecanismo legado da pasta Startup, se existir.
-if exist "%STARTUP_FILE%" del /f /q "%STARTUP_FILE%" >nul 2>&1
-
-rem Encerra tarefa e processos Campex antigos para garantir instancia unica.
-schtasks /End /TN "Campex Edge" >nul 2>&1
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "Get-CimInstance Win32_Process | Where-Object { ^
-      $_.CommandLine -like '*Campex\Edge*' -and ( ^
-        $_.CommandLine -like '*run_campex_edge_windows.py*' -or ^
-        $_.CommandLine -like '*manage.py*run-edge-production*' ^
-      ) ^
-    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" ^
-  >nul 2>&1
-
-timeout /t 2 /nobreak >nul
-
-pushd "%INSTALL_ROOT%"
-
-"%VENV_PYTHON%" manage.py edge-service install >> "%INSTALL_LOG%" 2>&1
-if errorlevel 1 (
-    popd
-    echo Nao foi possivel instalar o Campex Edge no Windows.
-    goto :error
+> "%STARTUP_FILE%" (
+    echo @echo off
+    echo cd /d "%%LOCALAPPDATA%%\Campex\Edge"
+    echo start "" "%%LOCALAPPDATA%%\Campex\Edge\.venv\Scripts\pythonw.exe" "%%LOCALAPPDATA%%\Campex\Edge\deployment\run_campex_edge_windows.py"
+    echo exit /b 0
 )
 
-"%VENV_PYTHON%" manage.py edge-service start >> "%INSTALL_LOG%" 2>&1
-if errorlevel 1 (
-    popd
-    echo O servico Campex Edge foi instalado, mas nao iniciou corretamente.
-    goto :error
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run_campex_edge_windows.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+
+start "" /D "%INSTALL_ROOT%" "%VENV_PYTHONW%" "%INSTALL_ROOT%\deployment\run_campex_edge_windows.py"
+
+echo Aguardando o Campex Edge iniciar...
+
+for /L %%I in (1,1,30) do (
+    curl.exe -fsS "http://127.0.0.1:8000/health" >nul 2>&1
+    if not errorlevel 1 goto :edge_ready
+    timeout /t 1 /nobreak >nul
 )
 
-popd
-
-echo Aguardando confirmacao real do Campex Edge no Cloud...
-
-rem Evita aceitar heartbeat recente deixado por processo anterior.
-timeout /t 16 /nobreak >nul
-
-for /L %%I in (1,1,8) do (
-    curl.exe -fsS ^
-      -H "X-Edge-Id: %CAMPEX_EDGE_ID%" ^
-      -H "X-Edge-Secret: %CAMPEX_EDGE_SECRET%" ^
-      "%CAMPEX_CLOUD_URL%/edge/runtime-check" ^
-      >nul 2>&1
-
-    if not errorlevel 1 goto :cloud_ready
-
-    timeout /t 5 /nobreak >nul
-)
-
-echo O Edge iniciou localmente, mas nao confirmou heartbeat real no Campex Cloud.
+echo O Campex Edge nao iniciou dentro do tempo esperado.
 goto :error
 
-:cloud_ready
+:edge_ready
+
+curl.exe -fsS ^
+  -X POST ^
+  -H "Content-Type: application/json" ^
+  -H "X-Edge-Id: %CAMPEX_EDGE_ID%" ^
+  -H "X-Edge-Secret: %CAMPEX_EDGE_SECRET%" ^
+  -d "{}" ^
+  "%CAMPEX_CLOUD_URL%/edge/heartbeat" ^
+  >nul
+
+if errorlevel 1 (
+    echo O Edge iniciou, mas nao conseguiu conectar ao Campex Cloud.
+    goto :error
+)
 
 > "%USERPROFILE%\Desktop\Campex.url" (
     echo [InternetShortcut]
@@ -218,7 +167,7 @@ goto :error
 )
 
 del "%PACKAGE_ZIP%" >nul 2>&1
-del "%PYTHON_PACKAGE%" >nul 2>&1
+del "%PYTHON_INSTALLER%" >nul 2>&1
 
 echo.
 echo =========================================
@@ -230,12 +179,7 @@ echo Voce pode fechar esta janela.
 echo.
 
 start "" "%CAMPEX_CLOUD_URL%/edges"
-
-echo.
-echo O instalador sera removido deste computador por seguranca.
 pause
-
-start "" /b cmd.exe /c "timeout /t 2 /nobreak >nul & del /f /q \"%~f0\""
 exit /b 0
 
 :error
@@ -253,12 +197,7 @@ echo A instalacao da Campex nao foi concluida.
 echo =========================================
 echo.
 echo Nao desative o Windows Defender.
-echo.
-echo Um diagnostico foi salvo na Area de Trabalho:
-echo Campex-Install-Erro.txt
-
-copy /y "%INSTALL_LOG%" "%USERPROFILE%\Desktop\Campex-Install-Erro.txt" >nul 2>&1
-
+echo Deixe esta janela aberta e informe a etapa acima.
 echo.
 pause
 exit /b 1
