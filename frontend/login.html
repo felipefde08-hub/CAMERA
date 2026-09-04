@@ -54,10 +54,48 @@
             Continuar com Google
           </a>
           <div id="loginStatus" class="cx-login-status" role="status"></div>
+
+          <div id="publicSignupAccess" class="cx-login-access" hidden>
+            <p>Não possui conta?</p>
+            <button id="showSignupButton" class="cx-auth-link" type="button">Cadastre-se</button>
+          </div>
+
           <div class="cx-login-access">
             <p>Ainda não tem acesso? Solicite uma demonstração.</p>
             <a href="mailto:contato@campex.com.br?subject=Solicitar demonstração Campex">Fale com a Campex</a>
           </div>
+        </form>
+
+        <form id="signupForm" class="cx-auth-form" method="post" autocomplete="on" hidden>
+          <div class="cx-auth-heading compact">
+            <span>Nova organização</span>
+            <h2>Criar conta</h2>
+            <p>Crie sua empresa na Campex e comece a configuração.</p>
+          </div>
+
+          <label>
+            Nome
+            <input name="nome" required autocomplete="name" />
+          </label>
+
+          <label>
+            E-mail
+            <input name="email" type="email" required autocomplete="username" />
+          </label>
+
+          <label>
+            Senha
+            <input name="senha" type="password" required minlength="8" autocomplete="new-password" />
+          </label>
+
+          <label>
+            Nome da empresa
+            <input name="empresa_nome" required autocomplete="organization" />
+          </label>
+
+          <button class="cx-auth-submit" type="submit">Criar conta</button>
+          <div id="signupStatus" class="cx-login-status" role="status"></div>
+          <button id="showLoginButton" class="cx-auth-link" type="button">Já tenho uma conta</button>
         </form>
 
         <section id="firstRunPanel" class="cx-first-run-card" hidden>
@@ -93,6 +131,6 @@
         </section>
       </section>
     </main>
-    <script src="/static/login.js?v=campex-settings-v1-20260821"></script>
+    <script src="/static/login.js?v=campex-login-20260904"></script>
   </body>
 </html>

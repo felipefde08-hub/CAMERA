@@ -66,14 +66,21 @@ def test_public_signup_is_disabled_and_does_not_create_tenant(tmp_path: Path) ->
         patcher.stop()
 
 
-def test_login_page_is_enterprise_access_only_without_public_signup() -> None:
+def test_login_page_keeps_public_signup_hidden_until_auth_status_enables_it() -> None:
     html = Path("frontend/login.html").read_text(encoding="utf-8")
+    js = Path("frontend/login.js").read_text(encoding="utf-8")
+
     assert "Entrar na Campex" in html
     assert "Ainda não tem acesso? Solicite uma demonstração." in html
-    assert 'id="signupForm"' not in html
-    assert "Criar conta" not in html
-    assert '"/auth/signup"' not in html
+    assert 'id="publicSignupAccess"' in html
+    assert 'id="signupForm"' in html
+    assert 'id="signupForm" class="cx-auth-form" method="post" autocomplete="on" hidden' in html
+    assert "Cadastre-se" in html
     assert "Continuar com Google" in html
+
+    assert "auth.public_signup" in js
+    assert "publicSignupAccess.hidden = !publicSignupEnabled" in js
+    assert "showSignupButton.hidden = !publicSignupEnabled" in js
 
 
 def test_internal_product_route_redirects_unauthenticated_user_to_login(tmp_path: Path) -> None:

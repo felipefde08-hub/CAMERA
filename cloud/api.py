@@ -361,6 +361,8 @@ def cloud_auth_status(request: Request) -> dict[str, Any]:
         "authenticated": user is not None,
         "bootstrap": False,
         "user": user,
+        "public_signup": os.getenv("CAMPEX_ENABLE_PUBLIC_SIGNUP", "").strip().lower()
+        in {"1", "true", "yes", "on"},
     }
 
 

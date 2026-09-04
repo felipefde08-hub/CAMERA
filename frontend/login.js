@@ -4,6 +4,7 @@ const loginStatus = document.querySelector("#loginStatus");
 const signupStatus = document.querySelector("#signupStatus");
 const showSignupButton = document.querySelector("#showSignupButton");
 const showLoginButton = document.querySelector("#showLoginButton");
+const publicSignupAccess = document.querySelector("#publicSignupAccess");
 const googleOAuthButton = document.querySelector("#googleOAuthButton");
 const loginPasswordInput = document.querySelector("#loginPasswordInput");
 const loginPasswordToggle = document.querySelector("#loginPasswordToggle");
@@ -137,6 +138,11 @@ async function bootstrapLogin() {
   }
   try {
     const auth = await requestJson("/auth/status");
+
+    const publicSignupEnabled = Boolean(auth.public_signup);
+    if (publicSignupAccess) publicSignupAccess.hidden = !publicSignupEnabled;
+    if (showSignupButton) showSignupButton.hidden = !publicSignupEnabled;
+
     if (auth.authenticated) {
       window.location.replace(nextPath());
       return;
