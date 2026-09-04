@@ -95,6 +95,22 @@ def _run_schtasks(args: list[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _run_powershell(script: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
 def _install_windows_service() -> EdgeServiceResult:
     try:
         validate_edge_config()
@@ -125,6 +141,25 @@ def _install_windows_service() -> EdgeServiceResult:
             result.stderr.strip()
             or result.stdout.strip()
             or "Falha ao instalar tarefa Campex Edge.",
+        )
+
+    settings = _run_powershell(
+        "$settings = New-ScheduledTaskSettingsSet "
+        "-RestartCount 999 "
+        "-RestartInterval (New-TimeSpan -Minutes 1) "
+        "-StartWhenAvailable "
+        "-ExecutionTimeLimit ([TimeSpan]::Zero) "
+        "-MultipleInstances IgnoreNew; "
+        "Set-ScheduledTask -TaskName 'Campex Edge' "
+        "-Settings $settings | Out-Null"
+    )
+
+    if settings.returncode != 0:
+        return EdgeServiceResult(
+            False,
+            settings.stderr.strip()
+            or settings.stdout.strip()
+            or "Falha ao configurar recuperacao automatica do Campex Edge.",
         )
 
     return EdgeServiceResult(

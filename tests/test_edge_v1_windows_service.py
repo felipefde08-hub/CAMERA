@@ -36,6 +36,14 @@ def test_windows_install_creates_scheduled_task(monkeypatch, tmp_path: Path) -> 
 
     monkeypatch.setattr("app.edge_service._run_schtasks", fake_schtasks)
 
+    powershell_calls = []
+
+    def fake_powershell(script):
+        powershell_calls.append(script)
+        return completed()
+
+    monkeypatch.setattr("app.edge_service._run_powershell", fake_powershell)
+
     with patch("app.edge_service.validate_edge_config"):
         result = install_service()
 
@@ -48,6 +56,14 @@ def test_windows_install_creates_scheduled_task(monkeypatch, tmp_path: Path) -> 
     assert "SYSTEM" in calls[0]
     assert "/RL" in calls[0]
     assert "HIGHEST" in calls[0]
+
+    assert powershell_calls
+    settings = powershell_calls[0]
+    assert "-RestartCount 999" in settings
+    assert "-RestartInterval (New-TimeSpan -Minutes 1)" in settings
+    assert "-StartWhenAvailable" in settings
+    assert "-ExecutionTimeLimit ([TimeSpan]::Zero)" in settings
+    assert "-MultipleInstances IgnoreNew" in settings
 
 
 def test_windows_start_runs_task_and_waits_for_health(monkeypatch) -> None:

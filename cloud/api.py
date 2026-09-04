@@ -1212,6 +1212,79 @@ def list_edge_devices(
     return result
 
 
+@api.get("/edge/runtime-check")
+def edge_runtime_check(
+    x_edge_id: Optional[str] = Header(default=None, alias="X-Edge-Id"),
+    x_edge_secret: Optional[str] = Header(default=None, alias="X-Edge-Secret"),
+) -> dict[str, Any]:
+    from datetime import datetime, timezone
+
+    if not x_edge_id or not x_edge_secret:
+        raise HTTPException(
+            status_code=401,
+            detail="Credenciais do Edge ausentes.",
+        )
+
+    with connect() as db:
+        init_cloud_db(db)
+        device = db.fetchone(
+            "SELECT * FROM edge_devices WHERE id = ?",
+            (x_edge_id,),
+        )
+
+    if not device or not verify_edge_secret(
+        x_edge_secret,
+        device["secret_hash"],
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Edge nao autorizado.",
+        )
+
+    if device["status"] != "active" or device.get("revoked_at"):
+        raise HTTPException(
+            status_code=403,
+            detail="Edge revogado ou inativo.",
+        )
+
+    last_seen = device.get("last_seen_at")
+    heartbeat_age_seconds = None
+
+    if last_seen:
+        try:
+            parsed = datetime.fromisoformat(
+                str(last_seen).replace("Z", "+00:00")
+            )
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            heartbeat_age_seconds = max(
+                0.0,
+                (
+                    datetime.now(timezone.utc)
+                    - parsed.astimezone(timezone.utc)
+                ).total_seconds(),
+            )
+        except Exception:
+            heartbeat_age_seconds = None
+
+    # Runtime envia heartbeat a cada ~10s.
+    # 15s garante que estamos vendo o processo REAL atual,
+    # e não um heartbeat antigo do instalador/processo anterior.
+    if heartbeat_age_seconds is None or heartbeat_age_seconds > 15:
+        raise HTTPException(
+            status_code=503,
+            detail="Heartbeat real do runtime ainda nao confirmado.",
+        )
+
+    return {
+        "ok": True,
+        "edge_id": x_edge_id,
+        "runtime_online": True,
+        "last_seen_at": last_seen,
+        "heartbeat_age_seconds": heartbeat_age_seconds,
+    }
+
+
 @api.post("/edge/heartbeat")
 def edge_heartbeat(
     x_edge_id: Optional[str] = Header(default=None, alias="X-Edge-Id"),

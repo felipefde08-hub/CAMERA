@@ -107,7 +107,8 @@ def test_installer_creates_offline_edge_then_heartbeat_makes_it_online() -> None
         assert "manage.py edge-config-check" in installer
         assert "manage.py edge-service install" in installer
         assert "manage.py edge-service start" in installer
-        assert "/edge/heartbeat" in installer
+        assert "/edge/runtime-check" in installer
+        assert '"%CAMPEX_CLOUD_URL%/edge/heartbeat"' not in installer
         assert "EncodedCommand" not in installer
 
         with cloud_database.connect() as db:

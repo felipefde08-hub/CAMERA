@@ -32,11 +32,11 @@ set "CAMPEX_CREDENTIAL_KEY=__CREDENTIAL_KEY__"
 
 set "INSTALL_ROOT=%LOCALAPPDATA%\Campex\Edge"
 set "PYTHON_ROOT=%INSTALL_ROOT%\.runtime\python"
-set "PYTHON_EXE=%PYTHON_ROOT%\python.exe"
+set "PYTHON_EXE=%PYTHON_ROOT%\tools\python.exe"
 set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"
 set "VENV_PYTHONW=%INSTALL_ROOT%\.venv\Scripts\pythonw.exe"
 set "PACKAGE_ZIP=%TEMP%\campex-edge-package.zip"
-set "PYTHON_INSTALLER=%TEMP%\campex-python-installer.exe"
+set "PYTHON_PACKAGE=%TEMP%\campex-python-3.11.9.nupkg"
 set "STARTUP_FILE=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\CampexEdge.cmd"
 set "ENV_FILE=%INSTALL_ROOT%\.env"
 
@@ -87,24 +87,24 @@ tar.exe -xf "%PACKAGE_ZIP%" -C "%INSTALL_ROOT%"
 if errorlevel 1 goto :error
 
 if not exist "%PYTHON_EXE%" (
-    echo [3/6] Preparando runtime Campex...
+    echo [3/6] Preparando runtime privado Campex...
+
+    if exist "%PYTHON_ROOT%" rmdir /s /q "%PYTHON_ROOT%"
+    mkdir "%PYTHON_ROOT%"
 
     curl.exe -fL ^
-      "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" ^
-      -o "%PYTHON_INSTALLER%"
+      "https://www.nuget.org/api/v2/package/python/3.11.9" ^
+      -o "%PYTHON_PACKAGE%"
 
     if errorlevel 1 goto :error
 
-    "%PYTHON_INSTALLER%" /quiet ^
-      InstallAllUsers=0 ^
-      PrependPath=0 ^
-      Include_launcher=0 ^
-      Include_test=0 ^
-      Shortcuts=0 ^
-      AssociateFiles=0 ^
-      TargetDir="%PYTHON_ROOT%"
-
+    tar.exe -xf "%PYTHON_PACKAGE%" -C "%PYTHON_ROOT%"
     if errorlevel 1 goto :error
+
+    if not exist "%PYTHON_EXE%" (
+        echo Runtime Python Campex nao foi preparado corretamente.
+        goto :error
+    )
 ) else (
     echo [3/6] Runtime Campex ja preparado.
 )
@@ -151,8 +151,19 @@ popd
 rem Remove mecanismo legado da pasta Startup, se existir.
 if exist "%STARTUP_FILE%" del /f /q "%STARTUP_FILE%" >nul 2>&1
 
-rem Encerra launcher legado antes de instalar a tarefa oficial.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run_campex_edge_windows.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+rem Encerra tarefa e processos Campex antigos para garantir instancia unica.
+schtasks /End /TN "Campex Edge" >nul 2>&1
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "Get-CimInstance Win32_Process | Where-Object { ^
+      $_.CommandLine -like '*Campex\Edge*' -and ( ^
+        $_.CommandLine -like '*run_campex_edge_windows.py*' -or ^
+        $_.CommandLine -like '*manage.py*run-edge-production*' ^
+      ) ^
+    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" ^
+  >nul 2>&1
+
+timeout /t 2 /nobreak >nul
 
 pushd "%INSTALL_ROOT%"
 
@@ -172,19 +183,27 @@ if errorlevel 1 (
 
 popd
 
-curl.exe -fsS ^
-  -X POST ^
-  -H "Content-Type: application/json" ^
-  -H "X-Edge-Id: %CAMPEX_EDGE_ID%" ^
-  -H "X-Edge-Secret: %CAMPEX_EDGE_SECRET%" ^
-  -d "{}" ^
-  "%CAMPEX_CLOUD_URL%/edge/heartbeat" ^
-  >nul
+echo Aguardando confirmacao real do Campex Edge no Cloud...
 
-if errorlevel 1 (
-    echo O Edge iniciou, mas nao conseguiu conectar ao Campex Cloud.
-    goto :error
+rem Evita aceitar heartbeat recente deixado por processo anterior.
+timeout /t 16 /nobreak >nul
+
+for /L %%I in (1,1,8) do (
+    curl.exe -fsS ^
+      -H "X-Edge-Id: %CAMPEX_EDGE_ID%" ^
+      -H "X-Edge-Secret: %CAMPEX_EDGE_SECRET%" ^
+      "%CAMPEX_CLOUD_URL%/edge/runtime-check" ^
+      >nul 2>&1
+
+    if not errorlevel 1 goto :cloud_ready
+
+    timeout /t 5 /nobreak >nul
 )
+
+echo O Edge iniciou localmente, mas nao confirmou heartbeat real no Campex Cloud.
+goto :error
+
+:cloud_ready
 
 > "%USERPROFILE%\Desktop\Campex.url" (
     echo [InternetShortcut]
@@ -192,7 +211,7 @@ if errorlevel 1 (
 )
 
 del "%PACKAGE_ZIP%" >nul 2>&1
-del "%PYTHON_INSTALLER%" >nul 2>&1
+del "%PYTHON_PACKAGE%" >nul 2>&1
 
 echo.
 echo =========================================
@@ -204,7 +223,12 @@ echo Voce pode fechar esta janela.
 echo.
 
 start "" "%CAMPEX_CLOUD_URL%/edges"
+
+echo.
+echo O instalador sera removido deste computador por seguranca.
 pause
+
+start "" /b cmd.exe /c "timeout /t 2 /nobreak >nul & del /f /q \"%~f0\""
 exit /b 0
 
 :error
@@ -224,7 +248,10 @@ echo.
 echo Nao desative o Windows Defender.
 echo Deixe esta janela aberta e informe a etapa acima.
 echo.
+echo Por seguranca, este instalador sera removido depois que voce fechar esta mensagem.
 pause
+
+start "" /b cmd.exe /c "timeout /t 2 /nobreak >nul & del /f /q \"%~f0\""
 exit /b 1
 """
 
