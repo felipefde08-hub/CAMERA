@@ -123,29 +123,29 @@ if errorlevel 1 (
 )
 popd
 
-> "%STARTUP_FILE%" (
-    echo @echo off
-    echo cd /d "%%LOCALAPPDATA%%\Campex\Edge"
-    echo start "" "%%LOCALAPPDATA%%\Campex\Edge\.venv\Scripts\pythonw.exe" "%%LOCALAPPDATA%%\Campex\Edge\deployment\run_campex_edge_windows.py"
-    echo exit /b 0
-)
+rem Remove mecanismo legado da pasta Startup, se existir.
+if exist "%STARTUP_FILE%" del /f /q "%STARTUP_FILE%" >nul 2>&1
 
+rem Encerra launcher legado antes de instalar a tarefa oficial.
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run_campex_edge_windows.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 
-start "" /D "%INSTALL_ROOT%" "%VENV_PYTHONW%" "%INSTALL_ROOT%\deployment\run_campex_edge_windows.py"
+pushd "%INSTALL_ROOT%"
 
-echo Aguardando o Campex Edge iniciar...
-
-for /L %%I in (1,1,30) do (
-    curl.exe -fsS "http://127.0.0.1:8000/health" >nul 2>&1
-    if not errorlevel 1 goto :edge_ready
-    timeout /t 1 /nobreak >nul
+"%VENV_PYTHON%" manage.py edge-service install
+if errorlevel 1 (
+    popd
+    echo Nao foi possivel instalar o Campex Edge no Windows.
+    goto :error
 )
 
-echo O Campex Edge nao iniciou dentro do tempo esperado.
-goto :error
+"%VENV_PYTHON%" manage.py edge-service start
+if errorlevel 1 (
+    popd
+    echo O servico Campex Edge foi instalado, mas nao iniciou corretamente.
+    goto :error
+)
 
-:edge_ready
+popd
 
 curl.exe -fsS ^
   -X POST ^

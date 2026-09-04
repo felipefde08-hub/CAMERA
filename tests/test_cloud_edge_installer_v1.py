@@ -104,7 +104,8 @@ def test_installer_creates_offline_edge_then_heartbeat_makes_it_online() -> None
         assert cloud_url.startswith("http://testserver")
         assert "/edge-package/windows" in installer
         assert "manage.py edge-config-check" in installer
-        assert "http://127.0.0.1:8000/health" in installer
+        assert "manage.py edge-service install" in installer
+        assert "manage.py edge-service start" in installer
         assert "/edge/heartbeat" in installer
         assert "EncodedCommand" not in installer
 
