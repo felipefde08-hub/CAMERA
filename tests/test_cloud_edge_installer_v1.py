@@ -291,7 +291,8 @@ def test_installer_blocks_existing_env_from_different_edge_identity() -> None:
 
     assert 'set "EXISTING_EDGE_ID="' in installer
     assert 'if /I "%%A"=="CAMPEX_EDGE_ID" set "EXISTING_EDGE_ID=%%B"' in installer
-    assert 'if /I not "%EXISTING_EDGE_ID%"=="%CAMPEX_EDGE_ID%"' in installer
+    assert "setlocal EnableDelayedExpansion" in installer
+    assert 'if /I not "!EXISTING_EDGE_ID!"=="%CAMPEX_EDGE_ID%"' in installer
     assert "Este computador ja esta vinculado a outro Edge Campex." in installer
     assert "A Campex nao substituiu a identidade existente" in installer
 

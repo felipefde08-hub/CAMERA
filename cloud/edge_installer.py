@@ -14,7 +14,7 @@ def build_windows_installer_cmd(
     credential_key: str,
 ) -> str:
     cmd = r"""@echo off
-setlocal
+setlocal EnableDelayedExpansion
 title Campex Edge
 
 set "CAMPEX_CLOUD_URL=__CLOUD_URL__"
@@ -48,10 +48,10 @@ if exist "%ENV_FILE%" (
     )
 
     if defined EXISTING_EDGE_ID (
-        if /I not "%EXISTING_EDGE_ID%"=="%CAMPEX_EDGE_ID%" (
+        if /I not "!EXISTING_EDGE_ID!"=="%CAMPEX_EDGE_ID%" (
             echo.
             echo Este computador ja esta vinculado a outro Edge Campex.
-            echo Instalacao atual: %EXISTING_EDGE_ID%
+            echo Instalacao atual: !EXISTING_EDGE_ID!
             echo Instalacao solicitada: %CAMPEX_EDGE_ID%
             echo.
             echo A Campex nao substituiu a identidade existente para evitar mistura entre unidades.
