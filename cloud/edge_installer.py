@@ -144,14 +144,11 @@ goto :error
 :edge_ready
 
 rem Registra a tarefa de boot para proximos reinicios.
-pushd "%INSTALL_ROOT%"
-"%VENV_PYTHON%" manage.py edge-service install
+schtasks /Create /TN "Campex Edge" /SC ONSTART /RU SYSTEM /RL HIGHEST /TR ""%VENV_PYTHONW%" "%INSTALL_ROOT%\deployment\run_campex_edge_windows.py"" /F
 if errorlevel 1 (
-    popd
     echo Nao foi possivel instalar o Campex Edge no Windows para inicializacao automatica.
     goto :error
 )
-popd
 
 rem Remove mecanismo legado da pasta Startup, se existir.
 if exist "%STARTUP_FILE%" del /f /q "%STARTUP_FILE%" >nul 2>&1
