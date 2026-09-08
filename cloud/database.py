@@ -143,6 +143,7 @@ def _init_sqlite(db: SQLiteConnection) -> None:
             status TEXT NOT NULL DEFAULT 'active',
             revoked_at TEXT,
             last_seen_at TEXT,
+            last_diagnostics_json TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
@@ -283,6 +284,7 @@ def _init_sqlite(db: SQLiteConnection) -> None:
         """
     )
     _ensure_sqlite_column(db, "edge_devices", "last_seen_at", "TEXT")
+    _ensure_sqlite_column(db, "edge_devices", "last_diagnostics_json", "TEXT")
     _ensure_sqlite_column(db, "edge_devices", "edge_secret_encrypted", "TEXT")
     _ensure_sqlite_column(db, "edge_devices", "credential_key_encrypted", "TEXT")
     _ensure_sqlite_column(db, "edge_events", "severidade", "TEXT")
@@ -399,6 +401,7 @@ def _init_postgres(db: PostgresConnection) -> None:
         """
     )
     db.execute("ALTER TABLE edge_devices ADD COLUMN IF NOT EXISTS last_seen_at TEXT")
+    db.execute("ALTER TABLE edge_devices ADD COLUMN IF NOT EXISTS last_diagnostics_json TEXT")
     db.execute("ALTER TABLE edge_devices ADD COLUMN IF NOT EXISTS edge_secret_encrypted TEXT")
     db.execute("ALTER TABLE edge_devices ADD COLUMN IF NOT EXISTS credential_key_encrypted TEXT")
     db.execute("ALTER TABLE edge_events ADD COLUMN IF NOT EXISTS severidade TEXT")

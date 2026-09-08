@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import json
 import os
+import platform
 import signal
 import shutil
 import threading
@@ -54,6 +55,9 @@ class ProductionEdgeRuntime:
         self.stop_event = threading.Event()
         self.server: uvicorn.Server | None = None
         self.threads: list[threading.Thread] = []
+        self.started_at = time.monotonic()
+        self._last_local_health_check_at: str | None = None
+        self._last_local_api_healthy: bool | None = None
 
     def _run_api(self) -> None:
         config = uvicorn.Config(api_module.api, host=self.host, port=self.port, log_level=os.getenv("CAMPEX_LOG_LEVEL", "info").lower())
@@ -124,11 +128,149 @@ class ProductionEdgeRuntime:
                 disk_used_percent=round((disk.used / disk.total) * 100, 2) if disk.total else None,
             )
 
+    def _check_local_api_health(self) -> bool | None:
+        url = f"http://127.0.0.1:{self.port}/health"
+        self._last_local_health_check_at = now_iso()
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as response:
+                self._last_local_api_healthy = 200 <= response.status < 300
+        except Exception:
+            self._last_local_api_healthy = False
+        return self._last_local_api_healthy
+
+    def _diagnostic_text(self, value: object, default: str | None = None) -> str | None:
+        if value is None:
+            return default
+        text = str(value).strip()
+        if not text:
+            return default
+        blocked = ("rtsp://", "password", "senha", "secret", "token", "cookie", "credential", "api_key", ".env")
+        if any(item in text.lower() for item in blocked):
+            return "diagnostic_redacted"
+        return text[:240]
+
+    def _collect_cloud_diagnostics(self) -> dict[str, object]:
+        try:
+            streams = api_module.live_streams.statuses()
+        except Exception:
+            streams = []
+
+        camera_items = []
+        for stream in streams:
+            if not isinstance(stream, dict):
+                continue
+            camera_items.append(
+                {
+                    "camera_id": self._diagnostic_text(stream.get("camera_id")),
+                    "status": self._diagnostic_text(stream.get("status"), "UNKNOWN"),
+                    "last_frame_at": self._diagnostic_text(stream.get("last_frame_at")),
+                    "reconnect_attempts": stream.get("reconnect_attempts"),
+                    "analysis_status": self._diagnostic_text(stream.get("machine_analysis_status") or stream.get("ai_status"), "UNKNOWN"),
+                    "analysis_error": self._diagnostic_text(stream.get("analysis_error") or stream.get("error")),
+                }
+            )
+
+        machine_items = []
+        for stream in streams:
+            if not isinstance(stream, dict):
+                continue
+            monitor_id = stream.get("machine_monitor_id")
+            if not monitor_id and stream.get("machine_state") is None:
+                continue
+            machine_items.append(
+                {
+                    "monitor_id": monitor_id,
+                    "camera_id": self._diagnostic_text(stream.get("camera_id")),
+                    "machine_state": self._diagnostic_text(stream.get("machine_state"), "UNKNOWN"),
+                    "analysis_status": self._diagnostic_text(stream.get("machine_analysis_status"), "UNKNOWN"),
+                    "signal_quality": stream.get("signal_quality"),
+                    "calibration_result": self._diagnostic_text(stream.get("calibration_result")),
+                    "readiness": self._diagnostic_text(stream.get("readiness")),
+                    "frames_analyzed": stream.get("machine_frames_analyzed") or stream.get("analysis_frames"),
+                    "confidence": stream.get("machine_confidence"),
+                    "reason": self._diagnostic_text(stream.get("machine_reason")),
+                }
+            )
+
+        try:
+            with db_connect(self.db_path) as connection:
+                init_db(connection)
+                db_monitors = connection.execute(
+                    """
+                    SELECT id, camera_id, current_state, calibration_status,
+                           calibration_result, ativo
+                    FROM machine_monitors
+                    WHERE ativo = 1
+                    """
+                ).fetchall()
+            known_monitor_ids = {str(item.get("monitor_id")) for item in machine_items if item.get("monitor_id")}
+            for row in db_monitors:
+                if str(row["id"]) in known_monitor_ids:
+                    continue
+                machine_items.append(
+                    {
+                        "monitor_id": row["id"],
+                        "camera_id": row["camera_id"],
+                        "machine_state": row["current_state"] or "UNKNOWN",
+                        "analysis_status": "UNKNOWN",
+                        "signal_quality": None,
+                        "calibration_result": row["calibration_result"] or row["calibration_status"],
+                        "readiness": row["calibration_status"],
+                        "frames_analyzed": None,
+                        "confidence": None,
+                        "reason": None,
+                    }
+                )
+        except Exception as exc:
+            machine_items.append(
+                {
+                    "monitor_id": None,
+                    "camera_id": None,
+                    "machine_state": "UNKNOWN",
+                    "analysis_status": "UNKNOWN",
+                    "signal_quality": None,
+                    "calibration_result": None,
+                    "readiness": "PARTIAL",
+                    "frames_analyzed": None,
+                        "confidence": None,
+                        "reason": "monitor_query_failed",
+                    }
+                )
+
+        online = sum(1 for item in camera_items if item.get("status") == "online")
+        local_health = self._check_local_api_health()
+        return {
+            "generated_at": now_iso(),
+            "edge": {
+                "version": os.getenv("CAMPEX_VERSION") or None,
+                "process_uptime_seconds": round(time.monotonic() - self.started_at, 2),
+                "python_version": platform.python_version(),
+                "platform": platform.platform(),
+                "local_api_healthy": local_health,
+                "last_local_health_check_at": self._last_local_health_check_at,
+            },
+            "cameras": {
+                "total": len(camera_items),
+                "online": online,
+                "offline": max(0, len(camera_items) - online),
+                "items": camera_items,
+            },
+            "machines": {
+                "total": len(machine_items),
+                "items": machine_items,
+            },
+        }
+
     def _send_cloud_heartbeat(self, cloud_url: str, edge_secret: str) -> None:
         url = f"{cloud_url.rstrip('/')}/edge/heartbeat"
+        payload: dict[str, object] = {}
+        try:
+            payload["diagnostics"] = self._collect_cloud_diagnostics()
+        except Exception as exc:
+            logger.warning("Falha parcial ao coletar diagnostics do Edge: %s", exc)
         request = urllib.request.Request(
             url,
-            data=b"{}",
+            data=json.dumps(payload).encode("utf-8"),
             method="POST",
             headers={
                 "Content-Type": "application/json",

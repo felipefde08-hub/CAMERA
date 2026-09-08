@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +15,7 @@ from app.auth import create_user
 from app.database import connect as edge_connect
 from app.database import init_db
 from app.models import criar_camera, criar_cliente, criar_unidade, registrar_evento
+from app.edge_runtime import ProductionEdgeRuntime
 from cloud import database as cloud_database
 from cloud.api import api as cloud_api
 from edge_agent.sync_outbox import flush_sync_outbox, pending_sync_count
@@ -399,6 +402,221 @@ class EdgeCloudIntegrationTest(unittest.TestCase):
         self.assertTrue(cloud_database.is_postgres_url("postgresql://user:pass@host/db"))
         self.assertTrue(cloud_database.is_postgres_url("postgres://user:pass@host/db"))
         self.assertFalse(cloud_database.is_postgres_url("sqlite:///local.db"))
+
+    def test_edge_heartbeat_accepts_legacy_payload_without_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self.make_cloud_client(temp_dir)
+            self.register_edge(client)
+            response = client.post(
+                "/edge/heartbeat",
+                json={},
+                headers={"X-Edge-Id": EDGE_ID, "X-Edge-Secret": EDGE_SECRET},
+            )
+            diagnostics = client.get(f"/edges/{EDGE_ID}/diagnostics")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["diagnostics"], "not_provided")
+        self.assertEqual(diagnostics.status_code, 200)
+        self.assertEqual(diagnostics.json()["edge_id"], EDGE_ID)
+        self.assertIsNone(diagnostics.json()["diagnostics"])
+
+    def test_edge_heartbeat_persists_latest_diagnostics_snapshot_without_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self.make_cloud_client(temp_dir)
+            self.register_edge(client)
+            first = {
+                "diagnostics": {
+                    "generated_at": "2026-09-03T10:00:00+00:00",
+                    "edge": {
+                        "version": "rc1",
+                        "process_uptime_seconds": 12.5,
+                        "python_version": "3.11.9",
+                        "platform": "Windows",
+                        "local_api_healthy": True,
+                        "last_local_health_check_at": "2026-09-03T10:00:00+00:00",
+                    },
+                    "cameras": {
+                        "total": 1,
+                        "online": 1,
+                        "offline": 0,
+                        "items": [{
+                            "camera_id": "cam_01",
+                            "status": "online",
+                            "last_frame_at": "2026-09-03T10:00:00+00:00",
+                            "reconnect_attempts": 0,
+                            "analysis_status": "ANALYZING",
+                            "analysis_error": "rtsp://user:password@10.0.0.10/live",
+                        }],
+                    },
+                    "machines": {
+                        "total": 1,
+                        "items": [{
+                            "monitor_id": "mon_01",
+                            "camera_id": "cam_01",
+                            "machine_state": "STOPPED",
+                            "analysis_status": "ANALYZING",
+                            "signal_quality": 0.87,
+                            "calibration_result": "PASS",
+                            "frames_analyzed": 42,
+                            "confidence": 0.91,
+                            "reason": "motion below baseline",
+                        }],
+                    },
+                    "edge_secret": "should-not-persist",
+                }
+            }
+            second = {
+                "diagnostics": {
+                    **first["diagnostics"],
+                    "generated_at": "2026-09-03T10:01:00+00:00",
+                    "cameras": {**first["diagnostics"]["cameras"], "online": 0, "offline": 1},
+                }
+            }
+            self.assertEqual(client.post("/edge/heartbeat", json=first, headers={"X-Edge-Id": EDGE_ID, "X-Edge-Secret": EDGE_SECRET}).status_code, 200)
+            self.assertEqual(client.post("/edge/heartbeat", json=second, headers={"X-Edge-Id": EDGE_ID, "X-Edge-Secret": EDGE_SECRET}).status_code, 200)
+            payload = client.get(f"/edges/{EDGE_ID}/diagnostics").json()
+            with cloud_database.connect() as db:
+                row = db.fetchone("SELECT last_diagnostics_json FROM edge_devices WHERE id = ?", (EDGE_ID,))
+
+        self.assertEqual(payload["generated_at"], "2026-09-03T10:01:00+00:00")
+        self.assertIsNotNone(payload["received_at"])
+        self.assertEqual(payload["diagnostics"]["cameras"]["online"], 0)
+        serialized = json.dumps(payload, ensure_ascii=False)
+        self.assertNotIn("should-not-persist", serialized)
+        self.assertNotIn("rtsp://user:password", serialized)
+        self.assertIn("[redacted]", serialized)
+        self.assertIn("received_at", row["last_diagnostics_json"])
+
+    def test_edge_diagnostics_auth_and_tenant_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self.make_cloud_client(temp_dir)
+            self.register_edge(client, tenant_id="cli_fl", unidade_id="uni_fl")
+            client.post(
+                "/edge/heartbeat",
+                json={"diagnostics": {"generated_at": "2026-09-03T10:00:00+00:00", "edge": {}, "cameras": {}, "machines": {}}},
+                headers={"X-Edge-Id": EDGE_ID, "X-Edge-Secret": EDGE_SECRET},
+            )
+            self.assertEqual(
+                client.post("/edge/heartbeat", json={}, headers={"X-Edge-Id": EDGE_ID, "X-Edge-Secret": "wrong"}).status_code,
+                401,
+            )
+            with cloud_database.connect() as db:
+                cloud_database.init_cloud_db(db)
+                create_user(
+                    db,
+                    email="tenant@campex.test",
+                    password="SenhaCampex123",
+                    role="admin_cliente",
+                    nome="Tenant",
+                    cliente_id="cli_other",
+                )
+            other = TestClient(cloud_api)
+            self.assertEqual(other.post("/auth/login", json={"email": "tenant@campex.test", "senha": "SenhaCampex123"}).status_code, 200)
+            forbidden = other.get(f"/edges/{EDGE_ID}/diagnostics")
+
+        self.assertEqual(forbidden.status_code, 403)
+
+    def test_edge_diagnostics_offline_is_not_reported_healthy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self.make_cloud_client(temp_dir)
+            self.register_edge(client)
+            with cloud_database.connect() as db:
+                db.execute(
+                    "UPDATE edge_devices SET last_seen_at = ?, last_diagnostics_json = ? WHERE id = ?",
+                    (
+                        "2026-09-03T10:00:00+00:00",
+                        json.dumps({
+                            "received_at": "2026-09-03T10:00:00+00:00",
+                            "diagnostics": {"generated_at": "2026-09-03T10:00:00+00:00", "edge": {}, "cameras": {}, "machines": {}},
+                        }),
+                        EDGE_ID,
+                    ),
+                )
+                db.commit()
+            payload = client.get(f"/edges/{EDGE_ID}/diagnostics").json()
+
+        self.assertFalse(payload["online"])
+        self.assertEqual(payload["status"], "offline")
+        self.assertTrue(payload["stale"])
+
+    def test_edge_diagnostics_old_generated_at_is_stale_even_when_received_now(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self.make_cloud_client(temp_dir)
+            self.register_edge(client)
+            old_generated_at = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+            response = client.post(
+                "/edge/heartbeat",
+                json={"diagnostics": {"generated_at": old_generated_at, "edge": {}, "cameras": {}, "machines": {}}},
+                headers={"X-Edge-Id": EDGE_ID, "X-Edge-Secret": EDGE_SECRET},
+            )
+            payload = client.get(f"/edges/{EDGE_ID}/diagnostics").json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["online"])
+        self.assertTrue(payload["stale"])
+
+    def test_edge_diagnostics_recent_online_snapshot_is_not_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            client = self.make_cloud_client(temp_dir)
+            self.register_edge(client)
+            generated_at = datetime.now(timezone.utc).isoformat()
+            response = client.post(
+                "/edge/heartbeat",
+                json={"diagnostics": {"generated_at": generated_at, "edge": {}, "cameras": {}, "machines": {}}},
+                headers={"X-Edge-Id": EDGE_ID, "X-Edge-Secret": EDGE_SECRET},
+            )
+            payload = client.get(f"/edges/{EDGE_ID}/diagnostics").json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["online"])
+        self.assertFalse(payload["stale"])
+
+    def test_runtime_collects_partial_diagnostics_and_heartbeat_continues_when_collection_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = ProductionEdgeRuntime(edge_id=EDGE_ID, db_path=Path(temp_dir) / "edge.sqlite3")
+            with patch("app.edge_runtime.api_module.live_streams.statuses", return_value=[
+                {
+                    "camera_id": "cam_01",
+                    "status": "online",
+                    "last_frame_at": "2026-09-03T10:00:00+00:00",
+                    "analysis_error": "failed with rtsp://user:password@10.0.0.10/live and token=abc",
+                    "machine_monitor_id": "mon_01",
+                    "machine_state": "ACTIVE",
+                    "machine_analysis_status": "ANALYZING",
+                    "machine_frames_analyzed": 10,
+                    "machine_confidence": 0.88,
+                    "machine_reason": "secret leaked in local reason",
+                }
+            ]), patch.object(runtime, "_check_local_api_health", return_value=None), patch("app.edge_runtime.db_connect", side_effect=RuntimeError("credential .env rtsp://secret")):
+                diagnostics = runtime._collect_cloud_diagnostics()
+
+            calls = []
+
+            class FakeResponse:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+            def fake_urlopen(request, timeout):
+                calls.append(json.loads(request.data.decode("utf-8")))
+                return FakeResponse()
+
+            with patch.object(runtime, "_collect_cloud_diagnostics", side_effect=RuntimeError("partial failure")), patch("app.edge_runtime.urllib.request.urlopen", side_effect=fake_urlopen):
+                runtime._send_cloud_heartbeat("https://cloud.campex.test", EDGE_SECRET)
+
+        self.assertEqual(diagnostics["cameras"]["online"], 1)
+        serialized = json.dumps(diagnostics, ensure_ascii=False)
+        self.assertNotIn("rtsp://user:password", serialized)
+        self.assertNotIn("token=abc", serialized)
+        self.assertNotIn("credential .env", serialized)
+        self.assertIn("diagnostic_redacted", serialized)
+        self.assertIn("monitor_query_failed", serialized)
+        self.assertEqual(diagnostics["machines"]["items"][0]["machine_state"], "ACTIVE")
+        self.assertEqual(calls, [{}])
 
 
 if __name__ == "__main__":
