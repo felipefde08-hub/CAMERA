@@ -4,19 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Campex</title>
+    <base href="/static/" />
+    <script>if(location.protocol==='file:')document.querySelector('base').setAttribute('href','./');</script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=campex-intelligence-v1-20260817" />
+    <link rel="stylesheet" href="styles.css?v=campex-intelligence-v1-20260817" onerror="this.onerror=null;this.href='styles.css'" />
   </head>
   <body class="campex-dashboard campex-light">
     <aside class="cx-sidebar">
       <div class="cx-sidebar-top">
         <a class="cx-logo" href="/operations-view?view=home" aria-label="Campex">
-          <img src="/static/campex-logo-oficial.png" alt="Campex" />
+          <img src="campex-logo-oficial.png" alt="Campex" onerror="this.onerror=null;this.src='campex-logo-oficial.png'" />
           <strong>Campex</strong>
         </a>
         <button class="cx-collapse" type="button" aria-label="Recolher sidebar">‹</button>
@@ -99,7 +101,7 @@
         <div id="workspaceDrawerContent"></div>
       </aside>
     </main>
-    <script src="/static/shell.js?v=campex-intelligence-v1-20260817"></script>
-    <script src="/static/workspace.js?v=campex-intelligence-v1-20260903"></script>
+    <script src="shell.js?v=campex-intelligence-v1-20260817" onerror="this.onerror=null;this.src='shell.js'"></script>
+    <script src="workspace.js?v=campex-intelligence-v1-20260903" onerror="this.onerror=null;this.src='workspace.js'"></script>
   </body>
 </html>

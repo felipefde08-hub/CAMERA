@@ -4,19 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Entrar | Campex</title>
+    <base href="/static/" />
+    <script>if(location.protocol==='file:')document.querySelector('base').setAttribute('href','./');</script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;650;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=campex-settings-v1-20260821" />
+    <link rel="stylesheet" href="styles.css?v=campex-settings-v1-20260821" onerror="this.onerror=null;this.href='styles.css'" />
   </head>
   <body class="cx-login-page">
     <main class="cx-login-shell">
       <section class="cx-login-brand">
         <a class="cx-login-logo" href="/operations-view?view=home" aria-label="Campex">
-          <img src="/static/campex-logo-oficial.png" alt="Campex" />
+          <img src="campex-logo-oficial.png" alt="Campex" onerror="this.onerror=null;this.src='campex-logo-oficial.png'" />
         </a>
         <div>
           <span>INTELIGÊNCIA OPERACIONAL</span>
@@ -131,6 +133,6 @@
         </section>
       </section>
     </main>
-    <script src="/static/login.js?v=campex-login-20260904"></script>
+    <script src="login.js?v=campex-login-20260904" onerror="this.onerror=null;this.src='login.js'"></script>
   </body>
 </html>

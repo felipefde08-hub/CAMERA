@@ -4,19 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Campex Operations</title>
+    <base href="/static/" />
+    <script>if(location.protocol==='file:')document.querySelector('base').setAttribute('href','./');</script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/styles.css?v=campex-home-state-20260728b" />
+    <link rel="stylesheet" href="styles.css?v=campex-home-state-20260728b" onerror="this.onerror=null;this.href='styles.css'" />
   </head>
   <body class="campex-dashboard">
     <aside class="cx-sidebar">
       <div class="cx-sidebar-top">
         <a class="cx-logo" href="/dashboard" aria-label="Campex">
-          <img src="/static/campex-logo-oficial.png" alt="Campex" />
+          <img src="campex-logo-oficial.png" alt="Campex" onerror="this.onerror=null;this.src='campex-logo-oficial.png'" />
           <strong>Campex</strong>
         </a>
         <button class="cx-collapse" type="button" aria-label="Recolher sidebar">‹</button>
@@ -460,7 +462,7 @@
         </aside>
       </section>
     </main>
-    <script src="/static/shell.js"></script>
-    <script src="/static/operations-dashboard.js"></script>
+    <script src="shell.js" onerror="this.onerror=null;this.src='shell.js'"></script>
+    <script src="operations-dashboard.js" onerror="this.onerror=null;this.src='operations-dashboard.js'"></script>
   </body>
 </html>
