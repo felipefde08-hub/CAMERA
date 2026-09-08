@@ -104,7 +104,8 @@ def test_login_route_returns_dedicated_page_without_app_sidebar(tmp_path: Path) 
         assert response.status_code == 200
         assert "text/html" in response.headers.get("content-type", "")
         assert "Entrar na Campex" in response.text
-        assert "/static/login.js" in response.text
+        assert '<base href="/static/"' in response.text
+        assert "login.js" in response.text
         assert "cx-login-page" in response.text
         assert "cx-sidebar" not in response.text
         assert "workspace.js" not in response.text

@@ -19,6 +19,9 @@ output/
 output_context/
 backups/
 reports/
+archive/
+camera/
+operation/
 
 *.mp4
 *.mov
