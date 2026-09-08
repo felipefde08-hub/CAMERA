@@ -267,6 +267,19 @@ def test_installer_refuses_rotation_when_existing_edge_was_already_used() -> Non
         assert rows[0]["id"] == "edge_used"
         assert rows[0]["status"] == "active"
 
+def test_installer_requests_admin_elevation_at_top() -> None:
+    installer = build_windows_installer_cmd(
+        cloud_url="https://cloud.campex.test",
+        edge_id="edge_elev",
+        edge_secret="edge-secret-elev",
+        credential_key="credential-key-elev",
+    )
+    assert "Start-Process -FilePath '%~f0' -Verb RunAs" in installer
+    elev_index = installer.index("Start-Process -FilePath '%~f0' -Verb RunAs")
+    schtasks_index = installer.index("schtasks /Create")
+    assert elev_index < schtasks_index
+
+
 def test_installer_preserves_existing_env_and_data_on_reinstall() -> None:
     installer = build_windows_installer_cmd(
         cloud_url="https://cloud.campex.test",

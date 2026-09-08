@@ -17,6 +17,17 @@ def build_windows_installer_cmd(
 setlocal
 title Campex Edge
 
+net session >nul 2>nul
+if %errorlevel% neq 0 (
+    echo.
+    echo =========================================
+    echo   Solicitando privilegios de administrador
+    echo =========================================
+    echo.
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    exit /b
+)
+
 set "CAMPEX_CLOUD_URL=__CLOUD_URL__"
 set "CAMPEX_EDGE_ID=__EDGE_ID__"
 set "CAMPEX_EDGE_SECRET=__EDGE_SECRET__"
