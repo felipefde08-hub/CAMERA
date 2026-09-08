@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -14,12 +15,15 @@ from app.database import connect, init_db
 from app.models import (
     atualizar_camera_operacao,
     listar_cameras_do_edge,
+    registrar_edge_heartbeat,
     registrar_edge_metricas,
     ultima_metrica_edge,
+    ultimo_edge_heartbeat,
 )
 from edge_agent.camera_connector import CameraSource, UniversalCameraConnector, safe_source_ref
 from edge_agent.camera_connector import detect_source_type
-from edge_agent.event_sender import flush_queue, pending_count
+from edge_agent.event_sender import flush_queue
+from edge_agent.sync_outbox import pending_sync_count
 from edge_agent.health import mark_edge_contact
 from shared.schemas import now_iso
 
@@ -220,6 +224,11 @@ class EdgeSupervisor:
             cameras = listar_cameras_do_edge(connection, self.edge_id)
             active = sum(1 for camera in cameras if camera.get("status") == "online")
             frames = sum(int(camera.get("frames_processados") or 0) for camera in cameras)
+            last_frame = max([str(camera.get("ultimo_frame") or "") for camera in cameras], default=None) or None
+            capture_fps_values = [float(camera.get("fps") or 0) for camera in cameras if camera.get("fps") is not None]
+            capture_fps = round(sum(capture_fps_values) / len(capture_fps_values), 2) if capture_fps_values else None
+            sync_pending = pending_sync_count(connection)
+            disk = shutil.disk_usage(self.db_path.parent if self.db_path.parent.exists() else Path("."))
             cpu, memory = resource_usage()
             registrar_edge_metricas(
                 connection,
@@ -229,6 +238,19 @@ class EdgeSupervisor:
                 memory_percent=memory,
                 active_cameras=active,
                 frames_processed=frames,
+            )
+            registrar_edge_heartbeat(
+                connection,
+                self.edge_id,
+                heartbeat_at=now_iso(),
+                camera_online=active > 0,
+                last_frame_at=last_frame,
+                capture_fps=capture_fps,
+                inference_fps=None,
+                frames_analyzed=frames,
+                outbox_pending=sync_pending,
+                disk_free_bytes=int(disk.free),
+                disk_used_percent=round((disk.used / disk.total) * 100, 2) if disk.total else None,
             )
             if self.api_url:
                 flush_queue(connection, self.api_url)
@@ -267,7 +289,8 @@ def edge_status(edge_id: str, db_path: Path) -> dict[str, Any]:
         device = connection.execute("SELECT * FROM dispositivos WHERE id = ?", (edge_id,)).fetchone()
         cameras = listar_cameras_do_edge(connection, edge_id)
         metric = ultima_metrica_edge(connection, edge_id)
-        pending = pending_count(connection)
+        heartbeat = ultimo_edge_heartbeat(connection, edge_id)
+        pending = pending_sync_count(connection)
     online = [camera for camera in cameras if camera.get("status") == "online"]
     offline = [camera for camera in cameras if camera.get("status") != "online"]
     return {
@@ -277,6 +300,7 @@ def edge_status(edge_id: str, db_path: Path) -> dict[str, Any]:
         "uptime_seconds": metric["uptime_seconds"] if metric else 0,
         "cpu_percent": metric["cpu_percent"] if metric else None,
         "memory_percent": metric["memory_percent"] if metric else None,
+        "ultimo_heartbeat": heartbeat,
         "cameras": cameras,
         "cameras_total": len(cameras),
         "cameras_online": len(online),

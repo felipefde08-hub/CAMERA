@@ -7,6 +7,7 @@ from app.config import API_HOST, API_PORT
 
 
 def main() -> None:
+    print(f"Campex disponível em http://{API_HOST}:{API_PORT}")
     uvicorn.run(api, host=API_HOST, port=API_PORT)
 
 

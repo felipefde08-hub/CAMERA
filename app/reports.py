@@ -30,6 +30,21 @@ def daily_report_data(connection: sqlite3.Connection, report_date: str | None = 
         FROM cameras
         """
     ).fetchone()
+    machine = connection.execute(
+        """
+        SELECT
+            COUNT(*) AS quantidade_paradas,
+            COALESCE(SUM(duracao), 0) AS tempo_total_parado_maquina,
+            COALESCE(AVG(duracao), 0) AS duracao_media,
+            COALESCE(MAX(duracao), 0) AS maior_parada_maquina,
+            SUM(CASE WHEN operator_present_start = 0 THEN 1 ELSE 0 END) AS paradas_operador_ausente,
+            SUM(CASE WHEN cause_category IS NOT NULL THEN 1 ELSE 0 END) AS causas_classificadas,
+            SUM(CASE WHEN cause_category IS NULL THEN 1 ELSE 0 END) AS causas_pendentes
+        FROM eventos
+        WHERE substr(inicio, 1, 10) = ? AND tipo = 'machine_stoppage'
+        """,
+        (day,),
+    ).fetchone()
     return {
         "data": day,
         "quantidade_eventos": int(totals["quantidade_eventos"]),
@@ -38,6 +53,15 @@ def daily_report_data(connection: sqlite3.Connection, report_date: str | None = 
         "maior_parada": float(totals["maior_parada"]),
         "cameras_online": int(cameras["online"] or 0),
         "cameras_offline": int(cameras["offline"] or 0),
+        "tempo_monitorado": 0,
+        "tempo_total_funcionando": 0,
+        "quantidade_paradas_maquina": int(machine["quantidade_paradas"] or 0),
+        "tempo_total_parado_maquina": float(machine["tempo_total_parado_maquina"] or 0),
+        "duracao_media_parada": float(machine["duracao_media"] or 0),
+        "maior_parada_maquina": float(machine["maior_parada_maquina"] or 0),
+        "paradas_com_operador_ausente": int(machine["paradas_operador_ausente"] or 0),
+        "causas_classificadas": int(machine["causas_classificadas"] or 0),
+        "causas_pendentes": int(machine["causas_pendentes"] or 0),
     }
 
 
@@ -53,4 +77,3 @@ def save_daily_report(connection: sqlite3.Connection, output_dir: Path, report_d
         writer.writeheader()
         writer.writerow(data)
     return {"json": json_path, "csv": csv_path}
-
