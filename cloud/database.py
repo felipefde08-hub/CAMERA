@@ -148,6 +148,15 @@ def _init_sqlite(db: SQLiteConnection) -> None:
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS edge_update_releases (
+            version TEXT PRIMARY KEY,
+            sha256 TEXT NOT NULL,
+            size_bytes INTEGER,
+            package_path TEXT NOT NULL,
+            approved INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE TABLE IF NOT EXISTS edge_events (
             id TEXT PRIMARY KEY,
             event_uuid TEXT NOT NULL UNIQUE,
@@ -376,6 +385,18 @@ def _init_postgres(db: PostgresConnection) -> None:
             midia_path TEXT,
             payload_json TEXT NOT NULL,
             received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS edge_update_releases (
+            version TEXT PRIMARY KEY,
+            sha256 TEXT NOT NULL,
+            size_bytes BIGINT,
+            package_path TEXT NOT NULL,
+            approved BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """
     )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 
+import hashlib
 import json
 import logging
 import os
@@ -1439,6 +1440,106 @@ def edge_runtime_check(
         "last_seen_at": last_seen,
         "heartbeat_age_seconds": heartbeat_age_seconds,
     }
+
+
+def _approved_edge_update(db, version: str | None = None) -> dict[str, Any] | None:
+    if version:
+        return db.fetchone(
+            """
+            SELECT * FROM edge_update_releases
+            WHERE version = ? AND approved = 1
+            LIMIT 1
+            """,
+            (version,),
+        )
+    return db.fetchone(
+        """
+        SELECT * FROM edge_update_releases
+        WHERE approved = 1
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
+
+
+def _update_package_path(row: dict[str, Any]) -> Path:
+    path = Path(str(row.get("package_path") or ""))
+    if not path.is_absolute():
+        path = ROOT / path
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Pacote de update aprovado nao encontrado.")
+    return path
+
+
+def _package_sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+@api.post("/edge/update/check")
+async def edge_update_check(
+    request: Request,
+    x_edge_id: Optional[str] = Header(default=None, alias="X-Edge-Id"),
+    x_edge_secret: Optional[str] = Header(default=None, alias="X-Edge-Secret"),
+) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    current = str(body.get("current_version") or "").strip()
+    with connect() as db:
+        init_cloud_db(db)
+        _edge_device_from_headers(db, x_edge_id, x_edge_secret)
+        release = _approved_edge_update(db)
+    if not release:
+        return {
+            "download_available": False,
+            "version": current or None,
+            "sha256": None,
+            "size": None,
+        }
+    package = _update_package_path(release)
+    sha256 = str(release.get("sha256") or "").lower()
+    if not sha256:
+        sha256 = _package_sha256(package)
+    size = release.get("size_bytes")
+    if size is None:
+        size = package.stat().st_size
+    target = str(release["version"])
+    return {
+        "download_available": bool(target and target != current),
+        "version": target,
+        "sha256": sha256,
+        "size": int(size),
+    }
+
+
+@api.get("/edge/update/package")
+def edge_update_package(
+    version: str,
+    x_edge_id: Optional[str] = Header(default=None, alias="X-Edge-Id"),
+    x_edge_secret: Optional[str] = Header(default=None, alias="X-Edge-Secret"),
+) -> FileResponse:
+    with connect() as db:
+        init_cloud_db(db)
+        _edge_device_from_headers(db, x_edge_id, x_edge_secret)
+        release = _approved_edge_update(db, version)
+    if not release:
+        raise HTTPException(status_code=404, detail="Versao de update nao aprovada.")
+    package = _update_package_path(release)
+    expected = str(release.get("sha256") or "").lower()
+    if expected and _package_sha256(package) != expected:
+        raise HTTPException(status_code=409, detail="Pacote aprovado nao confere com o hash registrado.")
+    return FileResponse(
+        package,
+        media_type="application/zip",
+        filename=f"campex-edge-{version}.zip",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @api.post("/edge/heartbeat")

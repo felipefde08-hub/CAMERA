@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import json
 import os
 import platform
@@ -9,6 +10,7 @@ import shutil
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -24,11 +26,15 @@ from app.models import atualizar_camera_operacao, fechar_eventos_machine_interro
 from app.operational_alerting import evaluate_alert_decisions
 from app.operational_read_model import ReadModelFilters
 from app.security import encrypt_secret
+from app.version import current_version
 from edge_agent.health import mark_edge_contact
 from edge_agent.sync_outbox import flush_sync_outbox, pending_sync_count
 from shared.schemas import now_iso
 
 logger = logging.getLogger("campex.edge_runtime")
+
+UPDATE_DIR_NAME = ".campex_update"
+UPDATE_MARKER_NAME = "pending_update.json"
 
 
 class ProductionEdgeRuntime:
@@ -58,6 +64,8 @@ class ProductionEdgeRuntime:
         self.started_at = time.monotonic()
         self._last_local_health_check_at: str | None = None
         self._last_local_api_healthy: bool | None = None
+        self._last_update_check_at: str | None = None
+        self._last_update_error: str | None = None
 
     def _run_api(self) -> None:
         config = uvicorn.Config(api_module.api, host=self.host, port=self.port, log_level=os.getenv("CAMPEX_LOG_LEVEL", "info").lower())
@@ -242,7 +250,7 @@ class ProductionEdgeRuntime:
         return {
             "generated_at": now_iso(),
             "edge": {
-                "version": os.getenv("CAMPEX_VERSION") or None,
+                "version": current_version(self._update_dir().parent),
                 "process_uptime_seconds": round(time.monotonic() - self.started_at, 2),
                 "python_version": platform.python_version(),
                 "platform": platform.platform(),
@@ -332,6 +340,113 @@ class ProductionEdgeRuntime:
         with urllib.request.urlopen(request, timeout=8.0) as response:
             if response.status < 200 or response.status >= 300:
                 raise RuntimeError(f"Cloud camera status retornou HTTP {response.status}")
+
+    def _update_dir(self) -> Path:
+        return self.db_path.parent.parent / UPDATE_DIR_NAME if self.db_path.parent.name == "data" else self.db_path.parent / UPDATE_DIR_NAME
+
+    def _safe_update_error(self, exc: Exception) -> str:
+        text = str(exc)
+        blocked = ("http://", "https://", "rtsp://", "password", "senha", "secret", "token", "credential", "api_key", ".env")
+        if any(item in text.lower() for item in blocked):
+            return exc.__class__.__name__
+        return text[:240] or exc.__class__.__name__
+
+    def _download_edge_update(self, cloud_url: str, edge_secret: str, version: str, expected_sha256: str, expected_size: int | None) -> Path:
+        update_dir = self._update_dir()
+        staging = update_dir / "staging"
+        staging.mkdir(parents=True, exist_ok=True)
+        package_path = staging / f"campex-edge-{version}.zip"
+        request = urllib.request.Request(
+            f"{cloud_url.rstrip('/')}/edge/update/package?version={urllib.parse.quote(version)}",
+            method="GET",
+            headers={
+                "Accept": "application/zip",
+                "X-Edge-Id": self.edge_id,
+                "X-Edge-Secret": edge_secret,
+            },
+        )
+        hasher = hashlib.sha256()
+        size = 0
+        tmp_path = package_path.with_suffix(".tmp")
+        with urllib.request.urlopen(request, timeout=30.0) as response:
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError(f"Cloud update package retornou HTTP {response.status}")
+            with tmp_path.open("wb") as handle:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    hasher.update(chunk)
+                    handle.write(chunk)
+        digest = hasher.hexdigest()
+        if expected_size is not None and size != int(expected_size):
+            tmp_path.unlink(missing_ok=True)
+            raise RuntimeError("update_package_size_mismatch")
+        if digest.lower() != expected_sha256.lower():
+            tmp_path.unlink(missing_ok=True)
+            raise RuntimeError("update_package_sha256_mismatch")
+        tmp_path.replace(package_path)
+        return package_path
+
+    def _write_update_marker(self, target_version: str, package_path: Path, expected_sha256: str) -> None:
+        marker = self._update_dir() / UPDATE_MARKER_NAME
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "current_version": current_version(self._update_dir().parent),
+            "target_version": target_version,
+            "staged_package": str(package_path),
+            "expected_sha256": expected_sha256,
+            "update_status": "STAGED",
+            "last_update_check_at": self._last_update_check_at,
+            "last_update_error": None,
+        }
+        tmp = marker.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(marker)
+
+    def check_for_cloud_update(self, cloud_url: str, edge_secret: str) -> dict[str, object]:
+        self._last_update_check_at = now_iso()
+        payload = {
+            "current_version": current_version(self._update_dir().parent),
+        }
+        request = urllib.request.Request(
+            f"{cloud_url.rstrip('/')}/edge/update/check",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-Edge-Id": self.edge_id,
+                "X-Edge-Secret": edge_secret,
+            },
+        )
+        with urllib.request.urlopen(request, timeout=8.0) as response:
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError(f"Cloud update check retornou HTTP {response.status}")
+            metadata = json.loads(response.read().decode("utf-8"))
+        target = str(metadata.get("version") or "").strip()
+        if not metadata.get("download_available") or not target or target == payload["current_version"]:
+            return {"update_status": "NO_UPDATE", "current_version": payload["current_version"], "available_version": target or None}
+        expected_sha256 = str(metadata.get("sha256") or "").strip()
+        if not expected_sha256:
+            raise RuntimeError("update_sha256_missing")
+        package = self._download_edge_update(
+            cloud_url,
+            edge_secret,
+            target,
+            expected_sha256,
+            int(metadata["size"]) if metadata.get("size") is not None else None,
+        )
+        self._write_update_marker(target, package, expected_sha256)
+        self.stop_event.set()
+        if self.server:
+            self.server.should_exit = True
+        return {
+            "update_status": "STAGED",
+            "current_version": payload["current_version"],
+            "available_version": target,
+            "staged_package": str(package),
+        }
 
     def _run_latest_frame_upload(self) -> None:
         cloud_url = os.getenv("CAMPEX_CLOUD_URL")
@@ -643,6 +758,12 @@ class ProductionEdgeRuntime:
                 self._send_cloud_heartbeat(cloud_url, edge_secret)
             except Exception as exc:
                 logger.warning("Falha temporaria no heartbeat com Cloud: %s", exc)
+
+            try:
+                self.check_for_cloud_update(cloud_url, edge_secret)
+            except Exception as exc:
+                self._last_update_error = self._safe_update_error(exc)
+                logger.warning("Falha temporaria ao checar update do Edge: %s", self._last_update_error)
 
             try:
                 self.sync_cloud_edge_config(cloud_url, edge_secret)
