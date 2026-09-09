@@ -2240,17 +2240,29 @@ def list_cloud_camera_state(request: Request) -> list[dict[str, Any]]:
     with connect() as db:
         init_cloud_db(db)
         cameras = _cloud_cameras(db, user)
-        event_rows = db.fetchall(
-            """
-            SELECT camera_id, edge_id, unidade_id, MAX(received_at) AS ultimo_frame, COUNT(*) AS eventos
-            FROM edge_events
-            WHERE cliente_id = ? OR ? IS NULL
-            GROUP BY camera_id, edge_id, unidade_id
-            ORDER BY MAX(received_at) DESC
-            LIMIT 200
-            """,
-            (_tenant_for_user(user), _tenant_for_user(user)),
-        )
+        tenant = _tenant_for_user(user)
+        if tenant:
+            event_rows = db.fetchall(
+                """
+                SELECT camera_id, edge_id, unidade_id, MAX(received_at) AS ultimo_frame, COUNT(*) AS eventos
+                FROM edge_events
+                WHERE cliente_id = ?
+                GROUP BY camera_id, edge_id, unidade_id
+                ORDER BY MAX(received_at) DESC
+                LIMIT 200
+                """,
+                (tenant,),
+            )
+        else:
+            event_rows = db.fetchall(
+                """
+                SELECT camera_id, edge_id, unidade_id, MAX(received_at) AS ultimo_frame, COUNT(*) AS eventos
+                FROM edge_events
+                GROUP BY camera_id, edge_id, unidade_id
+                ORDER BY MAX(received_at) DESC
+                LIMIT 200
+                """
+            )
     by_id = {camera["id"]: camera for camera in cameras}
     for row in event_rows:
         item = by_id.setdefault(
