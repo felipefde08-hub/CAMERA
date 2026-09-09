@@ -4,8 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Campex MVP - Câmeras</title>
-    <base href="/static/" />
-    <script>if(location.protocol==='file:')document.querySelector('base').setAttribute('href','./');</script>
+    <script>document.write('<base href="'+((location.protocol==='file:'||location.pathname.endsWith('.html')||location.pathname.startsWith('/static/')||/(^|\/)(operation\/)?frontend\/?$/.test(location.pathname))?'./':'/static/')+'">');</script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -98,8 +97,8 @@
       <section class="cx-setup-hero">
         <div>
           <span>CONFIGURAÇÕES</span>
-          <h2>Configurações</h2>
-          <p>Gerencie sua organização, operação e preferências da Campex.</p>
+          <h2>Implantação e configurações</h2>
+          <p>Configure a Campex na ordem certa: organização, operação, câmeras, monitoramento e alertas.</p>
         </div>
         <a class="cx-setup-help-button" href="/help">Ajuda</a>
         <div class="cx-setup-hero-status">
@@ -426,7 +425,7 @@
         </div>
       </section>
 
-        <section id="setup-operacao" class="setup-v0-panel" data-setup-section="maquinas">
+        <section id="maquinas" class="setup-v0-panel" data-setup-section="maquinas">
           <div class="setup-v0-header">
             <div>
               <p class="eyebrow">Configurações</p>
@@ -439,17 +438,17 @@
           <div class="setup-journey">
             <article class="compact-card setup-stage">
               <span class="badge">1. Empresa</span>
-              <h3>Empresa e unidade</h3>
+              <h3>Organização pronta</h3>
               <div id="setupCompanySummary" class="compact-list">Carregando empresa...</div>
             </article>
             <article class="compact-card setup-stage">
               <span class="badge">2. Operação</span>
-              <h3>Área → processo → ativo</h3>
+              <h3>Mapa da operação</h3>
               <div id="setupOperationSummary" class="compact-list">Carregando operação...</div>
             </article>
             <article class="compact-card setup-stage">
               <span class="badge">3. Câmera</span>
-              <h3>Sensor associado ao ativo</h3>
+              <h3>Câmera conectada</h3>
               <div id="setupCameraGate" class="compact-list">Crie um ativo para liberar cadastro de câmera.</div>
             </article>
           </div>
@@ -653,7 +652,7 @@
 
         <div class="settings-grid cx-setup-section-grid">
           <div id="usuarios" class="panel" data-setup-section="usuarios">
-            <h2>Usuários</h2>
+            <h2>Usuários e permissões</h2>
             <form id="userForm" class="form">
               <label>
                 Organização
@@ -683,8 +682,8 @@
             </form>
             <div id="userList" class="compact-list"></div>
           </div>
-          <div id="maquinas" class="panel" data-setup-section="maquinas">
-            <h2>Máquinas / áreas</h2>
+          <div id="atalhos-maquinas" class="panel" data-setup-section="maquinas">
+            <h2>Atalhos de máquina</h2>
             <form id="machineConfigForm" class="form">
               <label>
                 Câmera

@@ -3246,6 +3246,47 @@ def post_machine_monitor_assisted_stopped_start(monitor_id: str, payload: Assist
     return start_assisted_machine_calibration(monitor_id, payload, request, "stopped")
 
 
+def _build_calibration_readiness(
+    monitor: dict[str, Any],
+    separation: dict[str, object] | None,
+    engine_cal: dict[str, object] | None,
+) -> dict[str, object]:
+    if engine_cal:
+        active_baseline = engine_cal.get("active_baseline")
+        stopped_baseline = engine_cal.get("stopped_baseline")
+        active_noise = engine_cal.get("active_noise")
+        stopped_noise = engine_cal.get("stopped_noise")
+        separation_score = engine_cal.get("separation_score")
+        threshold = engine_cal.get("threshold")
+        result = engine_cal.get("calibration_result")
+    else:
+        active_baseline = monitor.get("active_baseline")
+        stopped_baseline = monitor.get("stopped_baseline")
+        active_noise = monitor.get("active_noise")
+        stopped_noise = monitor.get("stopped_noise")
+        separation_score = monitor.get("separation_score")
+        threshold = monitor.get("motion_threshold")
+        result = monitor.get("calibration_result")
+
+    ready = (
+        result == "READY"
+        and active_baseline is not None
+        and stopped_baseline is not None
+    )
+    reason = (separation or {}).get("message")
+    return {
+        "ready": ready,
+        "result": result,
+        "active_baseline": active_baseline,
+        "stopped_baseline": stopped_baseline,
+        "active_noise": active_noise,
+        "stopped_noise": stopped_noise,
+        "separation_score": separation_score,
+        "threshold": threshold,
+        "reason": reason,
+    }
+
+
 @api.get("/machine-monitors/{monitor_id}/calibration/status")
 def get_machine_monitor_calibration_status(monitor_id: str, request: Request) -> dict[str, object]:
     with connect() as connection:
@@ -3272,6 +3313,10 @@ def get_machine_monitor_calibration_status(monitor_id: str, request: Request) ->
         "separation": separation,
         "reason": separation.get("message"),
     }
+    snapshot = stream.machine_diagnostics(monitor_id) if stream else None
+    runtime_diagnostics = snapshot.get("runtime_diagnostics") if snapshot else None
+    engine_cal = snapshot.get("calibration") if snapshot else None
+    calibration_readiness = _build_calibration_readiness(monitor, separation, engine_cal)
     return {
         "machine_id": monitor_id,
         "camera_id": monitor["camera_id"],
@@ -3284,6 +3329,8 @@ def get_machine_monitor_calibration_status(monitor_id: str, request: Request) ->
         "calibration_result": monitor.get("calibration_result"),
         "calibration_status": monitor.get("calibration_status"),
         "diagnostics": diagnostics,
+        "runtime_diagnostics": runtime_diagnostics,
+        "calibration_readiness": calibration_readiness,
     }
 
 

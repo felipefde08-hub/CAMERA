@@ -143,8 +143,18 @@ def _init_sqlite(db: SQLiteConnection) -> None:
             status TEXT NOT NULL DEFAULT 'active',
             revoked_at TEXT,
             last_seen_at TEXT,
+            last_diagnostics_json TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS edge_update_releases (
+            version TEXT PRIMARY KEY,
+            sha256 TEXT NOT NULL,
+            size_bytes INTEGER,
+            package_path TEXT NOT NULL,
+            approved INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS edge_events (
@@ -283,6 +293,7 @@ def _init_sqlite(db: SQLiteConnection) -> None:
         """
     )
     _ensure_sqlite_column(db, "edge_devices", "last_seen_at", "TEXT")
+    _ensure_sqlite_column(db, "edge_devices", "last_diagnostics_json", "TEXT")
     _ensure_sqlite_column(db, "edge_devices", "edge_secret_encrypted", "TEXT")
     _ensure_sqlite_column(db, "edge_devices", "credential_key_encrypted", "TEXT")
     _ensure_sqlite_column(db, "edge_events", "severidade", "TEXT")
@@ -379,6 +390,18 @@ def _init_postgres(db: PostgresConnection) -> None:
     )
     db.execute(
         """
+        CREATE TABLE IF NOT EXISTS edge_update_releases (
+            version TEXT PRIMARY KEY,
+            sha256 TEXT NOT NULL,
+            size_bytes BIGINT,
+            package_path TEXT NOT NULL,
+            approved BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+        """
+    )
+    db.execute(
+        """
         CREATE TABLE IF NOT EXISTS report_deliveries (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
@@ -399,6 +422,7 @@ def _init_postgres(db: PostgresConnection) -> None:
         """
     )
     db.execute("ALTER TABLE edge_devices ADD COLUMN IF NOT EXISTS last_seen_at TEXT")
+    db.execute("ALTER TABLE edge_devices ADD COLUMN IF NOT EXISTS last_diagnostics_json TEXT")
     db.execute("ALTER TABLE edge_devices ADD COLUMN IF NOT EXISTS edge_secret_encrypted TEXT")
     db.execute("ALTER TABLE edge_devices ADD COLUMN IF NOT EXISTS credential_key_encrypted TEXT")
     db.execute("ALTER TABLE edge_events ADD COLUMN IF NOT EXISTS severidade TEXT")

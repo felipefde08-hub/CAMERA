@@ -4,8 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Campex Operations Dashboard</title>
-    <base href="/static/" />
-    <script>if(location.protocol==='file:')document.querySelector('base').setAttribute('href','./');</script>
+    <script>document.write('<base href="'+((location.protocol==='file:'||location.pathname.endsWith('.html')||location.pathname.startsWith('/static/')||/(^|\/)(operation\/)?frontend\/?$/.test(location.pathname))?'./':'/static/')+'">');</script>
     <link rel="stylesheet" href="styles.css?v=campex-home-state-20260728" onerror="this.onerror=null;this.href='styles.css'" />
   </head>
   <body>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 
+import hashlib
 import json
 import logging
 import os
@@ -1212,6 +1213,162 @@ def list_edge_devices(
     return result
 
 
+def _parse_iso_timestamp(value: Any):
+    from datetime import datetime, timezone
+
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def _edge_is_online(row: dict[str, Any], max_age_seconds: float = 90.0) -> bool:
+    from datetime import datetime, timezone
+
+    if row.get("status") != "active" or row.get("revoked_at"):
+        return False
+    parsed = _parse_iso_timestamp(row.get("last_seen_at"))
+    if not parsed:
+        return False
+    return (datetime.now(timezone.utc) - parsed).total_seconds() <= max_age_seconds
+
+
+def _sanitize_edge_diagnostics(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+
+    def safe_text(raw: Any, default: str | None = None) -> str | None:
+        if raw is None:
+            return default
+        text = str(raw)
+        blocked = ("rtsp://", "password", "secret", "token", "cookie", "credential", "api_key", ".env")
+        if any(item in text.lower() for item in blocked):
+            return "[redacted]"
+        return text[:300]
+
+    edge = value.get("edge") if isinstance(value.get("edge"), dict) else {}
+    cameras = value.get("cameras") if isinstance(value.get("cameras"), dict) else {}
+    machines = value.get("machines") if isinstance(value.get("machines"), dict) else {}
+
+    camera_items = []
+    for item in cameras.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        camera_items.append(
+            {
+                "camera_id": safe_text(item.get("camera_id")),
+                "status": safe_text(item.get("status"), "UNKNOWN"),
+                "last_frame_at": safe_text(item.get("last_frame_at")),
+                "reconnect_attempts": item.get("reconnect_attempts"),
+                "analysis_status": safe_text(item.get("analysis_status"), "UNKNOWN"),
+                "analysis_error": safe_text(item.get("analysis_error")),
+            }
+        )
+
+    machine_items = []
+    for item in machines.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        machine_items.append(
+            {
+                "monitor_id": safe_text(item.get("monitor_id")),
+                "camera_id": safe_text(item.get("camera_id")),
+                "machine_state": safe_text(item.get("machine_state"), "UNKNOWN"),
+                "analysis_status": safe_text(item.get("analysis_status"), "UNKNOWN"),
+                "signal_quality": item.get("signal_quality"),
+                "calibration_result": safe_text(item.get("calibration_result") or item.get("readiness")),
+                "readiness": safe_text(item.get("readiness")),
+                "frames_analyzed": item.get("frames_analyzed"),
+                "confidence": item.get("confidence"),
+                "reason": safe_text(item.get("reason")),
+            }
+        )
+
+    return {
+        "generated_at": safe_text(value.get("generated_at")),
+        "edge": {
+            "version": safe_text(edge.get("version")),
+            "process_uptime_seconds": edge.get("process_uptime_seconds"),
+            "python_version": safe_text(edge.get("python_version")),
+            "platform": safe_text(edge.get("platform")),
+            "local_api_healthy": edge.get("local_api_healthy"),
+            "last_local_health_check_at": safe_text(edge.get("last_local_health_check_at")),
+        },
+        "cameras": {
+            "total": cameras.get("total"),
+            "online": cameras.get("online"),
+            "offline": cameras.get("offline"),
+            "items": camera_items,
+        },
+        "machines": {
+            "total": machines.get("total"),
+            "items": machine_items,
+        },
+    }
+
+
+def _edge_for_user(db, user: dict[str, Any], edge_id: str) -> dict[str, Any]:
+    row = db.fetchone("SELECT * FROM edge_devices WHERE id = ?", (edge_id,))
+    if not row:
+        raise HTTPException(status_code=404, detail="Edge nao encontrado.")
+    if user.get("role") != "admin_campex" and row.get("cliente_id") != user.get("cliente_id"):
+        raise HTTPException(status_code=403, detail="Edge de outro cliente.")
+    return row
+
+
+@api.get("/edges/{edge_id}/diagnostics")
+def edge_diagnostics(edge_id: str, request: Request) -> dict[str, Any]:
+    user = _require_cloud_user(request)
+    with connect() as db:
+        init_cloud_db(db)
+        edge = _edge_for_user(db, user, edge_id)
+
+    raw = edge.get("last_diagnostics_json")
+    payload = None
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            payload = None
+    diagnostics = payload.get("diagnostics") if isinstance(payload, dict) else None
+    received_at = payload.get("received_at") if isinstance(payload, dict) else None
+    generated_at = diagnostics.get("generated_at") if isinstance(diagnostics, dict) else None
+    received_dt = _parse_iso_timestamp(received_at)
+    generated_dt = _parse_iso_timestamp(generated_at)
+    online = _edge_is_online(edge)
+    stale = not online
+    if diagnostics:
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        if received_dt:
+            stale = stale or (now - received_dt).total_seconds() > 90
+        else:
+            stale = True
+        if generated_dt:
+            stale = stale or (now - generated_dt).total_seconds() > 90
+            if received_dt and (generated_dt - received_dt).total_seconds() > 30:
+                stale = True
+        else:
+            stale = True
+
+    return {
+        "edge_id": edge_id,
+        "online": online,
+        "status": "online" if online else "offline",
+        "last_seen_at": edge.get("last_seen_at"),
+        "generated_at": generated_at,
+        "received_at": received_at,
+        "stale": stale,
+        "diagnostics": diagnostics,
+    }
+
+
 @api.get("/edge/runtime-check")
 def edge_runtime_check(
     x_edge_id: Optional[str] = Header(default=None, alias="X-Edge-Id"),
@@ -1285,8 +1442,109 @@ def edge_runtime_check(
     }
 
 
+def _approved_edge_update(db, version: str | None = None) -> dict[str, Any] | None:
+    if version:
+        return db.fetchone(
+            """
+            SELECT * FROM edge_update_releases
+            WHERE version = ? AND approved = 1
+            LIMIT 1
+            """,
+            (version,),
+        )
+    return db.fetchone(
+        """
+        SELECT * FROM edge_update_releases
+        WHERE approved = 1
+        ORDER BY created_at DESC
+        LIMIT 1
+        """
+    )
+
+
+def _update_package_path(row: dict[str, Any]) -> Path:
+    path = Path(str(row.get("package_path") or ""))
+    if not path.is_absolute():
+        path = ROOT / path
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Pacote de update aprovado nao encontrado.")
+    return path
+
+
+def _package_sha256(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+@api.post("/edge/update/check")
+async def edge_update_check(
+    request: Request,
+    x_edge_id: Optional[str] = Header(default=None, alias="X-Edge-Id"),
+    x_edge_secret: Optional[str] = Header(default=None, alias="X-Edge-Secret"),
+) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    current = str(body.get("current_version") or "").strip()
+    with connect() as db:
+        init_cloud_db(db)
+        _edge_device_from_headers(db, x_edge_id, x_edge_secret)
+        release = _approved_edge_update(db)
+    if not release:
+        return {
+            "download_available": False,
+            "version": current or None,
+            "sha256": None,
+            "size": None,
+        }
+    package = _update_package_path(release)
+    sha256 = str(release.get("sha256") or "").lower()
+    if not sha256:
+        sha256 = _package_sha256(package)
+    size = release.get("size_bytes")
+    if size is None:
+        size = package.stat().st_size
+    target = str(release["version"])
+    return {
+        "download_available": bool(target and target != current),
+        "version": target,
+        "sha256": sha256,
+        "size": int(size),
+    }
+
+
+@api.get("/edge/update/package")
+def edge_update_package(
+    version: str,
+    x_edge_id: Optional[str] = Header(default=None, alias="X-Edge-Id"),
+    x_edge_secret: Optional[str] = Header(default=None, alias="X-Edge-Secret"),
+) -> FileResponse:
+    with connect() as db:
+        init_cloud_db(db)
+        _edge_device_from_headers(db, x_edge_id, x_edge_secret)
+        release = _approved_edge_update(db, version)
+    if not release:
+        raise HTTPException(status_code=404, detail="Versao de update nao aprovada.")
+    package = _update_package_path(release)
+    expected = str(release.get("sha256") or "").lower()
+    if expected and _package_sha256(package) != expected:
+        raise HTTPException(status_code=409, detail="Pacote aprovado nao confere com o hash registrado.")
+    return FileResponse(
+        package,
+        media_type="application/zip",
+        filename=f"campex-edge-{version}.zip",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @api.post("/edge/heartbeat")
-def edge_heartbeat(
+async def edge_heartbeat(
+    request: Request,
     x_edge_id: Optional[str] = Header(default=None, alias="X-Edge-Id"),
     x_edge_secret: Optional[str] = Header(default=None, alias="X-Edge-Secret"),
 ) -> dict[str, Any]:
@@ -1319,16 +1577,37 @@ def edge_heartbeat(
                 detail="Edge revogado ou inativo.",
             )
 
+        body: dict[str, Any] = {}
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        diagnostics = _sanitize_edge_diagnostics(body.get("diagnostics")) if isinstance(body, dict) else None
         seen_at = now_iso()
-
-        db.execute(
-            """
-            UPDATE edge_devices
-            SET last_seen_at = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (seen_at, seen_at, x_edge_id),
+        diagnostics_snapshot = (
+            json.dumps({"received_at": seen_at, "diagnostics": diagnostics}, ensure_ascii=False)
+            if diagnostics
+            else None
         )
+
+        if diagnostics_snapshot:
+            db.execute(
+                """
+                UPDATE edge_devices
+                SET last_seen_at = ?, updated_at = ?, last_diagnostics_json = ?
+                WHERE id = ?
+                """,
+                (seen_at, seen_at, diagnostics_snapshot, x_edge_id),
+            )
+        else:
+            db.execute(
+                """
+                UPDATE edge_devices
+                SET last_seen_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (seen_at, seen_at, x_edge_id),
+            )
         db.commit()
 
     return {
@@ -1336,6 +1615,7 @@ def edge_heartbeat(
         "edge_id": x_edge_id,
         "status": "online",
         "seen_at": seen_at,
+        "diagnostics": "stored" if diagnostics_snapshot else "not_provided",
     }
 
 

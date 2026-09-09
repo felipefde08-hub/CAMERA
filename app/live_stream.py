@@ -597,6 +597,51 @@ class LiveCameraStream:
         data.pop("started_monotonic", None)
         return data
 
+    def machine_diagnostics(self, monitor_id: str) -> dict[str, object] | None:
+        with self._lock:
+            is_online = self.status.status == "online"
+            engine = self._machine_engines.get(monitor_id)
+        if not is_online or engine is None:
+            return None
+        state = engine.state
+        config = engine.config
+        now = time.monotonic()
+        state_since = state.state_since
+        seconds_in_state = round(max(0.0, now - float(state_since)), 3) if state_since is not None else None
+        smoothed = state.smoothed_motion
+        if smoothed is None:
+            smoothed = state.window_median
+        return {
+            "runtime_diagnostics": {
+                "machine_state": state.state,
+                "raw_activity_score": state.raw_activity_score,
+                "smoothed_activity_score": round(float(smoothed), 3) if smoothed is not None else None,
+                "threshold": round(float(state.threshold), 3),
+                "confidence": state.confidence,
+                "reason": state.reason,
+                "signal_quality": state.signal_quality,
+                "analysis_status": state.analysis_status,
+                "analysis_error": state.analysis_error,
+                "seconds_in_state": seconds_in_state,
+                "frames_analyzed": state.frames_analyzed,
+                "roi_width": state.roi_width,
+                "roi_height": state.roi_height,
+                "window_samples": state.window_samples,
+                "window_mean": state.window_mean,
+                "window_median": state.window_median,
+                "window_std": state.window_std,
+            },
+            "calibration": {
+                "active_baseline": config.active_baseline,
+                "stopped_baseline": config.stopped_baseline,
+                "active_noise": config.active_noise,
+                "stopped_noise": config.stopped_noise,
+                "separation_score": config.separation_score,
+                "threshold": config.motion_threshold,
+                "calibration_result": config.calibration_result,
+            },
+        }
+
     def _update_calibration(self, frame) -> None:
         with self._calibration_lock:
             session = self._calibration
