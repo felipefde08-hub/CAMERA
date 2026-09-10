@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.cameras.manager import CameraManager
 from backend.cameras.repository import CameraRepository
-from backend.config import get_settings
+from backend.config import ROOT_DIR, get_settings
 from backend.vision.engine import VisionEngine
 from backend.vision.overlay import draw_tracked_objects
 
@@ -111,7 +111,7 @@ def camera_video(
     if camera.source_type != "video_file":
         raise HTTPException(status_code=404, detail="Video playback is available only for video_file sources.")
 
-    video_path = Path(camera.source_uri).expanduser()
+    video_path = resolve_video_path(camera.source_uri)
     if not video_path.exists() or not video_path.is_file():
         raise HTTPException(status_code=404, detail="Video file not found.")
 
@@ -120,6 +120,23 @@ def camera_video(
         media_type="video/mp4",
         filename=video_path.name,
     )
+
+
+def resolve_video_path(source_uri: str) -> Path:
+    raw_path = Path(source_uri).expanduser()
+    candidates = [raw_path]
+
+    if not raw_path.is_absolute():
+        candidates.append(ROOT_DIR / raw_path)
+
+    candidates.append(ROOT_DIR / raw_path.name)
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.exists() and resolved.is_file():
+            return resolved
+
+    return raw_path
 
 
 @router.get("/{camera_id}/stream")

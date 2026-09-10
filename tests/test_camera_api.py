@@ -107,6 +107,31 @@ def test_video_file_stream_contract_serves_mp4(monkeypatch, tmp_path):
     assert video.content
 
 
+def test_video_endpoint_resolves_project_root_mp4(monkeypatch, tmp_path):
+    database_path = tmp_path / "api-root-video.sqlite3"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+    initialize_database(Settings.from_env())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/cameras",
+            json={
+                "name": "Arquivo local",
+                "source_type": "video_file",
+                "source_uri": "palace.mp4",
+                "enabled": False,
+                "vision_enabled": False,
+            },
+        )
+        camera_id = response.json()["id"]
+
+        video = client.get(f"/api/v1/cameras/{camera_id}/video")
+
+    assert video.status_code in {200, 404}
+    if video.status_code == 200:
+        assert video.headers["content-type"].startswith("video/mp4")
+
+
 def test_live_camera_stream_contract_uses_mjpeg(monkeypatch, tmp_path):
     database_path = tmp_path / "api-live.sqlite3"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")

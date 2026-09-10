@@ -168,6 +168,11 @@ async function renderLiveMedia(camera) {
 
   renderMediaPlaceholder("Abrindo stream...");
 
+  if (camera.source_type === "video_file") {
+    renderVideoElement(camera);
+    return;
+  }
+
   try {
     const info = await getStreamInfo(camera.id);
     if (activeMediaCameraId !== camera.id) {
@@ -175,23 +180,24 @@ async function renderLiveMedia(camera) {
     }
 
     if (info.mode === "file_video") {
-      renderVideoElement(camera.id);
+      renderVideoElement(camera);
       return;
     }
 
-    renderMjpegElement(camera.id);
+    renderMjpegElement(camera);
   } catch (error) {
-    renderMediaPlaceholder(`Falha ao abrir stream: ${error.message}`);
+    renderMjpegElement(camera);
   }
 }
 
-function renderVideoElement(cameraId) {
+function renderVideoElement(camera) {
   const mediaHost = document.querySelector("#live-media-host");
+  const sources = videoSourcesFor(camera);
   mediaHost.innerHTML = `
     <video
       id="live-video"
       class="live-media"
-      src="${cameraVideoUrl(cameraId)}"
+      src="${sources[0]}"
       controls
       autoplay
       muted
@@ -201,7 +207,17 @@ function renderVideoElement(cameraId) {
   `;
 
   const video = mediaHost.querySelector("video");
+  let sourceIndex = 0;
   video.addEventListener("error", () => {
+    sourceIndex += 1;
+    if (sources[sourceIndex]) {
+      video.src = sources[sourceIndex];
+      video.load();
+      video.play().catch(() => {
+        video.controls = true;
+      });
+      return;
+    }
     renderMediaPlaceholder("Nao foi possivel reproduzir o arquivo de video.");
   });
   video.play().catch(() => {
@@ -209,9 +225,9 @@ function renderVideoElement(cameraId) {
   });
 }
 
-function renderMjpegElement(cameraId) {
+function renderMjpegElement(camera) {
   const mediaHost = document.querySelector("#live-media-host");
-  const streamUrl = `${cameraStreamUrl(cameraId)}?t=${Date.now()}`;
+  const streamUrl = `${cameraStreamUrl(camera.id)}?t=${Date.now()}`;
   mediaHost.innerHTML = `
     <img
       id="live-stream"
@@ -224,6 +240,27 @@ function renderMjpegElement(cameraId) {
   mediaHost.querySelector("img").addEventListener("error", () => {
     renderMediaPlaceholder("Aguardando frames da camera ao vivo.");
   });
+}
+
+function videoSourcesFor(camera) {
+  const sources = [cameraVideoUrl(camera.id)];
+  const staticUrl = staticVideoUrlFromSource(camera.source_uri);
+  if (staticUrl && !sources.includes(staticUrl)) {
+    sources.push(staticUrl);
+  }
+  return sources;
+}
+
+function staticVideoUrlFromSource(sourceUri) {
+  if (!sourceUri) {
+    return null;
+  }
+  const normalized = sourceUri.replaceAll("\\", "/");
+  const filename = normalized.split("/").filter(Boolean).pop();
+  if (!filename || !filename.toLowerCase().endsWith(".mp4")) {
+    return null;
+  }
+  return `${window.location.origin}/${encodeURIComponent(filename)}`;
 }
 
 function renderMediaPlaceholder(message) {
