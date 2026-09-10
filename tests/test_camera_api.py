@@ -5,6 +5,10 @@ from backend.database.db import initialize_database
 from backend.main import app
 
 
+def create_fixture_video(path):
+    path.write_bytes(b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom")
+
+
 def test_camera_crud_and_sanitized_response(monkeypatch, tmp_path):
     database_path = tmp_path / "api.sqlite3"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
@@ -70,3 +74,60 @@ def test_test_connection_failure_is_reported(monkeypatch, tmp_path):
     assert test_result.status_code == 200
     assert test_result.json()["success"] is False
     assert test_result.json()["status"] == "OFFLINE"
+
+
+def test_video_file_stream_contract_serves_mp4(monkeypatch, tmp_path):
+    database_path = tmp_path / "api-video.sqlite3"
+    video_path = tmp_path / "fixture.mp4"
+    create_fixture_video(video_path)
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+    initialize_database(Settings.from_env())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/cameras",
+            json={
+                "name": "Arquivo local",
+                "source_type": "video_file",
+                "source_uri": str(video_path),
+                "enabled": False,
+                "vision_enabled": False,
+            },
+        )
+        camera_id = response.json()["id"]
+
+        stream_info = client.get(f"/api/v1/cameras/{camera_id}/stream/info")
+        video = client.get(f"/api/v1/cameras/{camera_id}/video")
+
+    assert stream_info.status_code == 200
+    assert stream_info.json()["mode"] == "file_video"
+    assert stream_info.json()["video_url"] == f"/api/v1/cameras/{camera_id}/video"
+    assert video.status_code == 200
+    assert video.headers["content-type"].startswith("video/mp4")
+    assert video.content
+
+
+def test_live_camera_stream_contract_uses_mjpeg(monkeypatch, tmp_path):
+    database_path = tmp_path / "api-live.sqlite3"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+    initialize_database(Settings.from_env())
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/cameras",
+            json={
+                "name": "Camera IP",
+                "source_type": "rtsp",
+                "source_uri": "rtsp://example.test/stream",
+                "enabled": False,
+                "vision_enabled": False,
+            },
+        )
+        camera_id = response.json()["id"]
+
+        stream_info = client.get(f"/api/v1/cameras/{camera_id}/stream/info")
+
+    assert stream_info.status_code == 200
+    assert stream_info.json()["mode"] == "mjpeg"
+    assert stream_info.json()["stream_url"] == f"/api/v1/cameras/{camera_id}/stream"
+    assert stream_info.json()["video_url"] is None

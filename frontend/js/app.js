@@ -2,8 +2,10 @@ import {
   createCamera,
   deleteCamera,
   cameraStreamUrl,
+  cameraVideoUrl,
   getCameraHealth,
   getHealth,
+  getStreamInfo,
   getVisionObjects,
   getVisionStatus,
   listCameras,
@@ -20,6 +22,7 @@ const statusText = statusElement.querySelector(".status-text");
 const pageTitle = document.querySelector("#page-title");
 const appView = document.querySelector("#app-view");
 const navLinks = document.querySelectorAll("[data-route]");
+let activeMediaCameraId = null;
 
 function renderRoute() {
   const routeKey = currentRoute();
@@ -90,7 +93,9 @@ async function renderLivePage() {
             <strong id="live-camera-name">Nenhuma camera selecionada</strong>
             <span class="health-badge" id="live-camera-status" data-status="OFFLINE">OFFLINE</span>
           </div>
-          <img id="live-stream" alt="Video ao vivo da camera selecionada" />
+          <div id="live-media-host" class="live-media-host" aria-live="polite">
+            <div class="media-placeholder">Selecione uma camera</div>
+          </div>
         </div>
         <aside class="live-inspector">
           <h2>Vision Core</h2>
@@ -142,16 +147,91 @@ async function selectLiveCamera() {
     const statusElement = document.querySelector("#live-camera-status");
     statusElement.textContent = status;
     statusElement.dataset.status = status;
-    document.querySelector("#live-stream").src = cameraId ? cameraStreamUrl(cameraId) : "";
+    await renderLiveMedia(camera);
     await refreshLiveStatus();
   } catch (error) {
     document.querySelector("#live-camera-name").textContent = "Backend indisponivel";
     document.querySelector("#live-camera-status").textContent = "OFFLINE";
     document.querySelector("#live-camera-status").dataset.status = "OFFLINE";
-    document.querySelector("#live-stream").src = "";
+    renderMediaPlaceholder("Stream indisponivel");
     renderVisionStatus(null, [], null);
     console.error(error);
   }
+}
+
+async function renderLiveMedia(camera) {
+  activeMediaCameraId = camera?.id || null;
+  if (!camera?.id) {
+    renderMediaPlaceholder("Selecione uma camera");
+    return;
+  }
+
+  renderMediaPlaceholder("Abrindo stream...");
+
+  try {
+    const info = await getStreamInfo(camera.id);
+    if (activeMediaCameraId !== camera.id) {
+      return;
+    }
+
+    if (info.mode === "file_video") {
+      renderVideoElement(camera.id);
+      return;
+    }
+
+    renderMjpegElement(camera.id);
+  } catch (error) {
+    renderMediaPlaceholder(`Falha ao abrir stream: ${error.message}`);
+  }
+}
+
+function renderVideoElement(cameraId) {
+  const mediaHost = document.querySelector("#live-media-host");
+  mediaHost.innerHTML = `
+    <video
+      id="live-video"
+      class="live-media"
+      src="${cameraVideoUrl(cameraId)}"
+      controls
+      autoplay
+      muted
+      playsinline
+      loop
+    ></video>
+  `;
+
+  const video = mediaHost.querySelector("video");
+  video.addEventListener("error", () => {
+    renderMediaPlaceholder("Nao foi possivel reproduzir o arquivo de video.");
+  });
+  video.play().catch(() => {
+    video.controls = true;
+  });
+}
+
+function renderMjpegElement(cameraId) {
+  const mediaHost = document.querySelector("#live-media-host");
+  const streamUrl = `${cameraStreamUrl(cameraId)}?t=${Date.now()}`;
+  mediaHost.innerHTML = `
+    <img
+      id="live-stream"
+      class="live-media"
+      alt="Video ao vivo da camera selecionada"
+      src="${streamUrl}"
+    />
+  `;
+
+  mediaHost.querySelector("img").addEventListener("error", () => {
+    renderMediaPlaceholder("Aguardando frames da camera ao vivo.");
+  });
+}
+
+function renderMediaPlaceholder(message) {
+  const mediaHost = document.querySelector("#live-media-host");
+  if (!mediaHost) {
+    return;
+  }
+  mediaHost.innerHTML = `<div class="media-placeholder">${message}</div>`;
 }
 
 async function handleStartVision() {

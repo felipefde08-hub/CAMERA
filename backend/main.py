@@ -17,13 +17,15 @@ from backend.logging_config import configure_logging
 from backend.vision import VisionEngine
 
 
-settings = get_settings()
-configure_logging(settings)
+startup_settings = get_settings()
+configure_logging(startup_settings)
 logger = logging.getLogger("campex")
 
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
+    settings = get_settings()
+    app_instance.state.settings = settings
     database_path = initialize_database(settings)
     repository = CameraRepository(settings)
     manager = CameraManager(settings, repository)
@@ -47,14 +49,14 @@ async def lifespan(app_instance: FastAPI):
 
 app = FastAPI(
     title="CAMPEX",
-    version=settings.version,
-    description="CAMPEX Sprint 0 Foundation API",
+    version=startup_settings.version,
+    description="CAMPEX Sprint 2 Vision Core API",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.frontend_origins,
+    allow_origins=startup_settings.frontend_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["*"],

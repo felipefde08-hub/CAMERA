@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import cv2
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.cameras.manager import CameraManager
 from backend.cameras.repository import CameraRepository
@@ -28,9 +29,11 @@ def get_vision_engine(request: Request) -> VisionEngine:
     return request.app.state.vision_engine
 
 
-def ensure_camera(camera_id: str, repository: CameraRepository) -> None:
-    if repository.get(camera_id) is None:
+def ensure_camera(camera_id: str, repository: CameraRepository):
+    camera = repository.get(camera_id)
+    if camera is None:
         raise HTTPException(status_code=404, detail="Camera not found.")
+    return camera
 
 
 @router.post("/{camera_id}/vision/start")
@@ -81,6 +84,42 @@ def vision_objects(
 ) -> list[dict]:
     ensure_camera(camera_id, repository)
     return [tracked.as_dict() for tracked in engine.objects(camera_id)]
+
+
+@router.get("/{camera_id}/stream/info")
+def stream_info(
+    camera_id: str,
+    repository: CameraRepository = Depends(get_repository),
+) -> dict:
+    camera = ensure_camera(camera_id, repository)
+    mode = "file_video" if camera.source_type == "video_file" else "mjpeg"
+    return {
+        "camera_id": camera.id,
+        "source_type": camera.source_type,
+        "mode": mode,
+        "stream_url": f"/api/v1/cameras/{camera.id}/stream",
+        "video_url": f"/api/v1/cameras/{camera.id}/video" if mode == "file_video" else None,
+    }
+
+
+@router.get("/{camera_id}/video")
+def camera_video(
+    camera_id: str,
+    repository: CameraRepository = Depends(get_repository),
+) -> FileResponse:
+    camera = ensure_camera(camera_id, repository)
+    if camera.source_type != "video_file":
+        raise HTTPException(status_code=404, detail="Video playback is available only for video_file sources.")
+
+    video_path = Path(camera.source_uri).expanduser()
+    if not video_path.exists() or not video_path.is_file():
+        raise HTTPException(status_code=404, detail="Video file not found.")
+
+    return FileResponse(
+        video_path,
+        media_type="video/mp4",
+        filename=video_path.name,
+    )
 
 
 @router.get("/{camera_id}/stream")

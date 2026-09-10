@@ -99,6 +99,14 @@ export function getVisionObjects(cameraId) {
   return requestJson(`/cameras/${cameraId}/vision/objects`);
 }
 
+export function getStreamInfo(cameraId) {
+  return requestJson(`/cameras/${cameraId}/stream/info`);
+}
+
 export function cameraStreamUrl(cameraId) {
   return `${API_BASE_URL}/cameras/${cameraId}/stream`;
+}
+
+export function cameraVideoUrl(cameraId) {
+  return `${API_BASE_URL}/cameras/${cameraId}/video`;
 }
