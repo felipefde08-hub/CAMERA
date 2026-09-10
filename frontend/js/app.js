@@ -140,15 +140,14 @@ async function loadLiveCameras() {
 async function selectLiveCamera() {
   const cameraId = document.querySelector("#live-camera-select").value;
   try {
-    const cameras = await listCameras();
-    const camera = cameras.find((item) => item.id === cameraId);
+    const camera = await selectedCamera();
     document.querySelector("#live-camera-name").textContent = camera?.name || "Camera";
     const status = statusLabel(camera?.status);
     const statusElement = document.querySelector("#live-camera-status");
     statusElement.textContent = status;
     statusElement.dataset.status = status;
-    await renderLiveMedia(camera);
-    await refreshLiveStatus();
+    const visionStatus = await refreshLiveStatus();
+    await renderLiveMedia(camera, visionStatus?.status === "RUNNING");
   } catch (error) {
     document.querySelector("#live-camera-name").textContent = "Backend indisponivel";
     document.querySelector("#live-camera-status").textContent = "OFFLINE";
@@ -159,7 +158,16 @@ async function selectLiveCamera() {
   }
 }
 
-async function renderLiveMedia(camera) {
+async function selectedCamera() {
+  const cameraId = document.querySelector("#live-camera-select").value;
+  if (!cameraId) {
+    return null;
+  }
+  const cameras = await listCameras();
+  return cameras.find((item) => item.id === cameraId) || null;
+}
+
+async function renderLiveMedia(camera, visionEnabled = false) {
   activeMediaCameraId = camera?.id || null;
   if (!camera?.id) {
     renderMediaPlaceholder("Selecione uma camera");
@@ -167,6 +175,11 @@ async function renderLiveMedia(camera) {
   }
 
   renderMediaPlaceholder("Abrindo stream...");
+
+  if (visionEnabled) {
+    renderMjpegElement(camera);
+    return;
+  }
 
   if (camera.source_type === "video_file") {
     renderVideoElement(camera);
@@ -277,6 +290,10 @@ async function handleStartVision() {
     return;
   }
   await startVision(cameraId);
+  const camera = await selectedCamera();
+  if (camera) {
+    renderMjpegElement(camera);
+  }
   await refreshLiveStatus();
 }
 
@@ -286,6 +303,8 @@ async function handleStopVision() {
     return;
   }
   await stopVision(cameraId);
+  const camera = await selectedCamera();
+  await renderLiveMedia(camera, false);
   await refreshLiveStatus();
 }
 
@@ -295,6 +314,10 @@ async function handleRestartVision() {
     return;
   }
   await restartVision(cameraId);
+  const camera = await selectedCamera();
+  if (camera) {
+    renderMjpegElement(camera);
+  }
   await refreshLiveStatus();
 }
 
@@ -311,8 +334,10 @@ async function refreshLiveStatus() {
       getVisionObjects(cameraId),
     ]);
     renderVisionStatus(visionStatus, objects, health);
+    return visionStatus;
   } catch (error) {
     renderVisionStatus({ status: "ERROR", error: error.message, metrics: null }, [], null);
+    return null;
   }
 }
 
@@ -324,6 +349,9 @@ function renderVisionStatus(visionStatus, objects, health) {
     <dt>Vision</dt><dd>${status}</dd>
     <dt>Camera FPS</dt><dd>${health?.approximate_fps ?? metrics.camera_fps ?? "0"}</dd>
     <dt>Vision FPS</dt><dd>${metrics.vision_fps ?? "0"}</dd>
+    <dt>Frames</dt><dd>${metrics.frames_processed ?? 0}/${metrics.frames_received ?? 0}</dd>
+    <dt>Drops</dt><dd>${metrics.frames_dropped ?? 0}</dd>
+    <dt>Frame Age</dt><dd>${metrics.frame_age_ms ? `${metrics.frame_age_ms.toFixed(1)} ms` : "-"}</dd>
     <dt>Device</dt><dd>${metrics.device || "-"}</dd>
     <dt>Detector</dt><dd>${metrics.detector || "-"}</dd>
     <dt>Tracker</dt><dd>${metrics.tracker || "-"}</dd>

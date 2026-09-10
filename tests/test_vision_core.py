@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 import pytest
 
+from backend.cameras.frame_buffer import LatestFrameBuffer
 from backend.cameras.manager import CameraManager
 from backend.cameras.repository import CameraRepository
 from backend.config import Settings
@@ -23,6 +24,7 @@ from backend.vision.detector import (
 )
 from backend.vision.engine import VisionEngine, VisionSession
 from backend.vision.models import BoundingBox, Detection, TrackedObject, VisionMetrics
+from backend.vision.overlay import OverlayRenderer
 from backend.vision.tracker import ByteTrackTracker, ObjectTracker
 from tests.helpers import make_settings
 
@@ -83,6 +85,15 @@ class FakeTracker(ObjectTracker):
                 )
             )
         return objects
+
+
+class FailingTracker(ObjectTracker):
+    name = "FailingTracker"
+
+    def update(
+        self, camera_id: str, detections: list[Detection], timestamp: datetime
+    ) -> list[TrackedObject]:
+        raise RuntimeError("tracker offline")
 
 
 class SupervisionLikeDetection:
@@ -299,6 +310,38 @@ def test_vision_session_processes_frame_and_tracks_objects():
     assert objects[1].class_name == "car"
 
 
+def test_latest_frame_buffer_replaces_stale_frame():
+    buffer = LatestFrameBuffer()
+    first = np.zeros((8, 8, 3), dtype=np.uint8)
+    second = np.ones((8, 8, 3), dtype=np.uint8)
+    timestamp = datetime.now(timezone.utc)
+
+    buffer.put(first, timestamp)
+    buffer.put(second, timestamp)
+
+    frame, frame_at = buffer.latest()
+    stats = buffer.stats()
+
+    assert frame_at == timestamp
+    assert int(frame[0][0][0]) == 1
+    assert stats.frames_received == 2
+    assert stats.frames_replaced == 1
+
+
+def test_latest_frame_buffer_does_not_accumulate_stale_frames():
+    buffer = LatestFrameBuffer()
+    timestamp = datetime.now(timezone.utc)
+
+    for value in range(5):
+        buffer.put(np.full((2, 2, 3), value, dtype=np.uint8), timestamp)
+
+    snapshot = buffer.snapshot()
+
+    assert int(snapshot.frame[0][0][0]) == 4
+    assert snapshot.frames_received == 5
+    assert snapshot.frames_replaced == 4
+
+
 def test_vision_session_should_process_rate_limits():
     session = _make_session()
     timestamp = datetime.now(timezone.utc)
@@ -347,14 +390,17 @@ def test_vision_session_fail_sets_error():
 
 def test_vision_session_status_contains_metrics():
     session = _make_session()
-    status = session.as_status(camera_fps=30.0)
+    status = session.as_status(camera_fps=30.0, frames_received=8, frames_dropped=3)
 
     assert status["camera_id"] == "cam_1"
     assert status["status"] in {"STARTING", "RUNNING", "ERROR", "STOPPED"}
+    assert status["vision_status"] == status["status"]
     assert status["metrics"] is not None
     assert status["metrics"]["detector"] == "FakeDetector"
     assert status["metrics"]["device"] == "CPU"
     assert status["metrics"]["camera_fps"] == 30.0
+    assert status["metrics"]["frames_received"] == 8
+    assert status["metrics"]["frames_dropped"] == 3
 
 
 def test_vision_engine_disabled_status(tmp_path: Path):
@@ -544,6 +590,18 @@ def test_vision_engine_error_does_not_crash(tmp_path: Path):
     assert not engine._thread.is_alive()
 
 
+def test_tracker_failure_sets_vision_error_without_crashing_session():
+    session = _make_session(tracker=FailingTracker())
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    timestamp = datetime.now(timezone.utc)
+
+    with pytest.raises(RuntimeError):
+        session.process(frame, timestamp)
+
+    assert session.status == "ERROR"
+    assert "tracker" in (session.error or "").lower()
+
+
 def test_vision_metrics_has_all_required_fields():
     metrics = VisionMetrics(
         camera_fps=30.0,
@@ -554,6 +612,10 @@ def test_vision_metrics_has_all_required_fields():
         detector="RF-DETR Nano",
         tracker="ByteTrack",
         uptime=120.0,
+        frames_received=100,
+        frames_processed=20,
+        frames_dropped=80,
+        frame_age_ms=41.0,
     )
     data = metrics.as_dict()
 
@@ -565,6 +627,10 @@ def test_vision_metrics_has_all_required_fields():
     assert data["detector"] == "RF-DETR Nano"
     assert data["tracker"] == "ByteTrack"
     assert data["uptime"] == 120.0
+    assert data["frames_received"] == 100
+    assert data["frames_processed"] == 20
+    assert data["frames_dropped"] == 80
+    assert data["frame_age_ms"] == 41.0
 
 
 def test_tracked_object_as_dict():
@@ -598,6 +664,24 @@ def test_detection_as_dict():
     assert data["class_name"] == "person"
     assert data["confidence"] == 0.91
     assert data["bounding_box"] == [10.0, 20.0, 110.0, 220.0]
+
+
+def test_overlay_renderer_accepts_tracked_objects():
+    renderer = OverlayRenderer()
+    frame = np.zeros((120, 160, 3), dtype=np.uint8)
+    obj = TrackedObject(
+        track_id=12,
+        camera_id="cam_1",
+        class_name="person",
+        confidence=0.94,
+        bounding_box=BoundingBox(10, 20, 80, 100),
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    rendered = renderer.render(frame, [obj])
+
+    assert rendered.shape == frame.shape
+    assert int(rendered.sum()) > 0
 
 
 def test_create_detector_unsupported_type():

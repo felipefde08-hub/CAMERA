@@ -57,6 +57,10 @@ class VisionMetrics:
     detector: str
     tracker: str
     uptime: float
+    frames_received: int = 0
+    frames_processed: int = 0
+    frames_dropped: int = 0
+    frame_age_ms: float | None = None
 
     def as_dict(self) -> dict:
         return asdict(self)

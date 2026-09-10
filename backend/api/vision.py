@@ -11,10 +11,11 @@ from backend.cameras.manager import CameraManager
 from backend.cameras.repository import CameraRepository
 from backend.config import ROOT_DIR, get_settings
 from backend.vision.engine import VisionEngine
-from backend.vision.overlay import draw_tracked_objects
+from backend.vision.overlay import OverlayRenderer
 
 
 router = APIRouter(prefix="/api/v1/cameras", tags=["vision"])
+overlay_renderer = OverlayRenderer()
 
 
 def get_repository() -> CameraRepository:
@@ -158,7 +159,10 @@ async def camera_stream(
                 frame = _blank_frame("Aguardando frame da camera")
             objects = engine.objects(camera_id)
             if objects:
-                frame = draw_tracked_objects(frame, objects)
+                try:
+                    frame = overlay_renderer.render(frame, objects)
+                except Exception:
+                    pass
             ok, encoded = cv2.imencode(".jpg", frame)
             if ok:
                 yield (
