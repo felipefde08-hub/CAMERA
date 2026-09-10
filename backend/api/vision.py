@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import cv2
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.cameras.manager import CameraManager
 from backend.cameras.repository import CameraRepository
-from backend.config import get_settings
+from backend.config import ROOT_DIR, get_settings
 from backend.vision.engine import VisionEngine
-from backend.vision.overlay import draw_tracked_objects
+from backend.vision.overlay import OverlayRenderer
 
 
 router = APIRouter(prefix="/api/v1/cameras", tags=["vision"])
+overlay_renderer = OverlayRenderer()
 
 
 def get_repository() -> CameraRepository:
@@ -28,9 +30,11 @@ def get_vision_engine(request: Request) -> VisionEngine:
     return request.app.state.vision_engine
 
 
-def ensure_camera(camera_id: str, repository: CameraRepository) -> None:
-    if repository.get(camera_id) is None:
+def ensure_camera(camera_id: str, repository: CameraRepository):
+    camera = repository.get(camera_id)
+    if camera is None:
         raise HTTPException(status_code=404, detail="Camera not found.")
+    return camera
 
 
 @router.post("/{camera_id}/vision/start")
@@ -83,6 +87,59 @@ def vision_objects(
     return [tracked.as_dict() for tracked in engine.objects(camera_id)]
 
 
+@router.get("/{camera_id}/stream/info")
+def stream_info(
+    camera_id: str,
+    repository: CameraRepository = Depends(get_repository),
+) -> dict:
+    camera = ensure_camera(camera_id, repository)
+    mode = "file_video" if camera.source_type == "video_file" else "mjpeg"
+    return {
+        "camera_id": camera.id,
+        "source_type": camera.source_type,
+        "mode": mode,
+        "stream_url": f"/api/v1/cameras/{camera.id}/stream",
+        "video_url": f"/api/v1/cameras/{camera.id}/video" if mode == "file_video" else None,
+    }
+
+
+@router.get("/{camera_id}/video")
+def camera_video(
+    camera_id: str,
+    repository: CameraRepository = Depends(get_repository),
+) -> FileResponse:
+    camera = ensure_camera(camera_id, repository)
+    if camera.source_type != "video_file":
+        raise HTTPException(status_code=404, detail="Video playback is available only for video_file sources.")
+
+    video_path = resolve_video_path(camera.source_uri)
+    if not video_path.exists() or not video_path.is_file():
+        raise HTTPException(status_code=404, detail="Video file not found.")
+
+    return FileResponse(
+        video_path,
+        media_type="video/mp4",
+        filename=video_path.name,
+    )
+
+
+def resolve_video_path(source_uri: str) -> Path:
+    raw_path = Path(source_uri).expanduser()
+    candidates = [raw_path]
+
+    if not raw_path.is_absolute():
+        candidates.append(ROOT_DIR / raw_path)
+
+    candidates.append(ROOT_DIR / raw_path.name)
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.exists() and resolved.is_file():
+            return resolved
+
+    return raw_path
+
+
 @router.get("/{camera_id}/stream")
 async def camera_stream(
     request: Request,
@@ -102,7 +159,10 @@ async def camera_stream(
                 frame = _blank_frame("Aguardando frame da camera")
             objects = engine.objects(camera_id)
             if objects:
-                frame = draw_tracked_objects(frame, objects)
+                try:
+                    frame = overlay_renderer.render(frame, objects)
+                except Exception:
+                    pass
             ok, encoded = cv2.imencode(".jpg", frame)
             if ok:
                 yield (

@@ -8,6 +8,7 @@ from typing import Any
 
 from backend.cameras.base import CameraConfig, CameraSource
 from backend.cameras.factory import create_camera_source
+from backend.cameras.frame_buffer import LatestFrameStats, LatestFrameBuffer
 from backend.cameras.health import CameraHealth, CameraStatus, utc_now
 from backend.cameras.models import Camera
 from backend.cameras.repository import CameraRepository
@@ -35,9 +36,7 @@ class CameraWorker:
             settings=self.settings,
         )
         self._stop = threading.Event()
-        self._latest_frame: Any | None = None
-        self._latest_frame_at: datetime | None = None
-        self._frame_lock = threading.Lock()
+        self._frame_buffer = LatestFrameBuffer()
         self._thread = threading.Thread(
             target=self._run,
             name=f"campex-camera-{camera.id}",
@@ -66,9 +65,10 @@ class CameraWorker:
         return health
 
     def latest_frame(self) -> tuple[Any | None, datetime | None]:
-        with self._frame_lock:
-            frame = self._latest_frame.copy() if self._latest_frame is not None else None
-            return frame, self._latest_frame_at
+        return self._frame_buffer.latest()
+
+    def frame_stats(self) -> LatestFrameStats:
+        return self._frame_buffer.stats()
 
     def _run(self) -> None:
         consecutive_failures = 0
@@ -79,13 +79,7 @@ class CameraWorker:
             while not self._stop.is_set():
                 result = self.source.read()
                 if result.success:
-                    with self._frame_lock:
-                        self._latest_frame = (
-                            result.frame.copy()
-                            if hasattr(result.frame, "copy")
-                            else result.frame
-                        )
-                        self._latest_frame_at = utc_now()
+                    self._frame_buffer.put(result.frame, utc_now())
                     consecutive_failures = 0
                     time.sleep(0.02)
                     continue
@@ -167,6 +161,13 @@ class CameraManager:
         if worker is None:
             return None, None
         return worker.latest_frame()
+
+    def frame_stats(self, camera_id: str) -> LatestFrameStats:
+        with self._lock:
+            worker = self._workers.get(camera_id)
+        if worker is None:
+            return LatestFrameStats(frames_received=0, frames_replaced=0)
+        return worker.frame_stats()
 
     def is_running(self, camera_id: str) -> bool:
         with self._lock:

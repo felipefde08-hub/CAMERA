@@ -41,6 +41,9 @@ class VisionSession:
         self._last_frame_at: datetime | None = None
         self._last_processed_at = 0.0
         self._last_inference_ms: float | None = None
+        self._last_frame_age_ms: float | None = None
+        self._frames_processed = 0
+        self._frames_dropped = 0
         self._objects: list[TrackedObject] = []
         self._lock = threading.Lock()
 
@@ -50,12 +53,17 @@ class VisionSession:
         with self._lock:
             now = time.monotonic()
             if (now - self._last_processed_at) < (1 / self.settings.vision_fps):
+                self._frames_dropped += 1
                 return False
             self._last_frame_at = frame_at
             self._last_processed_at = now
             return True
 
     def process(self, frame: object, frame_at: datetime) -> None:
+        frame_age_ms = max(
+            0.0,
+            (datetime.now(timezone.utc) - frame_at).total_seconds() * 1000,
+        )
         if not self._motion.has_reference:
             self._motion.detect(frame)
             motion_result = MotionResult(True, 0, 0.0)
@@ -65,26 +73,44 @@ class VisionSession:
             self._frames_since_motion_skip += 1
             if self._frames_since_motion_skip < self._motion_full_scan_interval:
                 timestamp = datetime.now(timezone.utc)
-                objects = self.tracker.update(self.camera_id, [], timestamp)
+                try:
+                    objects = self.tracker.update(self.camera_id, [], timestamp)
+                except Exception as exc:
+                    self.fail(f"Tracker failure: {exc}")
+                    raise
                 with self._lock:
                     self.status = "RUNNING"
                     self.error = None
                     self._last_frame_at = frame_at
                     self._last_processed_at = time.monotonic()
+                    self._last_frame_age_ms = frame_age_ms
+                    self._frames_processed += 1
                     self._objects = objects
                 return
             self._motion.reset()
             self._frames_since_motion_skip = 0
 
-        detections, inference_ms = self.detector.detect(frame)
         timestamp = datetime.now(timezone.utc)
-        objects = self.tracker.update(self.camera_id, detections, timestamp)
+        try:
+            detections, inference_ms = self.detector.detect(frame)
+        except Exception as exc:
+            self.fail(f"Detector failure: {exc}")
+            raise
+
+        try:
+            objects = self.tracker.update(self.camera_id, detections, timestamp)
+        except Exception as exc:
+            self.fail(f"Tracker failure: {exc}")
+            raise
+
         with self._lock:
             self.status = "RUNNING"
             self.error = None
             self._last_frame_at = frame_at
             self._last_processed_at = time.monotonic()
             self._last_inference_ms = inference_ms
+            self._last_frame_age_ms = frame_age_ms
+            self._frames_processed += 1
             self._objects = objects
 
     def fail(self, error: str) -> None:
@@ -103,6 +129,9 @@ class VisionSession:
             self._last_frame_at = None
             self._last_processed_at = 0.0
             self._last_inference_ms = None
+            self._last_frame_age_ms = None
+            self._frames_processed = 0
+            self._frames_dropped = 0
             self._objects = []
             self._frames_since_motion_skip = 0
             self._motion.reset()
@@ -111,8 +140,14 @@ class VisionSession:
         with self._lock:
             return list(self._objects)
 
-    def as_status(self, camera_fps: float = 0.0) -> dict:
+    def as_status(
+        self,
+        camera_fps: float = 0.0,
+        frames_received: int = 0,
+        frames_dropped: int = 0,
+    ) -> dict:
         with self._lock:
+            effective_dropped = max(frames_dropped, self._frames_dropped)
             metrics = VisionMetrics(
                 camera_fps=camera_fps,
                 vision_fps=self.settings.vision_fps if self.status == "RUNNING" else 0.0,
@@ -122,10 +157,15 @@ class VisionSession:
                 detector=self.detector.name,
                 tracker=self.tracker.name,
                 uptime=max(0.0, time.monotonic() - self.started_at),
+                frames_received=frames_received,
+                frames_processed=self._frames_processed,
+                frames_dropped=effective_dropped,
+                frame_age_ms=self._last_frame_age_ms,
             )
             return {
                 "camera_id": self.camera_id,
                 "status": self.status,
+                "vision_status": self.status,
                 "error": self.error,
                 "metrics": metrics.as_dict(),
             }
@@ -230,10 +270,29 @@ class VisionEngine:
             return {"camera_id": camera_id, "status": "STOPPED", "error": None, "metrics": None}
         camera_fps = 0.0
         health = self.camera_manager.camera_health(camera_id)
+        frame_stats = self.camera_manager.frame_stats(camera_id)
         if health.approximate_fps:
             camera_fps = health.approximate_fps
-        status = session.as_status(camera_fps=camera_fps)
+        status = session.as_status(
+            camera_fps=camera_fps,
+            frames_received=frame_stats.frames_received,
+            frames_dropped=frame_stats.frames_replaced,
+        )
         status["camera_status"] = health.status.value
+        metrics = status.get("metrics") or {}
+        status.update(
+            {
+                "detector": metrics.get("detector"),
+                "tracker": metrics.get("tracker"),
+                "device": metrics.get("device"),
+                "capture_fps": metrics.get("camera_fps"),
+                "vision_fps": metrics.get("vision_fps"),
+                "inference_ms": metrics.get("inference_ms"),
+                "frame_age_ms": metrics.get("frame_age_ms"),
+                "frames_dropped": metrics.get("frames_dropped"),
+                "objects": metrics.get("objects_detected"),
+            }
+        )
         return status
 
     def objects(self, camera_id: str) -> list[TrackedObject]:
@@ -275,10 +334,11 @@ class VisionEngine:
                     session.fail(str(exc))
                 except Exception as exc:
                     logger.exception(
-                        "[CAMPEX][VISION] Camera inference failed",
+                        "[CAMPEX][VISION] Camera vision processing failed",
                         extra={"camera_id": session.camera_id},
                     )
-                    session.fail(str(exc))
+                    if session.error is None:
+                        session.fail(str(exc))
             time.sleep(0.02)
 
     @staticmethod
