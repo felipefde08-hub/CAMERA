@@ -1,1 +1,1 @@
-"""Test package for the Visual Operations MVP."""
+"""CAMPEX tests."""
