@@ -1,0 +1,25 @@
+:root {
+  --color-black: #090a0c;
+  --color-ink: #12151a;
+  --color-panel: #171b21;
+  --color-panel-soft: #20262e;
+  --color-elevated: #232a33;
+  --color-border: #313946;
+  --color-border-soft: #252b34;
+  --color-text: #f2f5f8;
+  --color-muted: #9aa6b4;
+  --color-subtle: #6f7b8a;
+  --color-paper: #f7f8fa;
+  --color-paper-muted: #e8ebef;
+  --color-online: #31c46b;
+  --color-attention: #e2b245;
+  --color-critical: #ef5b5b;
+  --color-accent: #7db3ff;
+  --font-display: "Avenir Next", Avenir, "Nunito Sans", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-sans: "Inter", "SF Pro Text", "Segoe UI", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", ui-monospace, monospace;
+  --sidebar-width: 264px;
+  --sidebar-collapsed-width: 76px;
+  --radius: 8px;
+  --shadow-panel: 0 16px 40px rgba(0, 0, 0, 0.26);
+}
